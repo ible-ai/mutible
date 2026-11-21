@@ -223,6 +223,13 @@ public:
     // its folder: every document on the old one is opened on it anew, and
     // the window's tabs are reported to it.
     void rehost(std::shared_ptr<SessionLink::Link> link);
+    // The same for a host that outlives the connection: a document `held`
+    // names (the host still holds it under its id) is taken up again as it
+    // is there (Document::reattach), the others opened anew.
+    void rehost(std::shared_ptr<SessionLink::Link> link, const std::set<uint64_t>& held);
+    // The window closes over SSH: every document of the lost-or-live link
+    // closes on the host.
+    void closeOnHost();
     // A file for the agent (`mutible open --note`, AgentNotes.h): in the
     // agent's preview tab when `preview` (each such open replaces the last
     // one, in its place; an edit keeps it), else a kept tab, just right of

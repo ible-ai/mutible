@@ -113,14 +113,7 @@ Terminal::Terminal(const std::string& cwd, std::shared_ptr<SessionLink::Link> li
     // Its host going (a headless one, killed): the shell went with it, and
     // nothing starts another until the host can be reached again (stage 6,
     // step 2 reconnects).
-    lostListener_ = link_->addLostListener([this](const std::string&) {
-        hostGone_ = true;
-        const bool had = hostTerm_ != 0;
-        hostTerm_ = 0;
-        shellPid_ = -1;
-        navLine_ = -1;
-        if (vte_ && had) feedNotice("[the session's host went away, and this terminal's shell with it]");
-    });
+    listenForLoss();
     // The scroller sits in an overlay so the hovered link's underline can be
     // drawn over the terminal: VTE underlines only its own regex matches, and
     // a regex cannot know which paths exist.
@@ -699,21 +692,59 @@ void Terminal::detachFromHost() {
     heldTerm_ = 0;   // never attached here: nothing to let go of
 }
 
+void Terminal::listenForLoss() {
+    lostListener_ = link_->addLostListener([this](const std::string&) {
+        hostGone_ = true;
+        const bool had = hostTerm_ != 0;
+        if (had) lostTerm_ = hostTerm_;
+        hostTerm_ = 0;
+        shellPid_ = -1;
+        navLine_ = -1;
+        // Over SSH the host's shell may run on, and the window connects again
+        // by itself: no word of a lost shell until it is known to be one.
+        if (vte_ && had && link_->kind() != SessionLink::Link::Kind::Remote)
+            feedNotice("[the session's host went away, and this terminal's shell with it]");
+    });
+}
+
+bool Terminal::reattach(const std::shared_ptr<SessionLink::Link>& link, Shared::TermId id, int pid,
+                        const Shared::TermShell& shell) {
+    if (!link || link == link_ || !vte_ || !lostTerm_ || id != lostTerm_) return false;
+    link_->removeLostListener(lostListener_);
+    link_ = link;
+    listenForLoss();
+    hostGone_ = false;
+    // The screen is the host's replay again: this one's is cleared first.
+    vte_terminal_reset(VTE_TERMINAL(vte_), TRUE, TRUE);
+    heldTerm_ = id;
+    heldPid_ = pid;
+    shellPid_ = pid;
+    host_ = shell;
+    lostTerm_ = 0;
+    attachShell();
+    return true;
+}
+
+void Terminal::closeOnHost() {
+    if (link_->lost()) return;
+    if (heldTerm_) {
+        link_->client().attachTerminal(heldTerm_, nullptr);
+        link_->client().closeTerminal(heldTerm_);
+        heldTerm_ = 0;
+    }
+    if (hostTerm_) link_->client().closeTerminal(hostTerm_);
+    hostTerm_ = 0;
+}
+
 void Terminal::rehost(std::shared_ptr<SessionLink::Link> link) {
     if (!link || link == link_) return;
     link_->removeLostListener(lostListener_);
     if (hostTerm_ && !link_->lost()) link_->client().closeTerminal(hostTerm_);
     hostTerm_ = heldTerm_ = 0;
     link_ = std::move(link);
-    lostListener_ = link_->addLostListener([this](const std::string&) {
-        hostGone_ = true;
-        const bool had = hostTerm_ != 0;
-        hostTerm_ = 0;
-        shellPid_ = -1;
-        navLine_ = -1;
-        if (vte_ && had) feedNotice("[the session's host went away, and this terminal's shell with it]");
-    });
+    listenForLoss();
     hostGone_ = false;
+    lostTerm_ = 0;
     if (!vte_) return;   // its shell starts when it is first shown
     feedNotice("[the session's host is back: a new shell]");
     spawnShell();

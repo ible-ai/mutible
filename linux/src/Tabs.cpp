@@ -367,13 +367,23 @@ void Editor::detachFromHost(const std::set<uint64_t>& drop) {
         if (!drop.count(d->id()) && d->sessionLink() == link_.get()) d->detachFromHost();
 }
 
-void Editor::rehost(std::shared_ptr<SessionLink::Link> link) {
+void Editor::rehost(std::shared_ptr<SessionLink::Link> link) { rehost(std::move(link), {}); }
+
+void Editor::rehost(std::shared_ptr<SessionLink::Link> link, const std::set<uint64_t>& held) {
     if (!link) return;
     SessionLink::Link* old = link_.get();
-    for (Document* d : documents())
-        if (d->sessionLink() == old || (d->sessionLink() && d->sessionLink()->lost())) d->rehost(link);
+    for (Document* d : documents()) {
+        if (d->sessionLink() != old && !(d->sessionLink() && d->sessionLink()->lost())) continue;
+        if (held.count(d->id()) && d->reattach(link)) continue;
+        d->rehost(link);
+    }
     setSessionLink(std::move(link));
-    notifyDocument();   // a new id: a new document to a language server
+    notifyDocument();   // a new id (unless the host held it): a new document to a language server
+}
+
+void Editor::closeOnHost() {
+    for (Document* d : documents())
+        if (d->sessionLink() == link_.get()) d->closeOnHost();
 }
 
 void Editor::showDiff(const std::string& title, const std::string& bytes, bool commit) {

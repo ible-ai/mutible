@@ -116,6 +116,14 @@ public:
     const std::string& label() const { return label_; }
     const std::string& askedFile() const { return askedFile_; }
     const std::string& failure() const { return failure_; }
+    // The token of the window over SSH this link belongs to, the same on
+    // every connection it makes again (Client::setResume), "" for no
+    // remote link.
+    const std::string& resume() const { return resume_; }
+    // After a reconnect (stage 8, the lasting host): `window`'s record on
+    // this link's host, when the host still holds the one `old` (the lost
+    // link) had made for it; false when it ended meanwhile.
+    bool resumeWindowFrom(const Link& old, std::uint64_t window);
     // A file's text read through the host (FsRead "read", piece by piece, 64
     // MB at most), decoded as a local file is (FolderSearch::decodeFileText).
     // `ok` false when it cannot be read or is not text; `tooLarge` past the
@@ -243,12 +251,16 @@ private:
     friend std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
     friend void connectRemote(const std::string& address,
                               std::function<void(std::shared_ptr<Link>, std::string)> done);
+    friend void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+                                 std::function<void(std::shared_ptr<Link>, std::string)> done);
+    friend void reconnectRemote(const std::shared_ptr<Link>& lost,
+                                std::function<void(std::shared_ptr<Link>, std::string)> done);
     Held free(bool all);
     Json tabsJson(std::uint64_t window, const Model::Window& w) const;
     Link() = default;
     struct Wake;
     void startInProcess(bool loopback, unsigned delayUs);
-    bool startSocket(std::string* why);
+    bool startSocket(std::string* why, bool onlyExisting = false);
     bool startRemote(std::string* why);
     void makeClient();
     static int dispatchOnMain(void* wake);   // a GSourceFunc
@@ -256,7 +268,7 @@ private:
 
     Kind kind_ = Kind::InProcess;
     std::string folder_, socketPath_;
-    std::string address_, label_, machine_, askedFile_, failure_;
+    std::string address_, label_, machine_, askedFile_, failure_, resume_;
     Shared::SshTarget target_;
     pid_t startedHost_ = 0;
     std::shared_ptr<Wake> wake_;
@@ -318,6 +330,21 @@ std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
 // nothing waits on a connection. A live link for that machine and path is
 // given again.
 void connectRemote(const std::string& address, std::function<void(std::shared_ptr<Link>, std::string)> done);
+
+void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+                      std::function<void(std::shared_ptr<Link>, std::string)> done);
+
+// A window over SSH's connection made again after it dropped (stage 8): the
+// lost link's address and token, so the lasting host there lets go of the
+// stale connection and the window's documents and terminals can be taken up
+// again from it. `done` as connectRemote's; the lost link stays registered
+// until a try succeeds.
+void reconnectRemote(const std::shared_ptr<Link>& lost,
+                     std::function<void(std::shared_ptr<Link>, std::string)> done);
+
+// The folder a lasting host's socket is in, as `mutible host --stdio` makes
+// it (tools/mutible-cli.cpp, lastingSocketDir).
+std::string lastingSocketFolder();
 
 // Whether the folder's link now has lost its host (a new window, or
 // Reconnect, finds or starts it again).

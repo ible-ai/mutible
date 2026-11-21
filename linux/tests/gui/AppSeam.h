@@ -67,6 +67,8 @@ struct MCGuiAppWindow {
     FindBar*    findBar = nullptr;         // the editor's find and replace bar
     SearchPanel* search = nullptr;         // Find in Folder, null until first shown
     RemoteWorkspace* remoteWs = nullptr;   // a window over SSH: its folder through the host
+    int*        reconnectAttempt = nullptr;   // a window over SSH: the tries made at connecting again
+    bool        autoReconnect = false;        // ... and whether they are going
     GtkWidget*  hintsPanel = nullptr;      // the shortcut hints, and their text
     HintsColumns* hintsColumns = nullptr;  // their list in columns (HintsColumns.h)
     GtkWidget*  hintsHint = nullptr;       // the status bar's note on them

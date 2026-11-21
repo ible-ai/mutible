@@ -221,6 +221,15 @@ public:
     // the buffer's text the host's to start from (its history gone with
     // the old host, as Reload forgets it).
     void rehost(std::shared_ptr<SessionLink::Link> link);
+    // The same, for a host that outlives the connection (a lasting host,
+    // stage 8) and still holds this document under its id: opened on it
+    // again as it is there (its text, undo and unsaved count), and what the
+    // buffer has beyond that sent as an edit outside the history. False,
+    // nothing changed, when the host does not answer for it (rehost then).
+    bool reattach(const std::shared_ptr<SessionLink::Link>& link);
+    // The window closes over SSH: the document closes on its host (which
+    // keeps nothing for a window that is gone), not detached.
+    void closeOnHost();
     // For auto-save: the file is gone since it was read, or it is not what
     // was last read or saved (by its date, inode and size first, then by its
     // text, so a file rewritten unchanged is no change).
@@ -589,6 +598,8 @@ private:
     bool   outsideOpen_ = false;   // edits outside a user action, this turn
     guint  outsideIdle_ = 0;
     bool   replaying_ = false;     // an undo or redo going in: not recorded
+    bool   capturing_ = false;     // reattach: the host's text is taken here, not applied
+    std::string captured_;
     Model::UndoHistory::StepInfo pendingStep_;   // nameStep's, for the next step
     gint64 pendingAt_ = 0;                       // when it was given (0: none)
     bool recording() const;

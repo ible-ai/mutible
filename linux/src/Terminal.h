@@ -277,6 +277,18 @@ public:
     // Its link's host went and `link` was found or started for its folder:
     // a new shell there (the old one ended with the old host).
     void rehost(std::shared_ptr<SessionLink::Link> link);
+    // The same, for a host that outlives the connection (a lasting host,
+    // stage 8) and still holds the shell that was running here: attached
+    // again, the host's replay redrawing the screen. False, nothing
+    // changed, when this terminal had no shell on the lost host (rehost
+    // then). `pid` and `shell` are the host's word on it (its state).
+    bool reattach(const std::shared_ptr<SessionLink::Link>& link, Shared::TermId id, int pid,
+                  const Shared::TermShell& shell);
+    // The host term this terminal had when its link was lost, 0 for none.
+    Shared::TermId lostHostTerm() const { return lostTerm_; }
+    // The window closes over SSH: the shell ends on its host (which keeps
+    // nothing for a window that is gone).
+    void closeOnHost();
 
 private:
     // One row's share of the hovered link: cells [col0, col1) of `row`, a
@@ -300,6 +312,8 @@ private:
     void makeTerminal();   // the terminal and its shell, once
     void attachShell();    // makeTerminal's for a held one: TermAttach
     Shared::TermId heldTerm_ = 0;   // attachHeld's, until attached
+    Shared::TermId lostTerm_ = 0;   // hostTerm_ as the host was lost, for reattach
+    void listenForLoss();
     int heldPid_ = 0;
     // The pty's size while another renderer's is in force (TermShell's
     // cols and rows, not this view's): VTE laid out at exactly that grid in

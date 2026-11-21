@@ -259,6 +259,13 @@ struct App {
     // (RemoteWorkspace.h).
     std::shared_ptr<RemoteWorkspace> remoteWs;
     bool reconnecting = false;   // a Reconnect's connection is being made
+    // A window over SSH that lost its connection connects again by itself
+    // (stage 8, the lasting host): the tries made so far, the round that
+    // makes a timer or an answer from an earlier one void, and whether the
+    // tries are still going (the title says "reconnecting").
+    bool autoReconnect = false;
+    int reconnectAttempt = 0;
+    unsigned reconnectRound = 0;
     // View > Session Browser's page of the window's tabs (SessionBrowser.h),
     // made the first time it is asked for; stopped before the window
     // detaches from its host.
@@ -432,7 +439,7 @@ static void setWindowTitle(App* app) {
     if (app->remote && app->link) {
         in.home.clear();
         in.remote = app->link->label();
-        if (app->link->lost()) in.remote += " (disconnected)";
+        if (app->link->lost()) in.remote += app->autoReconnect ? " (reconnecting)" : " (disconnected)";
     }
     if (app->editor->isDiff()) {
         in.name = app->editor->diffTitle();   // "name (diff)" or "<short hash> <subject>"
@@ -604,9 +611,78 @@ static void buildHeldTerminals(App* app, bool firstMade);
 static void backUpHeldDocuments(App* app);
 static void showHeldActive(App* app);
 
+static void rehostApp(App* a, const std::shared_ptr<SessionLink::Link>& link);
+static void scheduleAutoReconnect(App* app);
+
+// The window is still there (a timer or an answer may come after it).
+static bool windowAlive(App* app) {
+    for (App* a : g.windows)
+        if (a == app && !a->dead) return true;
+    return false;
+}
+
+// A window over SSH lost its connection: the host there outlives it (the
+// lasting host), so the window connects again by itself, after
+// Shared::reconnectDelayMs, its text kept meanwhile; none of the tries left,
+// it says so and Reconnect shows. The Mac's words (EditorController+Session).
+static void startAutoReconnect(App* app) {
+    app->autoReconnect = true;
+    app->reconnectAttempt = 0;
+    app->reconnectRound++;
+    const std::string& why = app->link->failure();
+    flashStatus(app, "The connection to " + app->link->label() + " dropped" + (why.empty() ? "." : ": " + why) +
+                         " Reconnecting; your text is kept here meanwhile");
+    if (app->reconnectButton) gtk_widget_set_visible(app->reconnectButton, FALSE);
+    setWindowTitle(app);   // "(reconnecting)"
+    scheduleAutoReconnect(app);
+}
+
+static void tryAutoReconnect(App* app, unsigned round) {
+    if (!windowAlive(app) || !app->autoReconnect || app->reconnectRound != round || !app->link ||
+        !app->link->lost())
+        return;
+    app->reconnectAttempt++;
+    SessionLink::reconnectRemote(app->link, [app, round](std::shared_ptr<SessionLink::Link> link, std::string why) {
+        if (!windowAlive(app) || !app->autoReconnect || app->reconnectRound != round) return;
+        if (link) {
+            rehostWindows(link);
+            return;
+        }
+        g_printerr("mutible: reconnecting over ssh failed: %s\n", why.c_str());
+        scheduleAutoReconnect(app);
+    });
+}
+
+static void scheduleAutoReconnect(App* app) {
+    if (!windowAlive(app) || !app->autoReconnect) return;
+    const long long delay = Shared::reconnectDelayMs(app->reconnectAttempt);
+    if (delay < 0) {
+        app->autoReconnect = false;
+        const std::string& why = app->link->failure();
+        flashStatus(app, "Could not reconnect to " + app->link->label() + (why.empty() ? "." : ": " + why) +
+                             " Your text is kept here; Reconnect tries again");
+        if (app->reconnectButton) gtk_widget_set_visible(app->reconnectButton, TRUE);
+        setWindowTitle(app);   // "(disconnected)"
+        return;
+    }
+    struct Round {
+        App* app;
+        unsigned round;
+    };
+    g_timeout_add_full(G_PRIORITY_DEFAULT, (guint)delay, [](gpointer p) -> gboolean {
+        const Round* r = static_cast<Round*>(p);
+        tryAutoReconnect(r->app, r->round);
+        return G_SOURCE_REMOVE;
+    }, new Round{app, app->reconnectRound}, [](gpointer p) { delete static_cast<Round*>(p); });
+}
+
 static void listenForLoss(App* app) {
     app->linkLostListener = app->link->addLostListener([app](const std::string& message) {
         if (app->dead) return;
+        if (app->link->kind() == SessionLink::Link::Kind::Remote) {
+            startAutoReconnect(app);
+            return;
+        }
         flashStatus(app, message);
         if (app->reconnectButton) gtk_widget_set_visible(app->reconnectButton, TRUE);
         if (app->remote) setWindowTitle(app);   // "(disconnected)"
@@ -5355,25 +5431,42 @@ static void act_remembered_session_browsers(GSimpleAction*, GVariant*, gpointer 
 static void detachWindow(App* app) {
     if (!app->link || !app->editor) return;
     std::set<SessionLink::Link*> links = {app->link.get()};
+    const bool overSsh = app->link->kind() == SessionLink::Link::Kind::Remote;
 #ifdef MUTIBLE_ENABLE_TERMINAL
-    reportTerminals(app);
+    if (!overSsh) reportTerminals(app);
     if (app->termDock)
         for (Terminal* t : app->termDock->all()) {
             if (t->sessionLink()) links.insert(t->sessionLink());
-            t->detachFromHost();
+            if (!overSsh) t->detachFromHost();
         }
 #endif
     for (Document* d : app->editor->documents())
         if (d->sessionLink()) links.insert(d->sessionLink());
+    app->autoReconnect = false;   // no more tries for a window that is closing
+    app->reconnectRound++;
+    if (app->link->kind() == SessionLink::Link::Kind::Remote) {
+        // A window over SSH (stage 8): its host outlives the connection but
+        // keeps nothing for a window that is gone (no remote window takes up
+        // what a closed one left), so its shells end and its files close
+        // there, its record too, and the host, with nothing left in it, ends
+        // after its idle time. Then the connection ends with the window.
+        app->link->windowClosed(app->editor->sessionWindowId());
+#ifdef MUTIBLE_ENABLE_TERMINAL
+        if (app->termDock)
+            for (Terminal* t : app->termDock->all()) t->closeOnHost();
+#endif
+        app->editor->closeOnHost();
+        app->dropOnClose.clear();
+        for (SessionLink::Link* l : links)
+            if (!l->lost()) l->client().settle(5000);
+        app->link->detach();
+        return;
+    }
     app->editor->detachFromHost(app->dropOnClose);
     app->dropOnClose.clear();
     for (SessionLink::Link* l : links)
         if (!l->lost()) l->client().settle(5000);
     SessionLink::keepWhileHolding(app->link);
-    // A window over SSH ends its connection with it (stage 8): `mutible host
-    // --stdio` keeps nothing for a next window, and ends as its input
-    // closes, its shells with it.
-    if (app->link->kind() == SessionLink::Link::Kind::Remote) app->link->detach();
 }
 
 // The folder's host went and `link` is the one found or started for it
@@ -5382,22 +5475,53 @@ static void detachWindow(App* app) {
 // the old host) and its terminals' shells started again.
 static void rehostApp(App* a, const std::shared_ptr<SessionLink::Link>& link) {
     if (a->dead || !link || !a->editor) return;   // a window still being made has nothing to move
+    a->autoReconnect = false;   // a try still waiting does nothing now
+    a->reconnectRound++;
+    a->reconnecting = false;
+    // Over SSH the host outlives the connection (the lasting host): what it
+    // still holds of this window (its record, documents and terminals, by
+    // their ids) is taken up again, so undo and running programs carry on.
+    // What it does not hold (a host that ended meanwhile) opens anew.
+    std::set<uint64_t> heldDocs;
+    std::map<uint64_t, Json> heldTerms;
+    const std::shared_ptr<SessionLink::Link> old = a->link;
+    const bool resume = old && old != link && old->lost() && old->kind() == SessionLink::Link::Kind::Remote &&
+                        link->kind() == SessionLink::Link::Kind::Remote;
+    if (resume) {
+        const Json st = link->client().sessionState();
+        for (const Json& d : st["documents"].elements()) heldDocs.insert((uint64_t)d["doc"].asInt());
+        for (const Json& t : st["terminals"].elements()) heldTerms[(uint64_t)t["term"].asInt()] = t;
+        link->resumeWindowFrom(*old, a->editor->sessionWindowId());
+    }
     if (a->link != link) {
         if (a->link) a->link->removeLostListener(a->linkLostListener);
         a->link = link;
         listenForLoss(a);
     }
-    a->editor->rehost(link);
+    a->editor->rehost(link, heldDocs);
+    int resumed = 0;
+    for (Document* d : a->editor->documents())
+        if (heldDocs.count(d->id()) && d->sessionLink() == link.get()) resumed++;
 #ifdef MUTIBLE_ENABLE_TERMINAL
     if (a->termDock)
         for (Terminal* t : a->termDock->all())
-            if (t->sessionLink() && t->sessionLink()->lost() && t->sessionLink()->key() == link->key())
+            if (t->sessionLink() && t->sessionLink()->lost() && t->sessionLink()->key() == link->key()) {
+                auto held = heldTerms.find(t->lostHostTerm());
+                if (t->lostHostTerm() && held != heldTerms.end() &&
+                    t->reattach(link, held->first, (int)held->second["pid"].asInt(),
+                                Shared::termShellFrom(held->second["shell"]))) {
+                    resumed++;
+                    continue;
+                }
                 t->rehost(link);
+            }
 #endif
     if (a->reconnectButton) gtk_widget_set_visible(a->reconnectButton, FALSE);
     if (a->remoteWs) a->remoteWs->attachLink(link);   // its watch said to the new host
     reportTerminals(a);
-    if (link->kind() == SessionLink::Link::Kind::Remote)
+    if (link->kind() == SessionLink::Link::Kind::Remote && resumed)
+        flashStatus(a, "Connected to " + link->label() + " again: your files, undo and terminals are as they were");
+    else if (link->kind() == SessionLink::Link::Kind::Remote)
         flashStatus(a, "Connected to " + link->label() + " again: your files are open there again");
     else
         flashStatus(a, "The session's host for " + link->folder() + " is back: your files are open on it again");
@@ -5417,11 +5541,13 @@ static void reconnectHost(App* app) {
         // Over SSH: the same address again. A host that cannot be had says why
         // and the window waits, its text kept, for another try. The windows
         // on the lost link all move to the new one.
-        const std::string address = app->link->address(), label = app->link->label();
+        const std::string label = app->link->label();
         if (app->reconnecting) return;
         app->reconnecting = true;
+        app->autoReconnect = false;   // the tries by themselves are over; this is one of the user's
+        app->reconnectRound++;
         flashStatus(app, "Reconnecting to " + label + "…");
-        SessionLink::connectRemote(address, [app, label](std::shared_ptr<SessionLink::Link> link, std::string why) {
+        SessionLink::reconnectRemote(app->link, [app, label](std::shared_ptr<SessionLink::Link> link, std::string why) {
             // The window may be gone by now (the pointer is then only compared).
             bool alive = false;
             for (App* a : g.windows)
@@ -5432,8 +5558,7 @@ static void reconnectHost(App* app) {
                 flashStatus(app, "Could not reconnect to " + label + ": " + why);
                 return;
             }
-            rehostWindows(link);
-            rehostApp(app, link);
+            rehostWindows(link);   // every window on the lost link, this one too
         });
         return;
     }

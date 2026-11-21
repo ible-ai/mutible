@@ -9295,3 +9295,44 @@ side's; two are fixed, one left alone on purpose.
   caret on its line only: the host gives code-point columns and highlights of
   the display text, so `byteColumn` and `byteLength` stay 0 (`revealLine`
   then selects no match).
+
+### 154. The window over SSH and the lasting host (stage 8; November 2026)
+
+- **What it is.** The Mac's #334 (bac9506), on GTK: `host --stdio` finds or
+  starts a detached `--lasting` host per folder, so a window over SSH loses
+  its connection and comes back to the same host. Design and traps:
+  docs/notes/session-host.md, "The GTK window over SSH, the lasting host".
+- **(a) Where.** `SessionLink.{h,cpp}`: one token per window (`resume_`),
+  `Client::setResume` before every connect, `reconnectRemote` (the lost
+  link's address and token; `connectRemoteFor` registers a link only once it
+  has its Welcome, so a failed try keeps the token), `resumeWindowFrom`,
+  `lastingSocketFolder`. main.cpp: `startAutoReconnect`,
+  `scheduleAutoReconnect`, `tryAutoReconnect` (the delays are the core's
+  `reconnectDelayMs`, none left shows slice 1's Reconnect), the title's
+  "(reconnecting)", `rehostApp` taking up what the host holds (documents by
+  id, terminals by host term, the window record) and opening the rest anew.
+  `Document::reattach` (the host's text taken, not applied; the buffer's
+  difference sent as an edit outside the history), `Terminal::reattach`
+  (VTE reset, the host's replay), `Editor::rehost(link, held)`. A closing
+  remote window now closes its record, files and shells on the host
+  (`detachWindow`; `Document::closeOnHost`, `Terminal::closeOnHost`), or a
+  running shell would keep a lasting host alive for ever.
+- **(b) Where.** `forFolder`: with the default (`MUTIBLE_HOST` unset, host
+  off) a lasting host found by `findHostSocket` over `withLastingFolder` is
+  attached to (`Kind::Socket`, `startedHost() == 0`); `startSocket` looks in
+  the lasting folder too and takes `onlyExisting`.
+- **Checked.** `remote_ssh` (84 checks; the stand-in refuses while a flag
+  file exists; MUTIBLE_HOST_IDLE_MINUTES=0.15 ends the hosts it started; each
+  is also ended by its recorded pid): drop, "(reconnecting)", no Reconnect
+  button, typing while away, two refused tries, a connection by itself to the
+  same host with the same document id and the same shell (variable, pid,
+  parent), a save; a second drop run out (`AppSeam::reconnectAttempt` set to
+  all but the last, then one real refused try), Reconnect with its words, the
+  user's Reconnect to the same host; the window closing ends the shell and the
+  host after its idle time; (b) a lasting host the check started, a window on
+  its folder attached over its socket, and a folder with none keeping the
+  in-process host.
+- **Not done.** Undo across a drop is not checked (a text typed while away
+  goes to the host outside the history, so Ctrl+Z may not reach back over it);
+  `Link::readText` is still blocking; (b) does not start a lasting host (the
+  default stays in-process); the status bar's words and the title on a desktop.

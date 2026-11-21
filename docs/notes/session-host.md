@@ -4046,6 +4046,63 @@ connects again by itself, and the window takes up what the host kept.
   it. A real drop between two machines (sleep, a network change, the
   remote sshd keeping the dead connection) needs the owner.
 
+#### The GTK window over SSH, the lasting host (2026-11-21, third slice)
+
+The Mac's #334 (bac9506): `host --stdio` finds or starts a detached `--lasting`
+host per folder (its socket in `$TMPDIR/mutible-<uid>`, ended after four hours
+idle, `MUTIBLE_HOST_IDLE_MINUTES`), so a window over SSH can lose its
+connection and come back to the same host. The GTK port:
+
+- **One token per window** (`Link::resume_`, 16 random bytes in hex, made by
+  `connectRemote` and kept by `reconnectRemote` from the lost link), said in
+  every connection's Hello (`Client::setResume`, before `connect`), so the host
+  drops the stale connection of that window. A fresh `host --stdio` per try.
+- **Connecting again by itself** (main.cpp, `startAutoReconnect`,
+  `scheduleAutoReconnect`, `tryAutoReconnect`): the lost listener of a remote
+  link starts the tries instead of showing Reconnect. Each waits
+  `Shared::reconnectDelayMs(attempt)` (0.5 s doubling to 30 s), and after
+  `kReconnectAttempts` the window says so and Reconnect shows (the manual
+  Reconnect, also by `reconnectRemote`, stays). The title says "(reconnecting)"
+  meanwhile (the Mac's words), then "(disconnected)". A round counter voids a
+  timer or an answer of an earlier round (a Reconnect, a closed window). A try
+  that fails leaves the lost link registered (`connectRemoteFor` registers a
+  new link only once it has its Welcome), so its token is still there for the
+  next one.
+- **Taking up the host's state** (`rehostApp`): the new link's state query says
+  which documents, terminals and window record the host still holds under the
+  ids this window used. `Link::resumeWindowFrom` makes the window's record the
+  host's own again; `Document::reattach` opens the same id (an empty text opens
+  a document the host holds), takes the host's text without applying it
+  (`capturing_`), and sends what the buffer has beyond it as an edit outside
+  the history (as `hostSavedFromDisk` does), so the host's undo and unsaved
+  count carry on; `Terminal::reattach` clears VTE and attaches the held shell
+  (`attachShell`, the host's replay redraws it), from `lostTerm_`, the host
+  term the lost listener noted. What the host does not hold (it ended
+  meanwhile) opens anew as slice 1's Reconnect did (`rehost`).
+- **A closing remote window closes its things on the host** (`detachWindow`):
+  its record, files and shells, as the Mac's `closeOnRemoteHost`; with a lasting
+  host, detaching them would leave a running shell that keeps the host alive for
+  ever.
+- **A local window shares a lasting host** (`forFolder`): with
+  `editor.session-host = off` and `MUTIBLE_HOST` unset, when
+  `findHostSocket(folder, withLastingFolder(socketFolders(), lastingSocketFolder()))`
+  finds a host for the folder (one a Mac window over SSH started on this
+  machine), the window attaches to it (`Kind::Socket`, `startedHost() == 0`)
+  instead of making a second host; nothing found, the default is as it was. The
+  headless socket mode looks in the lasting folder too. `lastingSocketFolder()`
+  is `mutible-cli`'s `lastingSocketDir()` on Linux (`MUTIBLE_CONTROL_DIR`,
+  `$TMPDIR`, never `XDG_RUNTIME_DIR`).
+- **Checked** in `remote_ssh` (the stand-in refuses while a flag file exists,
+  so the tries are seen): the drop, "(reconnecting)", no Reconnect button, text
+  typed away, two refused tries, then a connection by itself to the same host,
+  the document's id the same, the shell the same (a variable, its pid and its
+  parent), a save; a second drop that exhausts the tries (the attempt counter set
+  to all but the last, then one real refused try), Reconnect shown with its
+  words, and the user's Reconnect to the same host; the window closing ends the
+  shell and the lasting host after its idle time; and a lasting host started by
+  the check for another folder, a window opened on it with `MUTIBLE_HOST` unset,
+  attached over its socket. Every host the checks start is ended by its pid.
+
 #### Traps
 
 - **XDG_RUNTIME_DIR does not last.** systemd removes /run/user/<uid> when

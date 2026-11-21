@@ -13,6 +13,7 @@
 #include <atomic>
 #include <cerrno>
 #include <set>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -256,12 +257,14 @@ std::function<void()> Link::connectViewer(Shared::Client& client) {
 
 // The folder's headless host, found or started, attached to. False, with
 // why, when there is none to be had; nothing of it is kept then.
-bool Link::startSocket(std::string* why) {
+bool Link::startSocket(std::string* why, bool onlyExisting) {
     if (!g_file_test(folder_.c_str(), G_FILE_TEST_IS_DIR)) {
         *why = folder_.empty() ? "the window has no folder" : folder_ + " is not a folder";
         return false;
     }
-    const std::vector<std::string> dirs = ControlChannel::socketFolders();
+    // The lasting folder too: a host a window over SSH started on this
+    // machine (`mutible host --stdio`) is found as `--stdio` finds it.
+    const std::vector<std::string> dirs = Shared::withLastingFolder(ControlChannel::socketFolders(), lastingSocketFolder());
     std::string path = Shared::findHostSocket(folder_, dirs), error;
     bool refused = false;
     std::unique_ptr<Shared::HostLink> link;
@@ -273,6 +276,10 @@ bool Link::startSocket(std::string* why) {
         // at all gets a host of our own, which removes it.
         if (!path.empty() && !refused) {
             *why = error;
+            return false;
+        }
+        if (onlyExisting) {
+            *why = "no host is running for " + folder_;
             return false;
         }
         started = startHostProcess(folder_, why);
@@ -339,6 +346,8 @@ bool Link::startRemote(std::string* why) {
     }
     kind_ = Kind::Remote;
     makeClient();
+    // The lasting host drops this window's stale connection at once (Host::setDrop).
+    if (!resume_.empty()) client_->setResume(resume_);
     // The host watches its disk (Hello flag 32): the notices go to the
     // listeners, a turn of the loop later (never inside a dispatch, which a
     // wait can run in the middle of anything).
@@ -766,7 +775,12 @@ std::shared_ptr<Link> forFolder(const std::string& root, bool headless) {
     const unsigned delayUs = (unsigned)std::strtoul(envString("MUTIBLE_HOST_DELAY_US").c_str(), nullptr, 10);
     const bool socket = mode == "socket" || (mode.empty() && headless);
     std::string why;
-    if (socket && link->startSocket(&why)) {
+    // The default (a host in this process) shares a lasting host that is
+    // running for the folder already (one a window over SSH started here,
+    // `mutible host --stdio`) instead of making a second host for it; a
+    // mode chosen by MUTIBLE_HOST stays as chosen.
+    const bool shareLasting = !socket && mode.empty();
+    if ((socket && link->startSocket(&why)) || (shareLasting && link->startSocket(&why, true))) {
         if (link->startedHost())
             g_printerr("mutible: started the session's host for %s (pid %d, %s)\n", folder.c_str(),
                        (int)link->startedHost(), link->socketPath().c_str());
@@ -811,7 +825,31 @@ void answerLater(RemoteDone f, std::shared_ptr<Link> l, std::string why) {
 }
 }  // namespace
 
-void connectRemote(const std::string& address, std::function<void(std::shared_ptr<Link>, std::string)> done) {
+namespace {
+// A random token for one window's connections (/dev/urandom, else GLib's).
+std::string newResumeToken() {
+    unsigned char raw[16];
+    bool ok = false;
+    if (FILE* f = std::fopen("/dev/urandom", "rb")) {
+        ok = std::fread(raw, 1, sizeof raw, f) == sizeof raw;
+        std::fclose(f);
+    }
+    if (!ok)
+        for (unsigned char& b : raw) b = (unsigned char)g_random_int_range(0, 256);
+    static const char hex[] = "0123456789abcdef";
+    std::string s;
+    for (unsigned char b : raw) {
+        s += hex[b >> 4];
+        s += hex[b & 15];
+    }
+    return s;
+}
+}  // namespace
+
+// `lost`: the link this connects again for (reconnectRemote), whose token it
+// keeps and whose registration stays until this one has its Welcome.
+void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+                      std::function<void(std::shared_ptr<Link>, std::string)> done) {
     Shared::SshTarget t;
     std::string error;
     if (!Shared::parseSshUrl(address, &t, &error)) {
@@ -820,11 +858,13 @@ void connectRemote(const std::string& address, std::function<void(std::shared_pt
     }
     const std::string key = Shared::sshMachineKey(t) + "\n" + t.path;
     auto& reg = remoteRegistry();
-    if (std::shared_ptr<Link> have = reg[key].lock(); have && !have->lost() && have->client().idBase()) {
-        answerLater(std::move(done), have, "");
+    std::shared_ptr<Link> before = reg[key].lock();
+    if (before && before != lost && !before->lost() && before->client().idBase()) {
+        answerLater(std::move(done), before, "");   // another window's try got there first
         return;
     }
     std::shared_ptr<Link> link(new Link());
+    link->resume_ = lost ? lost->resume_ : before && before->lost() ? before->resume_ : newResumeToken();
     link->target_ = t;
     link->address_ = address;
     link->machine_ = Shared::sshMachineKey(t);
@@ -835,7 +875,7 @@ void connectRemote(const std::string& address, std::function<void(std::shared_pt
         answerLater(std::move(done), nullptr, error);
         return;
     }
-    reg[key] = link;
+    if (!lost) reg[key] = link;   // a try again registers when it has its Welcome
     struct Wait {
         std::shared_ptr<Link> link;
         std::string key;
@@ -861,6 +901,7 @@ void connectRemote(const std::string& address, std::function<void(std::shared_pt
                     folder.path = slash == std::string::npos ? "~" : slash == 0 ? "/" : folder.path.substr(0, slash);
                 }
                 l.label_ = Shared::sshLabel(folder);
+                remoteRegistry()[w->key] = w->link;
                 RemoteDone f = std::move(w->done);
                 std::shared_ptr<Link> link = std::move(w->link);
                 delete w;
@@ -878,12 +919,41 @@ void connectRemote(const std::string& address, std::function<void(std::shared_pt
             why = Shared::explainSshFailure(l.target_, l.socket_ ? l.socket_->exitStatus() : -1,
                                             l.socket_ ? l.socket_->stderrText() : std::string());
         l.detached_ = true;   // nothing to tell: the caller says why
-        remoteRegistry().erase(w->key);
+        if (remoteRegistry()[w->key].lock() == w->link) remoteRegistry().erase(w->key);
         RemoteDone f = std::move(w->done);
         delete w;
         f(nullptr, why);
         return G_SOURCE_REMOVE;
     }, w);
+}
+
+void connectRemote(const std::string& address, std::function<void(std::shared_ptr<Link>, std::string)> done) {
+    connectRemoteFor(address, nullptr, std::move(done));
+}
+
+void reconnectRemote(const std::shared_ptr<Link>& lost, std::function<void(std::shared_ptr<Link>, std::string)> done) {
+    if (!lost || lost->kind() != Link::Kind::Remote) {
+        answerLater(std::move(done), nullptr, "not a window over SSH");
+        return;
+    }
+    connectRemoteFor(lost->address(), lost, std::move(done));
+}
+
+bool Link::resumeWindowFrom(const Link& old, std::uint64_t window) {
+    auto it = old.hostWindow_.find(window);
+    if (it == old.hostWindow_.end() || client_->lost()) return false;
+    const Json st = client_->sessionState();
+    for (const Json& w : st["windows"].elements())
+        if ((std::uint64_t)w["window"].asInt() == it->second) {
+            hostWindow_[window] = it->second;
+            return true;
+        }
+    return false;
+}
+
+std::string lastingSocketFolder() {
+    return ControlChannel::socketFolder(Rename::getenvOrOld("MUTIBLE_CONTROL_DIR"), nullptr, getenv("TMPDIR"),
+                                        (unsigned)getuid());
 }
 
 std::vector<std::shared_ptr<Link>> all() {

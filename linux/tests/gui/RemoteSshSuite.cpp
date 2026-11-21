@@ -46,12 +46,14 @@
 #include <vte/vte.h>
 
 #include <climits>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 
+#include "ControlPaths.h"
 #include "DocumentView.h"
 #include "Editor.h"
 #include "EnvLock.h"
@@ -64,7 +66,14 @@
 
 namespace {
 
-std::string gFolder, gFile, gSsh, gArgs, gPidFile, gBin;
+std::string gFolder, gFile, gSsh, gArgs, gPidFile, gBin, gBlock;
+int gShell = 0, gLasting = 0;   // the terminal's shell, and the lasting host that holds it
+uint64_t gDocId = 0;
+std::string gSocketOfLasting, gLastingFolderPath;
+int gHostPidB = 0;
+bool gSawNote = false;
+bool gHadHost = false;
+std::string gHostMode;
 std::string gErrors;   // what the command line said, as its caller reads it
 size_t gWindowsBefore = 0;
 int gHostA = 0, gHostB = 0;
@@ -257,6 +266,10 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(g_file_test(app.c_str(), G_FILE_TEST_IS_EXECUTABLE));
         unlink((gBin + "/mutible").c_str());
         GCHECK(symlink(app.c_str(), (gBin + "/mutible").c_str()) == 0);
+        gBlock = scratch + "/ssh-block";
+        unlink(gBlock.c_str());
+        // The lasting host ends soon after the window's work is done.
+        EnvLock::envSet("MUTIBLE_HOST_IDLE_MINUTES", "0.15");
         gArgs = scratch + "/ssh-args.txt";
         gPidFile = scratch + "/ssh-pid.txt";
         gSsh = scratch + "/ssh-stand-in";
@@ -265,6 +278,7 @@ MC_GUI_SUITE(remote_ssh) {
                     "# A stand-in for ssh (RemoteSshSuite.cpp): its arguments recorded,\n"
                     "# its options skipped to the --, then the host, then the remote\n"
                     "# command run as ssh's remote shell runs it.\n"
+                    "[ -e '" + gBlock + "' ] && { echo 'standin: Connection refused' >&2; exit 255; }\n"
                     "printf '%s\\n' \"$@\" > '" + gArgs + "'\n"
                     "while [ $# -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
                     "shift\n"
@@ -479,98 +493,252 @@ MC_GUI_SUITE(remote_ssh) {
                         "remote-yes-42 parent-mutible");
     });
 
-    // ---- the connection drops
-    MCGuiStep("the connection drops", [] {
+    // ---- the lasting host: which process holds the shell
+    MCGuiStep("the shell's ids", [] { gSent = 0; });
+    MCGuiWait("the shell's pid and its parent's, the lasting host", 40, [] {
+        Terminal* t = remoteWindow().terminal;
+        if (!t) return false;
+        if (!runUntil("MARK=kept; echo \"ids-$$-$PPID-end\"", "-end")) {
+            // The echoed line holds the variables unexpanded; wait for digits.
+        }
+        const std::string screen = t->recentText(40);
+        const std::size_t at = screen.rfind("ids-");
+        if (at == std::string::npos) return false;
+        int shell = 0, parent = 0;
+        char tail[8] = {0};
+        if (std::sscanf(screen.c_str() + at, "ids-%d-%d-%7s", &shell, &parent, tail) < 3) return false;
+        gShell = shell;
+        gLasting = parent;
+        return shell > 0 && parent > 0;
+    });
+    MCGuiStep("the shell's parent is a detached host of its own, not the connection's relay", [] {
+        MCGuiNote("shell %d, lasting host %d, relay %d", gShell, gLasting, gHostA);
+        GCHECK(gLasting > 0 && gLasting != gHostA && !gone(gLasting));
+        // Its socket is in the lasting folder (this world's temporary folder).
+        const std::string name = Shared::hostSocketName(gFolder);
+        gSocketOfLasting = SessionLink::lastingSocketFolder() + "/" + name;
+        GCHECK(g_file_test(gSocketOfLasting.c_str(), G_FILE_TEST_EXISTS));
+        GCHECK(gSocketOfLasting.rfind("/tmp/mcgui-", 0) == 0);
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+end");
+        MCGuiType("before the drop\n");
+    });
+    MCGuiWait("typed, unsaved", 10, [] {
+        Document* d = tabOf(gFile);
+        return d && d->dirty() && textOf(d) == "first line\ntyped over ssh\nbefore the drop\n";
+    });
+
+    // ---- the connection drops; the stand-in then refuses, so the window is
+    // seen trying
+    MCGuiStep("the connection drops, and ssh is refused for a while", [] {
         GCHECK(!remoteWindow().editor->sessionLink()->lost());
+        gDocId = tabOf(gFile)->id();
+        MCGuiWriteFile(gBlock, "x");
         // The stand-in leads its own process group (the spawn's session): the
-        // host and anything it started go with it.
+        // relay goes with it, but not the lasting host (a session of its own).
         if (gHostA > 0) kill(-gHostA, SIGKILL);
     });
-    MCGuiWait("the window says it is disconnected", 20, [] {
+    MCGuiWait("the window says it is reconnecting, with no Reconnect button", 20, [] {
         const MCGuiAppWindow w = remoteWindow();
-        return w.editor && w.editor->sessionLink()->lost() && titleOf(w).find("(disconnected)") != std::string::npos;
-    });
-    MCGuiStep("the text stays, and takes more typing; a save says why not", [] {
-        const MCGuiAppWindow w = remoteWindow();
-        Document* d = tabOf(gFile);
-        GCHECK_EQ_STR(textOf(d), "first line\ntyped over ssh\n");
-        GCHECK(d && !d->hostSavesFile());
-        GCHECK(w.editor->sessionLink()->failure().find("standin") != std::string::npos);
+        if (!w.editor || !w.editor->sessionLink()->lost() || !w.autoReconnect) return false;
         GtkWidget* b = MCGuiFindButton(w.statusBar, "Reconnect");
-        GCHECK(b != nullptr && gtk_widget_get_visible(b));
-        gtk_widget_grab_focus(w.editor->textView());
+        if (statusText().find("Reconnecting; your text is kept here meanwhile") != std::string::npos) gSawNote = true;
+        return titleOf(w).find("(reconnecting)") != std::string::npos && (!b || !gtk_widget_get_visible(b));
+    });
+    MCGuiStep("the lasting host and its shell run on; the text takes typing", [] {
+        GCHECK(!gone(gLasting) && !gone(gShell));
+        GCHECK(gSawNote);   // the status bar said so
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
         MCGuiKey("ctrl+end");
         MCGuiType("while away\n");
     });
     MCGuiWait("typed while away", 10, [] {
         Document* d = tabOf(gFile);
-        return d && d->dirty() && textOf(d) == "first line\ntyped over ssh\nwhile away\n";
+        return d && d->dirty() && textOf(d) == "first line\ntyped over ssh\nbefore the drop\nwhile away\n";
     });
-    MCGuiStep("Ctrl+S: refused, the file untouched", [] { MCGuiKey("ctrl+s"); });
-    MCGuiWait("the refusal's words", 10, [] {
-        return alertText().find("the connection there is lost") != std::string::npos ||
-               allText(GTK_WIDGET(remoteWindow().window)).find("the connection there is lost") != std::string::npos;
+    MCGuiWait("two tries made and refused, still reconnecting", 30, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        return w.reconnectAttempt && *w.reconnectAttempt >= 2 && w.autoReconnect &&
+               titleOf(w).find("(reconnecting)") != std::string::npos;
     });
-    MCGuiStep("the file on disk is as the host left it; Reconnect", [] {
-        MCGuiNote("refusal: %s", alertText().c_str());
-        GCHECK_EQ_STR(readFile(gFile), "first line\ntyped over ssh\n");
-        GCHECK(tabOf(gFile)->dirty());
-        dismissAlert();
+    MCGuiStep("ssh works again", [] { unlink(gBlock.c_str()); });
+    MCGuiWait("connected by itself, to the same host", 40, [] {
+        Document* d = tabOf(gFile);
+        const MCGuiAppWindow w = remoteWindow();
+        return w.editor && !w.editor->sessionLink()->lost() && d && d->hostSavesFile() && !w.autoReconnect &&
+               titleOf(w).find("(reconnecting)") == std::string::npos &&
+               titleOf(w).find("(disconnected)") == std::string::npos;
     });
-    MCGuiWait("the refusal dismissed", 10, [] { return alertText().empty(); });
-    MCGuiStep("Reconnect", [] {
+    MCGuiStep("the document is the host's own: its id, its text with what was typed away", [] {
+        gHostB = standInPid();
+        GCHECK(gHostB > 0 && gHostB != gHostA);
+        GCHECK(gone(gHostA));
+        GCHECK(!gone(gLasting));   // the same host
+        Document* d = tabOf(gFile);
+        GCHECK(d && d->dirty());
+        GCHECK(d && d->id() == gDocId);   // taken up again, not opened anew
+        GCHECK_EQ_STR(textOf(d), "first line\ntyped over ssh\nbefore the drop\nwhile away\n");
+        GCHECK_EQ_STR(remoteWindow().editor->sessionLink()->checkDocuments({{d->id(), textOf(d)}}), "");
+        GCHECK(statusText().find("your files, undo and terminals are as they were") != std::string::npos);
+        gSent = 0;
+    });
+    MCGuiWait("the terminal is the same shell (its variable, pid and parent)", 40, [] {
+        return runUntil("echo \"same-$MARK-$$-$PPID-done\"",
+                        "same-kept-" + std::to_string(gShell) + "-" + std::to_string(gLasting) + "-done");
+    });
+    MCGuiStep("Ctrl+S saves it through the new connection", [] {
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("saved by the host", 10, [] {
+        Document* d = tabOf(gFile);
+        return readFile(gFile) == "first line\ntyped over ssh\nbefore the drop\nwhile away\n" && d && !d->dirty();
+    });
+
+    // ---- a host that never comes back: the tries run out, Reconnect shows
+    MCGuiStep("the connection drops again, ssh refused for good", [] {
+        MCGuiWriteFile(gBlock, "x");
+        if (gHostB > 0) kill(-gHostB, SIGKILL);
+    });
+    MCGuiWait("trying again", 20, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        return w.editor && w.editor->sessionLink()->lost() && w.autoReconnect;
+    });
+    MCGuiStep("the schedule is the core's; the last try's turn comes", [] {
+        GCHECK(Shared::reconnectDelayMs(0) == 500 && Shared::reconnectDelayMs(1) == 1000);
+        GCHECK(Shared::reconnectDelayMs(6) == 30000 && Shared::reconnectDelayMs(Shared::kReconnectAttempts - 1) == 30000);
+        GCHECK(Shared::reconnectDelayMs(Shared::kReconnectAttempts) == -1);
+        // The tries so far set to all but the last: the next one is a real
+        // try, refused, and then none is left.
+        const MCGuiAppWindow w = remoteWindow();
+        if (w.reconnectAttempt) *w.reconnectAttempt = Shared::kReconnectAttempts - 1;
+    });
+    MCGuiWait("the tries run out: disconnected, Reconnect shows, its words", 60, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        GtkWidget* b = w.editor ? MCGuiFindButton(w.statusBar, "Reconnect") : nullptr;
+        return w.editor && !w.autoReconnect && b && gtk_widget_get_visible(b) &&
+               titleOf(w).find("(disconnected)") != std::string::npos &&
+               statusText().find("Could not reconnect to standin:") == 0;
+    });
+    MCGuiStep("ssh works; Reconnect, by the user", [] {
+        MCGuiNote("status: %s", statusText().c_str());
+        GCHECK(!gone(gLasting));   // the host kept waiting
+        unlink(gBlock.c_str());
         MCGuiSetKeyWindow(nullptr);
         MCGuiClick(MCGuiFindButton(remoteWindow().statusBar, "Reconnect"));
     });
-    MCGuiWait("connected again", 30, [] {
+    MCGuiWait("connected again, to the same host", 30, [] {
         Document* d = tabOf(gFile);
         const MCGuiAppWindow w = remoteWindow();
         return w.editor && !w.editor->sessionLink()->lost() && d && d->hostSavesFile() &&
                titleOf(w).find("(disconnected)") == std::string::npos;
     });
-    MCGuiStep("the file is open on the new host with everything typed; Ctrl+S saves it there", [] {
-        gHostB = standInPid();
-        GCHECK(gHostB > 0 && gHostB != gHostA);
-        GCHECK(gone(gHostA));
-        Document* d = tabOf(gFile);
-        GCHECK(d && d->dirty());
-        GCHECK_EQ_STR(remoteWindow().editor->sessionLink()->checkDocuments({{d->id(), textOf(d)}}), "");
-        MCGuiSetKeyWindow(nullptr);
-        gtk_widget_grab_focus(remoteWindow().editor->textView());
-        MCGuiKey("ctrl+s");
-    });
-    MCGuiWait("saved by the new host", 10, [] {
-        Document* d = tabOf(gFile);
-        return readFile(gFile) == "first line\ntyped over ssh\nwhile away\n" && d && !d->dirty();
-    });
     MCGuiStep("a file made on disk after Reconnect", [] {
+        gHostB = standInPid();
+        GCHECK(gHostB > 0 && !gone(gLasting));
+        GCHECK(tabOf(gFile) && tabOf(gFile)->id() == gDocId && !tabOf(gFile)->dirty());
         gNoticesBefore = remoteWindow().remoteWs->notices;
         MCGuiWriteFile(gFolder + "/after-reconnect.txt", "x\n");
     });
-    MCGuiWait("it appears in the tree, from the new host", 30, [] {
+    MCGuiWait("it appears in the tree, from the new connection", 30, [] {
         return hasRow("after-reconnect.txt", 0) && remoteWindow().remoteWs->notices > gNoticesBefore;
     });
-    MCGuiStep("the terminal's new shell, there", [] {
+    MCGuiStep("the terminal, still the same shell", [] {
         Terminal* t = remoteWindow().terminal;
         GCHECK(t != nullptr);
         if (t) t->focus();
         gSent = 0;
     });
-    MCGuiWait("it runs a command on the new host", 40, [] {
-        return runUntil("echo \"again-$SSH_STANDIN-$((7*8))\"", "again-yes-56");
+    MCGuiWait("it runs a command on the host, with its variable", 40, [] {
+        return runUntil("echo \"again-$MARK-$((7*8))\"", "again-kept-56");
     });
 
-    // ---- the window closes, and its host with it
+    // ---- the window closes: its shell and file close on the lasting host, which then ends
     MCGuiStep("the window closes", [] {
         GCHECK(alertText().empty());
         MCGuiSetKeyWindow(nullptr);
         gtk_window_close(remoteWindow().window);
     });
     MCGuiWait("gone", 15, [] { return remoteWindow().editor == nullptr && MCGuiAppWindows().size() < gWindowsBefore; });
-    MCGuiWait("the host it ran ends with it", 20, [] { return gone(gHostB); });
+    MCGuiWait("the connection's relay ends with it", 20, [] { return gone(gHostB); });
+    MCGuiWait("its shell ended on the host, and the host, with nothing left, ended after its idle time", 90, [] {
+        return gone(gShell) && gone(gLasting);
+    });
     MCGuiStep("nothing left", [] {
         if (gHostB > 0 && !gone(gHostB)) kill(-gHostB, SIGKILL);   // the suite's own, by its recorded pid
+        if (gLasting > 0 && !gone(gLasting)) kill(gLasting, SIGTERM);
+        if (gShell > 0 && !gone(gShell)) kill(gShell, SIGKILL);
+        unlink(gSocketOfLasting.c_str());
+        unlink(gBlock.c_str());
+        EnvLock::envUnset("MUTIBLE_HOST_IDLE_MINUTES");
         EnvLock::envUnset("MUTIBLE_SSH");
         MCGuiSetKeyWindow(nullptr);   // the X focus back on a window that is open
+    });
+
+    // ---- (b) the GTK window's own host shares a lasting host that is running for the folder
+    MCGuiStep("a lasting host started for another folder, as `mutible host --stdio` starts one", [] {
+        const std::string dir = rp(MCGuiScratch()) + "/lasting-shared";
+        g_mkdir_with_parents(dir.c_str(), 0700);
+        gLastingFolderPath = rp(dir);
+        MCGuiWriteFile(gLastingFolderPath + "/shared.txt", "shared\n");
+        EnvLock::envSet("MUTIBLE_HOST_IDLE_MINUTES", "0.15");
+        std::string why;
+        gHostPidB = Shared::startDetached({MCGuiBuildDir() + "/mutible", "host", "--folder", gLastingFolderPath,
+                                           "--lasting"},
+                                          rp(MCGuiScratch()) + "/lasting-shared.log", &why);
+        GCHECK(gHostPidB > 0);
+        GCHECK(why.empty());
+    });
+    MCGuiWait("its socket is in the lasting folder", 20, [] {
+        const std::vector<std::string> dirs =
+            Shared::withLastingFolder(ControlChannel::socketFolders(), SessionLink::lastingSocketFolder());
+        gSocketOfLasting = Shared::findHostSocket(gLastingFolderPath, dirs);
+        return !gSocketOfLasting.empty();
+    });
+    MCGuiStep("MUTIBLE_HOST unset (the default: a host in the app), a window on that folder", [] {
+        GCHECK(gSocketOfLasting.rfind(SessionLink::lastingSocketFolder() + "/host-", 0) == 0);
+        gHadHost = getenv("MUTIBLE_HOST") != nullptr;
+        gHostMode = gHadHost ? getenv("MUTIBLE_HOST") : "";
+        EnvLock::envUnset("MUTIBLE_HOST");
+        gWindowsBefore = MCGuiAppWindows().size();
+        MCGuiOpenWindow(gLastingFolderPath);
+        MCGuiSetKeyWindow(nullptr);
+    });
+    MCGuiStep("it attached to that host over its socket, and made none of its own", [] {
+        SessionLink::Link* l = MCGuiApp().editor ? MCGuiApp().editor->sessionLink() : nullptr;
+        GCHECK(l != nullptr);
+        if (!l) return;
+        MCGuiNote("link kind %d, socket %s", (int)l->kind(), l->socketPath().c_str());
+        GCHECK(l->kind() == SessionLink::Link::Kind::Socket);
+        GCHECK_EQ_STR(l->socketPath(), gSocketOfLasting);
+        GCHECK(l->startedHost() == 0);   // it started nothing
+        GCHECK(l->client().idBase() >= Shared::kIdRange && !l->lost());
+        GCHECK(!gone(gHostPidB));
+        gtk_window_close(MCGuiApp().window);
+    });
+    MCGuiWait("the window gone", 10, [] { return MCGuiAppWindows().size() == gWindowsBefore; });
+    MCGuiStep("a folder with no lasting host keeps the default: a host in the app", [] {
+        const std::string dir = rp(MCGuiScratch()) + "/no-lasting";
+        g_mkdir_with_parents(dir.c_str(), 0700);
+        MCGuiOpenWindow(rp(dir));
+        MCGuiSetKeyWindow(nullptr);
+        SessionLink::Link* l = MCGuiApp().editor ? MCGuiApp().editor->sessionLink() : nullptr;
+        GCHECK(l && l->kind() == SessionLink::Link::Kind::InProcess);
+        gtk_window_close(MCGuiApp().window);
+    });
+    MCGuiWait("that window gone", 10, [] { return MCGuiAppWindows().size() == gWindowsBefore; });
+    MCGuiStep("the lasting host of this check ended by its pid, its socket removed", [] {
+        if (gHadHost) EnvLock::envSet("MUTIBLE_HOST", gHostMode.c_str());
+        else EnvLock::envUnset("MUTIBLE_HOST");
+        if (gHostPidB > 0 && !gone(gHostPidB)) kill(gHostPidB, SIGTERM);
+    });
+    MCGuiWait("it ended", 30, [] { return gone(gHostPidB); });
+    MCGuiStep("nothing of it left", [] {
+        unlink(gSocketOfLasting.c_str());
+        EnvLock::envUnset("MUTIBLE_HOST_IDLE_MINUTES");
+        MCGuiSetKeyWindow(nullptr);
+        MCGuiFocusKeyWindow();
     });
 }

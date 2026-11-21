@@ -265,6 +265,50 @@ void Document::rehost(std::shared_ptr<SessionLink::Link> link) {
     if (stepOpen_) client().openStep(id_, {"Typing", false}, selection());
 }
 
+bool Document::reattach(const std::shared_ptr<SessionLink::Link>& link) {
+    if (!link || link == link_ || kind_ != Kind::Text) return false;
+    const std::shared_ptr<SessionLink::Link> was = link_;
+    if (client().isOpen(id_)) client().close(id_);   // nothing reaches a lost host; the entry goes
+    if (outsideIdle_) g_source_remove(outsideIdle_);
+    outsideIdle_ = 0;
+    outsideOpen_ = false;
+    stepOpen_ = false;
+    unenrol();
+    link_ = link;
+    enrol();
+    // An empty text opens a document the host holds; its text comes back as
+    // one insertion, taken here and not applied (the buffer has its own).
+    capturing_ = true;
+    captured_.clear();
+    client().open(id_, hostPath_, "", this);
+    const bool answered = client().settle(5000);
+    capturing_ = false;
+    const std::string host = std::move(captured_);
+    captured_.clear();
+    if (!answered || link_->lost()) {
+        if (client().isOpen(id_)) client().close(id_);
+        unenrol();
+        link_ = was;
+        enrol();
+        return false;
+    }
+    // What the buffer has beyond the host's text (typed while away): an edit
+    // outside the history, so the host counts it unsaved.
+    const std::string now = text();
+    if (host != now) {
+        std::size_t p = 0, q = 0;
+        commonEnds(host, now, p, q);
+        const std::size_t from = g_utf8_strlen(host.data(), (gssize)p);
+        const std::size_t del = g_utf8_strlen(host.data() + p, (gssize)(host.size() - p - q));
+        client().recordOutside(id_, Ot::Op{from, del, Model::utf16FromUtf8(now.substr(p, now.size() - p - q))});
+    }
+    return true;
+}
+
+void Document::closeOnHost() {
+    if (!link_->lost() && client().isOpen(id_)) client().close(id_);
+}
+
 // The host's saved text made the file's (as last read or saved) when the
 // buffer holds `now`, which differs from it (a buffer opened anew on a host,
 // or a backup restored): the host's copy is set to the file's text and the
@@ -759,6 +803,10 @@ Document::UndoResult Document::takeStep(bool undoing) {
 }
 
 void Document::hostEdited(Shared::DocId, const Ot::Ops& ops, int flag, const Shared::Selection* select) {
+    if (capturing_) {   // reattach's open: the host's whole text, one insertion
+        for (const Ot::Op& o : ops) captured_ += Model::utf8FromUtf16(o.ins);
+        return;
+    }
     // Snippet sessions, a completion waiting for its import: they listen
     // for the buffer's own signals, as they did for GTK's undo.
     if (flag) g_signal_emit_by_name(buffer_, flag == 2 ? "redo" : "undo");

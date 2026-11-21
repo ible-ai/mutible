@@ -25,6 +25,8 @@ static MCGuiAppWindow appWindowParts(App* a) {
     w.findBar = a->findBar;
     w.search = a->search;
     w.remoteWs = a->remoteWs.get();
+    w.reconnectAttempt = &a->reconnectAttempt;
+    w.autoReconnect = a->autoReconnect;
     w.hintsPanel = a->hintsPanel;
     w.hintsColumns = a->hintsColumns;
     w.hintsHint = a->hintsHint;
