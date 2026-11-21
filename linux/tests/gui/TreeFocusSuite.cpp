@@ -1034,7 +1034,17 @@ MC_GUI_SUITE(tree_focus) {
         return Expanded(Tree(), F("m_deep/a/b/c/d/e")) && Tree()->selectedPath() == F(kNear) &&
                RowsFromMiddle(Tree(), F(kNear)) <= 1;
     });
-    MCGuiStep("the editor kept the keyboard", [] { GCHECK(EditorHasKeyboard()); });
+    MCGuiStep("the editor kept the keyboard", [] {
+        // What the wait above saw, for the log when it times out: it did once
+        // on CI (2026-11-21) and never in about 70 runs here, under load and
+        // in orders. The folders, the selection, and the row's place tell a
+        // reveal never made from a centering GTK moved afterwards.
+        MCGuiNote("near.txt: m_deep/a/b/c/d/e open %d, selected %s, rows from the middle %.2f, "
+                  "the tree at %.0f",
+                  (int)Expanded(Tree(), F("m_deep/a/b/c/d/e")), Tree()->selectedPath().c_str(),
+                  RowsFromMiddle(Tree(), F(kNear)), TreeTop(Tree()));
+        GCHECK(EditorHasKeyboard());
+    });
 
     MCGuiStep("the tree at its top, m_deep closed, the sidebar closed, the target's tab", [] {
         SetExpanded(Tree(), F("m_deep"), false);
