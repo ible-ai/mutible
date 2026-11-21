@@ -193,13 +193,11 @@ bool Editor::loadInto(Document* d, const std::string& path) {
     // viewers that read the disk themselves (pictures, PDFs, players, a
     // database, Quick Look) are not offered for it yet.
     if (link_ && link_->kind() == SessionLink::Link::Kind::Remote) {
-        const SessionLink::Link::RemoteText r = link_->readText(path);
-        Document::FileEncoding encoding;
-        encoding.encoding = r.encoding;
-        encoding.bom = r.bom;
-        return textRead(d, path, (int)(r.ok ? Document::Read::Ok : r.tooLarge ? Document::Read::TooLarge
-                                                                             : Document::Read::Failed),
-                        r.text, encoding);
+        // Asked of the host without blocking (Document::beginLoading, as a
+        // large file loads): the tab shows "Opening..." and documentLoaded
+        // finishes it, or says why not.
+        d->beginLoading(path);
+        return true;
     }
     // A named pipe, socket or device is refused before anything opens it:
     // opening a pipe waits for a writer, and would hang every window.

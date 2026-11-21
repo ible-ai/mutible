@@ -9336,3 +9336,30 @@ side's; two are fixed, one left alone on purpose.
   goes to the host outside the history, so Ctrl+Z may not reach back over it);
   `Link::readText` is still blocking; (b) does not start a lasting host (the
   default stays in-process); the status bar's words and the title on a desktop.
+
+### 155. The window over SSH, opening a file without waiting (stage 8; November 2026)
+
+- **What it is.** `Editor::loadInto` on a remote link calls
+  `Document::beginLoading` (the large-file loading state) instead of the
+  blocking `Link::readText`. The tab is there at once, "Opening...", typing
+  and saving off; `Link::readTextAsync` (new, over `readBytesAsync`, which
+  keeps the answer's bytes: slice 2's `readAsync` drops them) asks the 4 MB
+  pieces from the main loop's dispatch, the large-file worker decodes,
+  validates, counts and lexes, the pieces go into the buffer in idle slices,
+  and `Editor::documentLoaded` restores the caret and scroll or says
+  "Could not open" / "Larger than...". Closing the tab sets the load's
+  `stop`. Every opener goes through `loadInto` (tree, Quick Open, Find in
+  Folder rows, the command line's file, reopen closed tab, an unread tab
+  shown, the other group's mirror), so all are async. `Link` is now
+  `enable_shared_from_this`. Design: docs/notes/session-host.md, "opening a
+  file without waiting".
+- **Checked.** `remote_ssh` (105): a 10 MB file, the tab loading when
+  `openFile` returns (2-5 ms), a 2 ms tick on the main loop (130-300 ticks)
+  with the longest gap 70-155 ms against the old blocking read's 250-615 ms
+  (61 MB: 507 ms against 1882 ms), the text the file's, a tab closed while
+  loading (twice) safe, a binary file's "Could not open".
+- **Not done.** The 50-70 ms left is `Document::finishLoading` (resetHistory,
+  highlighting start), shared with the local large-file path. A reconnect
+  mid-load fails the read (reopen to retry). `Editor::latexInputTab` of a
+  remote file is not offered. The control channel's file reads
+  (`ControlCommands.cpp:402`) still read the local disk.

@@ -435,6 +435,70 @@ bool Link::readAsync(Json request, std::function<void(bool, const Json&)> done) 
     return true;
 }
 
+bool Link::readBytesAsync(Json request, BytesFn done) {
+    if (lost()) return false;
+    const std::uint64_t req = client_->requestRead(0, std::move(request));
+    if (!req) return false;
+    byteReads_[req] = std::move(done);
+    return true;
+}
+
+namespace {
+// The pieces of one file, asked one after another.
+struct PieceRead {
+    std::weak_ptr<Link> link;
+    std::string rel;
+    std::string bytes;
+    std::shared_ptr<std::atomic<bool>> cancel;
+    std::function<void(Link::RemoteBytes&&)> done;
+};
+void askPiece(std::shared_ptr<PieceRead> r) {
+    std::shared_ptr<Link> link = r->link.lock();
+    auto fail = [r](bool tooLarge) {
+        Link::RemoteBytes out;
+        out.tooLarge = tooLarge;
+        r->done(std::move(out));
+    };
+    if (!link || link->lost()) return fail(false);
+    Json ask = Json::object();
+    ask.set("op", Json("read"));
+    ask.set("path", Json(r->rel));
+    ask.set("offset", Json((double)r->bytes.size()));
+    ask.set("length", Json((double)Shared::kMaxReadBytes));
+    ask.set("hidden", Json(true));
+    const bool sent = link->readBytesAsync(std::move(ask), [r, fail](bool ok, const Json& answer, std::string&& piece) {
+        if (r->cancel && r->cancel->load()) return;
+        if (!ok || !answer["error"].isNull()) return fail(false);
+        const double size = answer["size"].asNumber(0);
+        if (size > (double)(std::size_t(64) << 20)) return fail(true);   // as the host follows a file
+        r->bytes += piece;
+        if (piece.empty() || (double)r->bytes.size() >= size) {
+            Link::RemoteBytes out;
+            out.ok = true;
+            out.bytes = std::move(r->bytes);
+            r->done(std::move(out));
+            return;
+        }
+        askPiece(r);
+    });
+    if (!sent) fail(false);
+}
+}  // namespace
+
+bool Link::readTextAsync(const std::string& path, std::shared_ptr<std::atomic<bool>> cancel,
+                         std::function<void(RemoteBytes&&)> done) {
+    const bool under = path.size() > folder_.size() + 1 && path.compare(0, folder_.size(), folder_) == 0 &&
+                       path[folder_.size()] == '/';
+    if (lost() || folder_.empty() || !under) return false;
+    auto r = std::make_shared<PieceRead>();
+    r->link = weak_from_this();
+    r->rel = path.substr(folder_.size() + 1);
+    r->cancel = std::move(cancel);
+    r->done = std::move(done);
+    askPiece(r);   // a first piece refused calls done with failure at once
+    return true;
+}
+
 std::uint64_t Link::stream(Json request, StreamFn answers) {
     if (lost()) return 0;
     const std::uint64_t req = client_->requestStream(0, std::move(request));
@@ -464,6 +528,17 @@ void Link::pumpStreams() {
     pumping_ = true;
     std::vector<std::uint64_t> ids;
     for (const auto& r : reads_) ids.push_back(r.first);
+    std::vector<std::uint64_t> byteIds;
+    for (const auto& r : byteReads_) byteIds.push_back(r.first);
+    for (std::uint64_t id : byteIds) {
+        Json answer;
+        std::string bytes;
+        auto it = byteReads_.find(id);
+        if (it == byteReads_.end() || !client_->readAnswer(id, &answer, &bytes)) continue;
+        auto cb = std::move(it->second);
+        byteReads_.erase(it);
+        cb(true, answer, std::move(bytes));
+    }
     for (std::uint64_t id : ids) {
         Json answer;
         auto it = reads_.find(id);
@@ -493,6 +568,9 @@ void Link::failPending() {
     auto reads = std::move(reads_);
     reads_.clear();
     for (auto& r : reads) r.second(false, Json());
+    auto byteReads = std::move(byteReads_);
+    byteReads_.clear();
+    for (auto& r : byteReads) r.second(false, Json(), std::string());
     auto streams = std::move(streams_);
     streams_.clear();
     for (auto& s : streams) s.second({}, true);
@@ -514,7 +592,7 @@ void Link::dispatch() {
     for (const std::string& e : client_->takeErrors())
         g_printerr("mutible: the session's host for %s: %s\n", folder_.c_str(), e.c_str());
     pumpStreams();
-    if (client_->lost() && (!reads_.empty() || !streams_.empty())) failPending();
+    if (client_->lost() && (!reads_.empty() || !byteReads_.empty() || !streams_.empty())) failPending();
     if (!client_->lost() || detached_ || lostTold_) return;
     lostTold_ = true;
     if (kind_ == Kind::Remote) {

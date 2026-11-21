@@ -61,6 +61,7 @@
 
 #include <sys/types.h>
 
+#include <atomic>
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -82,7 +83,7 @@ class SessionHost;
 
 namespace SessionLink {
 
-class Link {
+class Link : public std::enable_shared_from_this<Link> {
 public:
     // Remote: `mutible host --stdio` on another machine through the user's
     // ssh (stage 8, connectRemote).
@@ -136,6 +137,11 @@ public:
         bool bom = false;
     };
     RemoteText readText(const std::string& path);
+    // The bytes of such a read, before decoding.
+    struct RemoteBytes {
+        bool ok = false, tooLarge = false;
+        std::string bytes;
+    };
     // ---- the host's reads without waiting (stage 8, second slice). The
     // host's answers are dispatched on the main loop (dispatchOnMain), so
     // these never block and their callbacks run there, from dispatch(),
@@ -144,6 +150,17 @@ public:
     // One FsRead (Shared::Client::requestRead): `done(ok, answer)`. False,
     // calling nothing, when the link is lost.
     bool readAsync(Json request, std::function<void(bool ok, const Json& answer)> done);
+    // The same for a "read": the piece's bytes come with the answer.
+    using BytesFn = std::function<void(bool ok, const Json& answer, std::string&& bytes)>;
+    bool readBytesAsync(Json request, BytesFn done);
+    // A remote file's text without waiting (stage 8, third slice): the
+    // pieces are asked one after another from the main loop, then
+    // `done(text)` runs from dispatch() (never inside the call), with
+    // ok false for a read that failed, or tooLarge. `*cancel` set stops it:
+    // nothing more is asked and `done` is not called. False, calling
+    // nothing, when the link is lost or the path is not under the folder.
+    bool readTextAsync(const std::string& path, std::shared_ptr<std::atomic<bool>> cancel,
+                       std::function<void(RemoteBytes&&)> done);
     // One of the heavier reads ("files", "search"; Client::requestStream):
     // `answers(batch, done)` for each batch as it comes, the last with done
     // true (also when the link is lost: an empty batch). 0, calling nothing,
@@ -160,7 +177,7 @@ public:
     int addDiskListener(DiskFn f);
     void removeDiskListener(int token);
     // Reads and streams still waiting (checks).
-    std::size_t pending() const { return reads_.size() + streams_.size(); }
+    std::size_t pending() const { return reads_.size() + byteReads_.size() + streams_.size(); }
 
     // For checks: the in-process host, null on a headless one
     // (SessionHost::diskWatchSettled).
@@ -288,6 +305,7 @@ private:
     void failPending();
     void flushDisk();
     std::map<std::uint64_t, std::function<void(bool, const Json&)>> reads_;
+    std::map<std::uint64_t, BytesFn> byteReads_;
     std::map<std::uint64_t, StreamFn> streams_;
     std::map<int, DiskFn> diskListeners_;
     std::vector<std::pair<std::uint64_t, Json>> diskQueue_;

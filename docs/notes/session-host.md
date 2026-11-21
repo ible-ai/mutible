@@ -3924,10 +3924,9 @@ this machine's disk at that path.
   answer gives "N matches in M files" and the usual notes; a newer search or
   the panel's close cancels the stream; the scope stays the folder.
 - **Not done**: the browser's `locate` (ssh:// addresses opening in an open
-  window, slice 3), Replace in Folder over SSH (as the Mac), `Link::readText`
-  still waits for the host on the main thread (opening a remote file blocks
-  up to 20 s a piece; the large-file path's `beginLoading` is the way to make
-  it async, but every caller of `loadInto` expects the text on return).
+  window, slice 3), Replace in Folder over SSH (as the Mac). (`Link::readText`
+  is kept for the check that times it; no open uses it since the fourth
+  slice, below.)
 - **Checked**: `remote_ssh`'s second half, in the same stand-in: the tree's
   top level from the host (folders first, the ignored log marked, counted
   listings), src opened, two files made on disk appear through the notices,
@@ -4241,3 +4240,40 @@ connection and come back to the same host. The GTK port:
   review of uncommitted changes (R3's fourth slice), and the window's
   open commit and worktree pages with every review's pictures (its last
   slice) are in; the page does not follow the window to a review page.
+
+#### The GTK window over SSH, opening a file without waiting (2026-11-21, fourth slice)
+
+`Editor::loadInto` on a remote link no longer calls `Link::readText` (the
+main thread waiting up to 20 s a piece). It calls `Document::beginLoading`,
+the large-file path's loading state: the tab is there at once showing
+"Opening...", typing and saving are off (`loading()`), and
+`Editor::documentLoaded` finishes it (the caret and scroll restore, the
+preview choice, or the same "Could not open" and "Larger than..." messages).
+Every caller that reads a file (the tree, Quick Open, Find in Folder rows,
+the command line's file, a reopened closed tab, a session's unread tab shown,
+the other group's mirror) goes through `loadInto`, so all of them are async,
+and each already handled a loading tab for large files.
+
+- **How.** `Link::readTextAsync(path, stop, done)` asks FsRead "read" pieces
+  one after another, each the next from the previous one's answer (so from
+  `dispatch()`, never inside a call), through `readBytesAsync` (slice 2's
+  `readAsync` drops the bytes of an answer; this one hands them over). `done`
+  gets the bytes, or `ok` false (lost link, error, past 64 MB). Then the
+  worker the local large-file load already has decodes
+  (`FolderSearch::decodeFileText`), validates UTF-8, counts, and lexes, so
+  none of that is on the main thread either; the pieces go into the buffer
+  in the main loop's idle slices as before. `Link` is now
+  `enable_shared_from_this` (the chain holds a weak pointer, so a link that
+  goes ends it with a failure).
+- **Closing a loading tab** sets the load's `stop` flag (`cancelLoading`): the
+  chain asks nothing more and ignores the answer in flight.
+- **Traps.** A remote document's `beginLoading` must not `stat` the path: it
+  is the other machine's, and a file of that name may exist here. A
+  reconnect while a file loads fails the read (the old link answers every
+  waiting read with failure) and the tab says "Could not open"; opening it
+  again works.
+- **Checked** (`remote_ssh`): a 10 MB remote file's tab is loading when
+  `openFile` returns, a tick every 2 ms on the main loop keeps running with
+  the longest gap far under the old blocking read's stall (numbers in the
+  commit), the text equals the file, a tab closed while loading is safe, and
+  a file that is not text says so as before.
