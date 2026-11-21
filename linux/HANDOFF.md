@@ -9206,3 +9206,21 @@ side's; two are fixed, one left alone on purpose.
   checked by `terminal_keys`.
 - **Not verified.** Real auto-repeat from a keyboard on a desktop (GDK's
   detectable repeat on a live session; the harness's is Xvfb's).
+
+### 151. tree_clicks no longer asserts GTK's timing
+
+- **The flake.** A shuffled run (`MC_GUI_SHUFFLE=8`, eleven tree and nearby
+  suites, pinned to two cores with three busy loops) failed `tree_clicks`
+  at `GCHECK(gSawUnplaced)`: "looked 2 times; the row was mapped before it
+  was placed: no". Reproduced the first time with the same seed and load.
+- **The cause was the check.** `gSawUnplaced` is whether GTK happened to map
+  the new row's label before sizing it, at either of two looks. Unloaded it
+  is always yes (three runs); loaded, the row is mapped and placed within
+  one frame and the look never finds it unplaced. That is GTK's scheduling,
+  not the tree's. The product's promise, `!gHandedUnplaced` (the harness
+  never hands out a row before it has a place), stays asserted, and the
+  check on the row being on screen after it.
+- **Checked.** Seed 8 under the load: 992 passed, 0 failed (was 1 failed);
+  the seven `tree_*` suites 498 passed; `tree_clicks` alone three times.
+- **Not covered.** On a machine where the unplaced moment never comes, the
+  hand-out guard is not exercised; it still is on an idle one.
