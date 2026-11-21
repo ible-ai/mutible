@@ -208,7 +208,11 @@ MC_GUI_SUITE(tree_clicks) {
         MCGuiNote("looked %d times; the row was mapped before it was placed: %s", gLooks,
                   gSawUnplaced ? "yes" : "no");
         GCHECK(gLooks >= 2);
-        GCHECK(gSawUnplaced);   // the moment the flake fell in did come
+        // Whether the unplaced moment came at all is GTK's timing, not the
+        // tree's: on a loaded machine the row is mapped and placed within one
+        // frame, so no look finds it unplaced (seed 8 with three busy loops
+        // on the two cores, 2026-11-21). Only what the harness handed out
+        // is asserted: never a row before it had a place.
         GCHECK(!gHandedUnplaced);
         GCHECK(MCGuiOnScreen(row(at("new.txt"))));
     });
