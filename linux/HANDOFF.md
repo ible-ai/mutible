@@ -9145,6 +9145,13 @@ side's; two are fixed, one left alone on purpose.
   after the tab's close it is under 5 times the file above its start (the
   trim ran). find_bar, tabs, backups, save, sessions, preview_tabs pass,
   `meson test`, root `make test`.
+- **After the host's one copy (the Mac session's #325, in 1.6.16).** Opening
+  the 30 MB log now costs +173 MB, 5.8 times the file (it was 13.4): the
+  GtkTextBuffer about 2.4, the host's UTF-16 copy about 2.2, the view's
+  saved text 1. `large_memory` holds it under 7.5 times, read once the Pss
+  holds still after the open (`MCGuiWaitQuiet` in 4 MB steps), since the
+  host takes its copy on its own thread about half a second after the view
+  has the text. After the tab closes, +50 MB stays.
 
 ### 149. The compare view's last three pieces (PARITY 3.2 done; November 2026)
 
