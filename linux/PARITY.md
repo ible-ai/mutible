@@ -168,8 +168,8 @@ Choices item 1.1 made, by the same rules:
 - Close Tab is VS Code's Ctrl+W and Ctrl+F4, not Global: in the terminal
   the shell has them (Ctrl+W deletes a word). With the browser's keyboard it
   hides the browser, and with no tab open it closes the window, as the
-  Mac's Cmd+W. Unlike the Mac's, a held Ctrl+W is not yet ignored after the
-  first close.
+  Mac's Cmd+W. As the Mac's, a held Ctrl+W closes one tab and its repeats do
+  nothing until the key is released (a window controller, HANDOFF 150).
 - Close Other Tabs, Close Tabs to the Right, Close All Tabs, Keep Open, Copy
   Path of Active File, Open Containing Folder of Active File, and Reveal in
   File Tree have no key (VS Code's are Ctrl+K chords). Previous File is

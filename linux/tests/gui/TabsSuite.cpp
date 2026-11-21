@@ -188,6 +188,8 @@ bool aBack() {
 
 }  // namespace
 
+static int gHeldTabs = 0;
+
 MC_GUI_SUITE(tabs) {
     MCGuiStep("files in the project, and no tab open", [] {
         // An earlier suite's tabs go (their edits were saved).
@@ -456,6 +458,45 @@ MC_GUI_SUITE(tabs) {
         MCGuiNote("a's scroll: %.0f, was %.0f", scrollY(), gScrollA);
         GCHECK(scrollY() > gScrollA - 20 && scrollY() < gScrollA + 20);
         GCHECK(editorHasKeyboard());
+    });
+
+    // ---- a held Ctrl+W closes one tab
+    // X11 auto-repeat sends the press again with no release; the Mac's
+    // closeFocused: drops isARepeat, and here the window's controller
+    // swallows the presses until the key is up (closeKeyPressed).
+    // Three tabs of its own, closed again, so the tabs after it are as they were.
+    MCGuiStep("three clean tabs", [] {
+        gHeldTabs = ed()->tabCount();
+        for (const char* n : {"held-1.txt", "held-2.txt", "held-3.txt"}) {
+            MCGuiWriteFile(F(n), std::string(n) + "\n");
+            MCGuiOpenFileKept(F(n));
+        }
+    });
+    MCGuiWait("they are open, the last on show", 10, [] {
+        return ed()->tabCount() == gHeldTabs + 3 && ed()->currentPath() == F("held-3.txt");
+    });
+    MCGuiStep("Ctrl+W held", [] { MCGuiKeyHold("ctrl+w"); });
+    MCGuiWait("one tab closed", 10, [] { return ed()->tabCount() == gHeldTabs + 2; });
+    // Time is the condition: the server's repeats start after its delay
+    // (660 ms by default) and come every 40 ms, so a second second holds
+    // more than the two tabs left to close.
+    MCGuiPause(1.6);
+    MCGuiStep("and only one, with the key still down", [] { GCHECK(ed()->tabCount() == gHeldTabs + 2); });
+    MCGuiStep("the key up, held-2 shown (the one closed is the one on show), then a new press", [] {
+        ed()->activate(ed()->documentFor(F("held-2.txt")));
+        MCGuiKeyRelease("ctrl+w");
+        MCGuiKey("ctrl+w");
+    });
+    MCGuiWait("the next tab closes", 10, [] { return ed()->tabCount() == gHeldTabs + 1; });
+    MCGuiStep("and the last of them", [] {
+        ed()->activate(ed()->documentFor(F("held-1.txt")));
+        MCGuiKey("ctrl+w");
+    });
+    MCGuiWait("the tabs are as they were", 10, [] { return ed()->tabCount() == gHeldTabs; });
+    // Reopen Closed Tab passes over a file that is gone (below), so the three
+    // leave nothing for the reopens that follow.
+    MCGuiStep("their files removed", [] {
+        for (const char* n : {"held-1.txt", "held-2.txt", "held-3.txt"}) g_remove(F(n).c_str());
     });
 
     // ---- a place waits for the view to be on screen
