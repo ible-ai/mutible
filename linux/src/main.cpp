@@ -62,6 +62,7 @@
 #include "Editor.h"
 #include "SessionBrowser.h"
 #include "SessionLink.h"
+#include "RemoteWorkspace.h"
 #include "SessionWeb.h"   // the session browser's report of the panes
 #include "SessionWebGit.h"   // the report of its worktree pages
 #include "TermDockRecord.h"
@@ -254,6 +255,9 @@ struct App {
     // folder, files and shells are there, through its host over ssh; the
     // folder's path names nothing of this machine's disk.
     bool remote = false;
+    // Its folder's listings, notices, file list and search, through the host
+    // (RemoteWorkspace.h).
+    std::shared_ptr<RemoteWorkspace> remoteWs;
     bool reconnecting = false;   // a Reconnect's connection is being made
     // View > Session Browser's page of the window's tabs (SessionBrowser.h),
     // made the first time it is asked for; stopped before the window
@@ -2265,7 +2269,9 @@ static void act_move_editor_previous(GSimpleAction*, GVariant*, gpointer userp) 
 
 // The folder holding `path`, in the file manager, with the item selected
 // where the file manager supports that.
+static bool refuseOverSsh(App* app, const std::string& what);
 static void openContainingFolder(App* app, const std::string& path) {
+    if (refuseOverSsh(app, "Reveal in Files")) return;
     GFile* f = g_file_new_for_path(path.c_str());
     GtkFileLauncher* launcher = gtk_file_launcher_new(f);
     g_object_unref(f);
@@ -2622,12 +2628,30 @@ static void showFileError(App* app, const std::string& what, const std::string& 
         showError(app, what, err ? err->message : "");
 }
 
+// What the host has no operation for yet, said in the status bar: a window
+// over SSH changes nothing of the other machine's files except by saving
+// (the Mac's refuseOverSsh:). True when it is one.
+static bool refuseOverSsh(App* app, const std::string& what) {
+    if (!app->remote) return false;
+    gtk_widget_error_bell(app->window);
+    flashStatus(app, what + " does not work in a window over SSH yet: the files are on " +
+                         (app->link ? app->link->label() : std::string("the other machine")) +
+                         ". The terminal runs there.");
+    return true;
+}
+
 static void act_new_file(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
     const std::string dir = targetDirectory(app);
     app->tree->askName("New file name", "", [app, dir](const std::string& name) {
         if (!validName(app, name)) return;
         const std::string path = dir + "/" + name;
+        if (app->remote) {
+            // An empty untitled tab at that path, which its first save makes
+            // through the host.
+            app->editor->addUntitled(path);
+            return;
+        }
         GFile* f = g_file_new_for_path(path.c_str());
         GError* err = nullptr;
         // g_file_create fails rather than truncating an existing file.
@@ -2647,6 +2671,7 @@ static void act_new_file(GSimpleAction*, GVariant*, gpointer userp) {
 
 static void act_new_folder(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
+    if (refuseOverSsh(app, "New Folder")) return;
     const std::string dir = targetDirectory(app);
     app->tree->askName("New folder name", "", [app, dir](const std::string& name) {
         if (!validName(app, name)) return;
@@ -2680,6 +2705,7 @@ static void followMove(const std::string& src, const std::string& dst) {
 
 static void act_rename(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
+    if (refuseOverSsh(app, "Rename")) return;
     const std::string src = app->tree->selectedPath();
     if (src.empty()) { gtk_widget_error_bell(app->window); return; }
     const std::string old = baseName(src);
@@ -2767,6 +2793,7 @@ bool copyTree(GFile* src, GFile* dst, GError** err) {
 // selects what arrived.
 static void dropOnTree(App* app, const std::vector<std::string>& paths,
                        const std::string& dir, bool move) {
+    if (refuseOverSsh(app, "Dropping files into the tree")) return;
     if (move) {
         for (const std::string& src : paths) {
             const std::string name = baseName(src);
@@ -2867,6 +2894,7 @@ static void trashNow(App* app, const std::string& path) {
 
 static void act_trash(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
+    if (refuseOverSsh(app, "Move to Trash")) return;
     const std::string path = app->tree->selectedPath();
     if (path.empty()) { gtk_widget_error_bell(app->window); return; }
 
@@ -2894,6 +2922,7 @@ static void act_trash(GSimpleAction*, GVariant*, gpointer userp) {
 // manager, with the item selected where the file manager supports that.
 static void act_reveal(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
+    if (refuseOverSsh(app, "Reveal in Files")) return;
     std::string path = app->tree->selectedPath();
     if (path.empty()) path = app->tree->top();
     openContainingFolder(app, path);
@@ -3898,6 +3927,10 @@ static void showPalette(App* app, const char* text) {
     PalettePanel::Context ctx;
     ctx.root = app->rootDir;
     ctx.useIgnoreFiles = g.settings->settings().searchUseIgnoreFiles();
+    if (app->remoteWs)   // a window over SSH: the host lists the folder's files
+        ctx.remoteList = [ws = app->remoteWs](std::function<void(std::vector<std::string>, bool)> done) {
+            ws->listFiles(std::move(done));
+        };
     ctx.openFile = [app](const std::string& path) {
         if (app->dead) return;
         // Selected in the tree and centered unless in view, whatever
@@ -3976,11 +4009,23 @@ static void runPaneCommandFromSearch(App* app, const std::string& id) {
         gtk_widget_activate_action(app->window, a->action, nullptr);
 }
 
+// A window over SSH: its search panels ask the host (RemoteWorkspace::search).
+static void useHostSearch(App* app, SearchPanel* panel) {
+    if (!app->remoteWs) return;
+    panel->setHostSearch(
+        [ws = app->remoteWs](Json request, SearchPanel::HostBatch batch) {
+            return ws->search(std::move(request), std::move(batch));
+        },
+        [ws = app->remoteWs](std::uint64_t req) { ws->cancelSearch(req); },
+        app->link ? app->link->label() : std::string("the other machine"));
+}
+
 // Find in Folder: search the folder selected in the tree, or else the open
 // folder, which is what the Mac's Shift+Cmd+F does.
 static SearchPanel* findInFolderPanel(App* app) {
     if (!app->search) {
         app->search = new SearchPanel(GTK_WINDOW(app->window));
+        useHostSearch(app, app->search);
         app->search->setOpenCallback(openSearchMatch, app);
         app->search->setPaneCommand(
             [app](const std::string& id) { runPaneCommandFromSearch(app, id); });
@@ -4042,6 +4087,7 @@ static void act_todos(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
     if (!app->todos) {
         app->todos = new SearchPanel(GTK_WINDOW(app->window), SearchPanel::Mode::Todos);
+        useHostSearch(app, app->todos);
         app->todos->setOpenCallback(openSearchMatch, app);
         app->todos->setPaneCommand(
             [app](const std::string& id) { runPaneCommandFromSearch(app, id); });
@@ -5349,6 +5395,7 @@ static void rehostApp(App* a, const std::shared_ptr<SessionLink::Link>& link) {
                 t->rehost(link);
 #endif
     if (a->reconnectButton) gtk_widget_set_visible(a->reconnectButton, FALSE);
+    if (a->remoteWs) a->remoteWs->attachLink(link);   // its watch said to the new host
     reportTerminals(a);
     if (link->kind() == SessionLink::Link::Kind::Remote)
         flashStatus(a, "Connected to " + link->label() + " again: your files are open there again");
@@ -5505,6 +5552,7 @@ static void onWindowRemoved(GtkApplication*, GtkWindow* window, gpointer) {
     if (!app) return;   // the Find in Folder window, an alert
     g.windows.erase(std::find(g.windows.begin(), g.windows.end(), app));
     app->dead = true;
+    if (app->remoteWs) app->remoteWs->detach();
     // The page's server first: its view lets the host go, and the
     // window's tabs then leave the host's state as it detaches.
     delete app->sessionBrowser;
@@ -5694,8 +5742,12 @@ static App* newWindow(const std::string& root, const std::string& file,
 
     // Core widgets.
     // A window over SSH lists nothing of this machine's disk: its tree is
-    // a placeholder for now (the remote tree is the next slice).
-    app->tree = new FileTree(remoteLink ? std::string("/nonexistent/mutible-remote") : app->rootDir, g.showHidden);
+    // the host's listing of the folder there (RemoteWorkspace.h).
+    if (remoteLink) {
+        app->remoteWs = std::make_shared<RemoteWorkspace>(remoteLink->folder());
+        app->remoteWs->attachLink(remoteLink);
+    }
+    app->tree = new FileTree(app->rootDir, g.showHidden, app->remoteWs);
     StartupLog::mark("window: file tree");
     app->treeFollow = new TreeFollow(app->tree, TreeFollow::Host{
         [app] { return treeFollowablePath(app); },

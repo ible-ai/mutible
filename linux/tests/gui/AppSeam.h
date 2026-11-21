@@ -40,6 +40,7 @@ class AgentsPanel;
 class HintsColumns;
 class SidebarIcons;
 class SessionBrowser;
+class RemoteWorkspace;
 
 // One editor window's parts. Pointers are the app's own and stay valid until
 // the window closes; terminal and browser are null in a build without them.
@@ -65,6 +66,7 @@ struct MCGuiAppWindow {
     GtkWidget*  statusBar = nullptr;       // the bar holding both (its right click: 2.11)
     FindBar*    findBar = nullptr;         // the editor's find and replace bar
     SearchPanel* search = nullptr;         // Find in Folder, null until first shown
+    RemoteWorkspace* remoteWs = nullptr;   // a window over SSH: its folder through the host
     GtkWidget*  hintsPanel = nullptr;      // the shortcut hints, and their text
     HintsColumns* hintsColumns = nullptr;  // their list in columns (HintsColumns.h)
     GtkWidget*  hintsHint = nullptr;       // the status bar's note on them

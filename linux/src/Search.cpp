@@ -500,6 +500,7 @@ void SearchPanel::setRoot(const std::string& root) {
 
 void SearchPanel::setScope(const std::string& dir) {
     if (dir.empty()) return;
+    if (hostSearch_ && dir != root_) return;   // over SSH the scope is the folder there
     if (dir == scope_) { updateScopeField(); return; }
     scope_ = dir;
     updateScopeField();
@@ -653,6 +654,8 @@ void SearchPanel::runSearch() {
     ++generation_;
     if (cancel_) cancel_->store(true);
     cancel_.reset();
+    if (hostReq_ && cancelHostSearch_) cancelHostSearch_(hostReq_);
+    hostReq_ = 0;
     // A replace's note goes with the results it asked for, and no others.
     const std::string note = afterNote_;
     const bool noteError = afterNoteError_;
@@ -689,8 +692,18 @@ void SearchPanel::runSearch() {
         return;
     }
 
+    if (hostSearch_ && todos) {
+        searching_ = false;
+        giveKeyboardBack();
+        setStatus("TODOs are not searched in a window over SSH yet");
+        return;
+    }
     searching_ = true;
     setStatus(todos ? "Looking for TODOs…" : "Searching…");
+    if (hostSearch_) {
+        runHostSearch(query, opts, note);
+        return;
+    }
     auto* job = new Job;
     job->gen = generation_;
     job->root = scope_;
@@ -707,6 +720,83 @@ void SearchPanel::runSearch() {
     g_task_set_task_data(task, job, [](gpointer p) { delete static_cast<Job*>(p); });
     g_task_run_in_thread(task, worker);
     g_object_unref(task);   // the running task holds its own reference
+}
+
+// Find in Folder on the host (a window over SSH): its rows, from the walk's
+// own order, are shown as each batch comes.
+void SearchPanel::runHostSearch(const std::string& query, const FolderSearchOptions& opts, const std::string& note) {
+    Json ask = Json::object();
+    ask.set("op", Json("search"));
+    ask.set("query", Json(query));
+    ask.set("caseSensitive", Json(opts.caseSensitive));
+    ask.set("wholeWord", Json(opts.wholeWord));
+    ask.set("regex", Json(opts.regex));
+    ask.set("include", Json(opts.include));
+    ask.set("exclude", Json(opts.exclude));
+    ask.set("hidden", Json(true));   // as the local search reads them
+    hostRows_ = 0;
+    const unsigned gen = generation_;
+    std::weak_ptr<int> alive = life_;
+    hostReq_ = hostSearch_(std::move(ask), [this, gen, alive, note](std::vector<Json>&& answers, bool done) {
+        if (alive.expired() || gen != generation_) return;
+        hostBatch(gen, note, std::move(answers), done);
+    });
+    if (!hostReq_) {
+        searching_ = false;
+        giveKeyboardBack();
+        setStatus("Cannot search: the connection to " + hostPlace_ + " is lost");
+    }
+}
+
+void SearchPanel::hostBatch(unsigned, const std::string& note, std::vector<Json>&& answers, bool done) {
+    FolderSearchResult last;
+    bool any = false;
+    for (const Json& a : answers) {
+        for (const Json& r : a["rows"].elements()) {
+            FolderSearchMatch m;
+            m.relativePath = r["path"].asString();
+            m.path = root_ + "/" + m.relativePath;
+            m.line = (int)r["line"].asNumber(0);
+            m.column = (int)r["column"].asNumber(0);
+            m.text = r["text"].asString();
+            for (const Json& l : r["before"].elements()) m.before.push_back(l.asString());
+            for (const Json& l : r["after"].elements()) m.after.push_back(l.asString());
+            m.count = (std::size_t)r["count"].asNumber(1);
+            hits_.push_back(std::move(m));
+            any = true;
+        }
+        if (a["done"].asBool()) {
+            last.filesSearched = (std::size_t)a["filesSearched"].asNumber(0);
+            last.filesMatched = (std::size_t)a["filesMatched"].asNumber(0);
+            last.totalMatches = (std::size_t)a["totalMatches"].asNumber(0);
+            last.truncated = a["truncated"].asBool();
+            last.tooSlow = a["tooSlow"].asBool();
+            last.cancelled = a["cancelled"].asBool();
+            last.error = a["error"].asString();
+            if (a["timedOut"].asBool()) last.error = last.error.empty() ? "The search ran out of time" : last.error;
+        }
+    }
+    if (any) {
+        showRows();
+        setStatus("Searching… " + std::to_string(hits_.size()) + " lines so far");
+    }
+    if (!done) return;
+    searching_ = false;
+    hostReq_ = 0;
+    const std::string prefix = note.empty() ? std::string() : note + ". Now ";
+    if (!last.error.empty()) {
+        if (!any) giveKeyboardBack();
+        setStatus(prefix + last.error);
+        return;
+    }
+    if (!any) showRows();   // none: the keyboard back to the field
+    const std::size_t n = last.totalMatches, files = last.filesMatched;
+    std::string status = std::to_string(n) + (n == 1 ? " match in " : " matches in ") +
+                         std::to_string(files) + (files == 1 ? " file" : " files");
+    if (last.tooSlow) status += ". This pattern takes too long; the search stopped";
+    else if (last.truncated) status += " (stopped at the first " + std::to_string(hits_.size()) + " lines)";
+    if (!note.empty() && n == 0) status = "no matches";
+    setStatus(prefix + status);
 }
 
 // Runs on a GLib worker thread. Touches nothing but the job.
@@ -834,6 +924,13 @@ void SearchPanel::giveKeyboardBack() {
 // The query, replacement and options as they are now, or false (with the
 // bell and a word in the status line) when there is nothing to replace.
 bool SearchPanel::readyToReplace() {
+    if (hostSearch_) {
+        // The host's replace answers a page's rows with its own rules; joining
+        // it with the tabs' edits here is its own change (the Mac refuses too).
+        gtk_widget_error_bell(window_);
+        setStatus("Replace in Folder does not work in a window over SSH yet: the files are on " + hostPlace_);
+        return false;
+    }
     if (mode_ != Mode::Find || replacing_ || scope_.empty()) {
         gtk_widget_error_bell(window_);
         return false;

@@ -69,6 +69,7 @@
 
 #include "ClickCount.h"
 #include "FolderSearch.h"
+#include "Json.h"
 
 class Editor;
 class Document;
@@ -92,6 +93,18 @@ public:
     SearchPanel& operator=(const SearchPanel&) = delete;
 
     void setOpenCallback(OpenCb cb, void* user) { openCb_ = cb; openUser_ = user; }
+    // A window over SSH (stage 8): Find in Folder is the host's "search" read
+    // (RemoteWorkspace::search), its rows shown as they come; the scope stays
+    // the folder, TODOs and Replace in Folder are refused with a sentence.
+    // `search` returns the request's id (0: the host cannot be asked); `cancel`
+    // stops one.
+    using HostBatch = std::function<void(std::vector<Json>&& answers, bool done)>;
+    void setHostSearch(std::function<std::uint64_t(Json request, HostBatch batch)> search,
+                       std::function<void(std::uint64_t)> cancel, const std::string& place) {
+        hostSearch_ = std::move(search);
+        cancelHostSearch_ = std::move(cancel);
+        hostPlace_ = place;
+    }
     // A pane command (a registry id of kPaneCommands) pressed in this
     // window: the editor window runs it, taking the keyboard first.
     void setPaneCommand(std::function<void(const std::string& commandId)> run) {
@@ -247,6 +260,13 @@ private:
     std::size_t    foundFiles_ = 0;
     bool           foundTruncated_ = false;
     std::string root_;
+    std::function<std::uint64_t(Json, HostBatch)> hostSearch_;
+    std::function<void(std::uint64_t)> cancelHostSearch_;
+    std::string hostPlace_;
+    std::uint64_t hostReq_ = 0;
+    std::size_t hostRows_ = 0;
+    void runHostSearch(const std::string& query, const FolderSearchOptions& opts, const std::string& note);
+    void hostBatch(unsigned gen, const std::string& note, std::vector<Json>&& answers, bool done);
     std::string scope_;
     std::string lastQuery_;                 // the query the current list is for
     unsigned    generation_ = 0;            // bumped by every search

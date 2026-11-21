@@ -3842,13 +3842,12 @@ which `openRemoteAddress`es it; no other argument is read as a path.
   sentence (a password or passphrase or host key to confirm: run `ssh host`
   once; mutible not installed there; too old); the same words go to the
   command line's stderr.
-- **What this slice leaves out**: the remote tree (the window's tree is an
-  empty placeholder, rooted at a path that does not exist), Quick Open,
-  Find in Folder and Replace in Folder, the tree's New File and Folder
-  there, `ssh://` addresses opening in an existing window (each opens a
-  window, or brings forward the one on that link), git, language servers
-  and the session browser for such a window, and a host that outlives the
-  connection (the Mac session's next core change).
+- **What the first slice left out** (the tree, Quick Open and Find in
+  Folder came in the second, below): `ssh://` addresses opening in an
+  existing window (each opens a window, or brings forward the one on that
+  link), git, language servers and the session browser for such a window,
+  and a host that outlives the connection (the Mac session's next core
+  change).
 - **Checked**: `remote_ssh` (RemoteSshSuite.cpp): a stand-in for ssh runs
   this build's `mutible` as the remote, so the "remote" is this machine
   through `host --stdio`: three failing stand-ins (a password asked for,
@@ -3860,6 +3859,74 @@ which `openRemoteAddress`es it; no other argument is read as a path.
   kept and typed into, a save refused with its words), Reconnect (a new
   host, everything typed there, saved there, a new shell that runs a
   command), and the host ending with the window. No real ssh is ever run.
+
+#### The GTK window's tree, Quick Open and Find in Folder over SSH (2026-11-21, second slice)
+
+The Mac's #322 on GTK: the three consumers of the folder read the host, never
+this machine's disk at that path.
+
+- **The async layer** (`SessionLink::Link`): the host's answers already
+  arrive on the main loop (the client's wake, `dispatchOnMain`), and the
+  Client is not thread-safe, so none of this blocks or leaves the main
+  thread. `readAsync(json, done(ok, answer))` sends one FsRead and polls its
+  `readAnswer` at the end of each `dispatch()`; `stream(json, fn(batch,
+  done))` and `cancelStream(req)` do the same for the "files" and "search"
+  reads (0 from a host without Welcome flag 8); a lost link answers every
+  read and stream still waiting (failure, an empty last batch) so no
+  callback is kept for ever. A remote link's client `hearDisk`s (Hello flag
+  32): the host's FsChanged notices are queued and delivered to
+  `addDiskListener`'s functions from an idle of their own, never inside a
+  dispatch (which a settle can run in the middle of anything).
+- **`RemoteWorkspace`** (`linux/src/RemoteWorkspace.{h,cpp}`, plain C++, the
+  Mac's MCRemoteWorkspace): the folder as the host resolved it, the paths
+  both ways (`relative`, `absolute`), `listFolder` ("list" with hidden: the
+  tree's own filter hides dotfiles, as it does for a local listing),
+  `watchFolders` (the folders with a store in the tree, sent through
+  `Client::watchFolders` once per turn of the loop, again to a new host:
+  `attachLink` in `rehostApp`), `listFiles`, `search`/`cancelSearch`.
+  Counters (`listings`, `notices`, `fileLists`, `searches`) are for checks.
+- **The tree** (`FileTree` given the workspace): `makeDirModel` makes the
+  folder's store as always but with no `GFileMonitor`, no Worktrees node and
+  no `access()`: `startListing` asks the workspace, builds the entries'
+  `GFileInfo`s on the main thread (name, type, a `standard::file` that is
+  never opened, the host's `ignored` mark as object data, shown in
+  tree.git-ignored's color) and hands them to the same sort and splice path
+  as a local listing's (`sortedListing`, `listingIn`), so open folders, the
+  selection and the scroll are kept. A link out of the folder ("outside") is
+  a leaf. A notice names the folders whose listing the host sent again; the
+  tree lists those again through its pacer (`RemoteStores::changed`, as a
+  monitor's event would) instead of applying the notice's own copy, so a
+  listing never lands on one still going in. The lookups of this disk (the
+  `lstat` for a selected row that went, `inTree`'s `g_file_test`, the lost
+  focus check, the focus monitors) are skipped for a remote tree. Show
+  Hidden Files is the filter's, as locally.
+- **Refused with the status note** "X does not work in a window over SSH yet:
+  the files are on host:path. The terminal runs there." (`refuseOverSsh`):
+  New Folder, Rename, Move to Trash, drops into the tree, Reveal in Files.
+  New File asks the name and opens an empty untitled tab at the path, which
+  its first save makes through the host. Find in Folder's TODOs and Replace in
+  Folder (Replace All, one row) say so in the panel's status line.
+- **Quick Open** (`PalettePanel::Context::remoteList`): the host's file list
+  fills the same `files_`/`fileKeys_` as the local walk's, with the same
+  generation guard and ranking; picks open through the host as any file.
+- **Find in Folder** (`SearchPanel::setHostSearch`): the query goes as a
+  "search" stream (hidden dotfiles on, as the local search reads them), rows
+  are added as each batch comes ("Searching... N lines so far"), the last
+  answer gives "N matches in M files" and the usual notes; a newer search or
+  the panel's close cancels the stream; the scope stays the folder.
+- **Not done**: the browser's `locate` (ssh:// addresses opening in an open
+  window, slice 3), Replace in Folder over SSH (as the Mac), `Link::readText`
+  still waits for the host on the main thread (opening a remote file blocks
+  up to 20 s a piece; the large-file path's `beginLoading` is the way to make
+  it async, but every caller of `loadInto` expects the text on return).
+- **Checked**: `remote_ssh`'s second half, in the same stand-in: the tree's
+  top level from the host (folders first, the ignored log marked, counted
+  listings), src opened, two files made on disk appear through the notices,
+  Enter opens a row through the host, New Folder's note, Ctrl+P lists the
+  host's files without the ignored log and opens src/main.c, Find in Folder
+  "2 matches in 2 files" with the log left out and a row opening its file,
+  Replace All refused with the files untouched, and a file made after
+  Reconnect appearing from the new host.
 
 #### Traps
 

@@ -9265,3 +9265,33 @@ side's; two are fixed, one left alone on purpose.
   of the alert and the status bar's words on a desktop; a window opened
   by a second `mutible ssh://...` process through D-Bus (the checks call
   `handleCommandLine`, as the other launch checks do).
+
+### 153. The window over SSH, second slice: tree, Quick Open, Find in Folder (stage 8; November 2026)
+
+- **What it is.** The Mac's #322 (7cae4ace, 86cbbd9f) on GTK: a remote
+  window's file tree, Ctrl+P and Ctrl+Shift+F read the host, never this
+  disk at that path. Design, traps and the checks:
+  docs/notes/session-host.md, "The GTK window's tree, Quick Open and Find in
+  Folder over SSH"; docs/notes/tree.md, "The file tree (GTK) over SSH".
+- **Where.** `SessionLink.{h,cpp}`: `readAsync`, `stream`, `cancelStream`,
+  `addDiskListener` (a remote client `hearDisk`s; notices are delivered from
+  an idle), pumped at the end of `dispatch()`, failed when the link is lost.
+  `RemoteWorkspace.{h,cpp}` (new, plain C++). `FileTree.{h,cpp}` (third
+  constructor argument; `DirWatch::remote`, `RemoteStores`, `startRemoteListing`,
+  the shared `sortedListing`/`listingIn`, the ignored mark, the local-disk
+  guards). `PalettePanel` (`Context::remoteList`), `Search` (`setHostSearch`,
+  `runHostSearch`), main.cpp (`App::remoteWs`, `refuseOverSsh`, New File as an
+  untitled tab, `useHostSearch`, `rehostApp` re-attaches the workspace).
+  Tests: `AppSeam` exposes `remoteWs`; RemoteSshSuite.cpp is 65 checks.
+- **Not done.** `Link::readText` is still the blocking read (up to 20 s a
+  piece on the main thread): it is not small, since every caller of
+  `Editor::loadInto` expects the text on return (the large-file path's
+  `beginLoading`/`documentLoaded` is the model for making it async).
+  `locate` (slice 3), Replace in Folder over SSH (refused, as on the Mac),
+  TODOs, git, language servers, a host that outlives the connection.
+- **Not verified.** Real ssh; the look of the dimmed rows and the status
+  note on a desktop; a tree of more than 10,000 entries in a folder (the
+  host's "more" is not shown). A row opened from a remote search puts the
+  caret on its line only: the host gives code-point columns and highlights of
+  the display text, so `byteColumn` and `byteLength` stay 0 (`revealLine`
+  then selects no match).

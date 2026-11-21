@@ -128,6 +128,32 @@ public:
         bool bom = false;
     };
     RemoteText readText(const std::string& path);
+    // ---- the host's reads without waiting (stage 8, second slice). The
+    // host's answers are dispatched on the main loop (dispatchOnMain), so
+    // these never block and their callbacks run there, from dispatch(),
+    // never inside the call. A lost link answers each one still waiting
+    // with failure at once.
+    // One FsRead (Shared::Client::requestRead): `done(ok, answer)`. False,
+    // calling nothing, when the link is lost.
+    bool readAsync(Json request, std::function<void(bool ok, const Json& answer)> done);
+    // One of the heavier reads ("files", "search"; Client::requestStream):
+    // `answers(batch, done)` for each batch as it comes, the last with done
+    // true (also when the link is lost: an empty batch). 0, calling nothing,
+    // when the host does not take them.
+    using StreamFn = std::function<void(std::vector<Json>&& answers, bool done)>;
+    std::uint64_t stream(Json request, StreamFn answers);
+    // Stops one: the host is told, nothing more is called for it.
+    void cancelStream(std::uint64_t req);
+    // What the host saw change on disk (Hello flag 32; `mutible host
+    // --stdio` watches, a remote link's client hears it): `folders` as
+    // Client::hearDisk's, each on a turn of the main loop of its own, never
+    // inside a dispatch. Only a remote link hears the disk.
+    using DiskFn = std::function<void(std::uint64_t window, const Json& changed)>;
+    int addDiskListener(DiskFn f);
+    void removeDiskListener(int token);
+    // Reads and streams still waiting (checks).
+    std::size_t pending() const { return reads_.size() + streams_.size(); }
+
     // For checks: the in-process host, null on a headless one
     // (SessionHost::diskWatchSettled).
     Shared::SessionHost* inProcessHost() const { return host_.get(); }
@@ -243,6 +269,18 @@ private:
     bool detached_ = false, lostTold_ = false;
     std::map<Shared::DocId, DocNotices*> notices_;   // listen
     std::map<int, std::function<void(const std::string&)>> lostListeners_;
+    // readAsync and stream: by the client's request id, polled at the end of
+    // each dispatch (pumpStreams). The disk's notices wait for a turn of
+    // the loop (flushDisk).
+    void pumpStreams();
+    void failPending();
+    void flushDisk();
+    std::map<std::uint64_t, std::function<void(bool, const Json&)>> reads_;
+    std::map<std::uint64_t, StreamFn> streams_;
+    std::map<int, DiskFn> diskListeners_;
+    std::vector<std::pair<std::uint64_t, Json>> diskQueue_;
+    bool diskQueued_ = false;
+    bool pumping_ = false;
     int nextListener_ = 0;
     // What each window's tabs were last sent as, and each window's id on
     // the host by its id in the app's Model::Session (which numbers windows

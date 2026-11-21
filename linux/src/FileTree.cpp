@@ -26,6 +26,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <numeric>
 #include <string>
@@ -51,10 +52,47 @@ static bool infoIsDir(GFileInfo* info) {
     return info && g_file_info_get_file_type(info) == G_FILE_TYPE_DIRECTORY;
 }
 
+// A window over SSH's folders with a store each, by path (absolute, as the
+// tree spells them): what the host is asked to watch, and which stores a
+// notice lists again. Main thread; the stores leave it as they are freed.
+struct RemoteStores {
+    std::shared_ptr<RemoteWorkspace> ws;
+    std::multimap<std::string, GListStore*> stores;
+    void add(const std::string& path, GListStore* s) {
+        stores.emplace(path, s);
+        watch();
+    }
+    void remove(const std::string& path, GListStore* s) {
+        auto range = stores.equal_range(path);
+        for (auto it = range.first; it != range.second; ++it)
+            if (it->second == s) {
+                stores.erase(it);
+                break;
+            }
+        watch();
+    }
+    void watch() {
+        std::vector<std::string> paths;
+        for (const auto& p : stores) paths.push_back(p.first);
+        if (ws) ws->watchFolders(std::move(paths));
+    }
+    void changed(const std::vector<std::string>& folders);
+};
+
 // ---------------------------------------------------------------- construction
 
-FileTree::FileTree(const std::string& rootDir, bool showHidden)
-    : root_(rootDir), showHidden_(showHidden) {
+FileTree::FileTree(const std::string& rootDir, bool showHidden, std::shared_ptr<RemoteWorkspace> remote)
+    : root_(rootDir), remote_(std::move(remote)), showHidden_(showHidden) {
+    if (remote_) {
+        remoteStores_ = std::make_shared<RemoteStores>();
+        remoteStores_->ws = remote_;
+        // What the host saw change: the folders it names list again, through
+        // the pacer as a monitor's event would.
+        std::weak_ptr<RemoteStores> weak = remoteStores_;
+        remote_->onChanged = [weak](const std::vector<std::string>& folders) {
+            if (auto reg = weak.lock()) reg->changed(folders);
+        };
+    }
     box_ = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     scroller_ = gtk_scrolled_window_new();
     gtk_widget_set_size_request(scroller_, 220, -1);
@@ -213,6 +251,10 @@ struct DirWatch {
     // the next listing for another reason (HANDOFF 44).
     std::vector<GFileMonitor*> extra;
     bool watchesClaude = false, watchesWorktrees = false;
+    // A folder of another machine (stage 8): listed by the host, never by
+    // GIO; `path` is where its rows' files would be, never opened here.
+    std::shared_ptr<RemoteStores> remote;
+    std::string path;
 };
 
 struct ListJob {
@@ -222,6 +264,37 @@ struct ListJob {
 
 DirWatch* watchOf(GListStore* store) {
     return static_cast<DirWatch*>(g_object_get_data(G_OBJECT(store), "minicode-watch"));
+}
+
+// A row's sort key: names compare as they always did, case folded and
+// collated; a name that is not UTF-8 is made so first (GLib's collation
+// refuses it).
+TreeRefresh::Row makeRow(bool dir, const char* name) {
+    char* valid = g_utf8_make_valid(name, -1);
+    char* folded = g_utf8_casefold(valid, -1);
+    char* key = g_utf8_collate_key(folded, -1);
+    TreeRefresh::Row row{dir, key ? key : folded, name};
+    g_free(key);
+    g_free(folded);
+    g_free(valid);
+    return row;
+}
+
+// The entries in the tree's order (takes the infos' references).
+Listing* sortedListing(std::vector<GFileInfo*>& infos, std::vector<TreeRefresh::Row>& rows) {
+    std::vector<std::size_t> order(rows.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
+        return TreeRefresh::rowBefore(rows[a], rows[b]);
+    });
+    auto* out = new Listing;
+    out->infos.reserve(order.size());
+    out->rows.reserve(order.size());
+    for (std::size_t i : order) {
+        out->infos.push_back(infos[i]);
+        out->rows.push_back(std::move(rows[i]));
+    }
+    return out;
 }
 
 // On the worker: the folder's entries with their keys, sorted.
@@ -258,13 +331,7 @@ void listInThread(GTask* task, gpointer, gpointer data, GCancellable* cancel) {
         }
         // Names compare as they always did, case folded and collated; a name
         // that is not UTF-8 is made so first (GLib's collation refuses it).
-        char* valid = g_utf8_make_valid(name, -1);
-        char* folded = g_utf8_casefold(valid, -1);
-        char* key = g_utf8_collate_key(folded, -1);
-        rows.push_back({infoIsDir(info), key ? key : folded, name});
-        g_free(key);
-        g_free(folded);
-        g_free(valid);
+        rows.push_back(makeRow(infoIsDir(info), name));
         infos.push_back(G_FILE_INFO(g_object_ref(info)));
     }
     g_object_unref(en);
@@ -298,19 +365,7 @@ void listInThread(GTask* task, gpointer, gpointer data, GCancellable* cancel) {
         g_task_return_error(task, err);
         return;
     }
-    std::vector<std::size_t> order(rows.size());
-    std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) {
-        return TreeRefresh::rowBefore(rows[a], rows[b]);
-    });
-    auto* out = new Listing;
-    out->infos.reserve(order.size());
-    out->rows.reserve(order.size());
-    for (std::size_t i : order) {
-        out->infos.push_back(infos[i]);
-        out->rows.push_back(std::move(rows[i]));
-    }
-    g_task_return_pointer(task, out, [](gpointer p) { delete static_cast<Listing*>(p); });
+    g_task_return_pointer(task, sortedListing(infos, rows), [](gpointer p) { delete static_cast<Listing*>(p); });
 }
 
 void startListing(DirWatch* w);
@@ -388,30 +443,71 @@ void applyFresh(DirWatch* w) {
     g_object_unref(keep);   // w may be gone after this
 }
 
+// A fresh listing is in (null: unreadable, gone, or not ours to read: the
+// rows stay as they were; a folder that went is taken away by its parent's
+// own listing). Takes it.
+void listingIn(DirWatch* dw, Listing* listing) {
+    if (!listing) {
+        listingDone(dw);
+        return;
+    }
+    dw->splices = TreeRefresh::splices(dw->rows, listing->rows);
+    dw->fresh.reset(listing);
+    dw->nextSplice = 0;
+    dw->rowsOut = dw->splices.empty() ? 0 : dw->splices[0].removed;
+    dw->rowsIn = 0;
+    applyFresh(dw);
+}
+
+// A folder of the other machine, asked of the host (the answer comes on the
+// main loop, and a store that went meanwhile is not touched).
+void startRemoteListing(DirWatch* w) {
+    GListStore* store = G_LIST_STORE(g_object_ref(w->store));
+    const std::string path = w->path;
+    const bool sent = w->remote->ws->listFolder(path, [store, path](bool ok, std::vector<RemoteWorkspace::Entry>&& entries) {
+        DirWatch* dw = watchOf(store);
+        if (dw && !g_cancellable_is_cancelled(dw->cancel)) {
+            Listing* listing = nullptr;
+            if (ok) {
+                std::vector<GFileInfo*> infos;
+                std::vector<TreeRefresh::Row> rows;
+                for (const RemoteWorkspace::Entry& e : entries) {
+                    GFileInfo* info = g_file_info_new();
+                    g_file_info_set_name(info, e.name.c_str());
+                    // A link out of the folder is never listed or opened: a leaf.
+                    g_file_info_set_file_type(info, e.dir && !e.outside ? G_FILE_TYPE_DIRECTORY : G_FILE_TYPE_REGULAR);
+                    GFile* file = g_file_new_for_path((path + "/" + e.name).c_str());   // never opened
+                    g_file_info_set_attribute_object(info, "standard::file", G_OBJECT(file));
+                    g_object_unref(file);
+                    if (e.ignored) g_object_set_data(G_OBJECT(info), "mutible-ignored", GINT_TO_POINTER(1));
+                    rows.push_back(makeRow(e.dir && !e.outside, e.name.c_str()));
+                    infos.push_back(info);
+                }
+                listing = sortedListing(infos, rows);
+            }
+            listingIn(dw, listing);
+        }
+        g_object_unref(store);
+    });
+    if (!sent) {
+        listingDone(w);   // no live link: the rows stay
+        g_object_unref(store);
+    }
+}
+
 void startListing(DirWatch* w) {
+    if (w->remote) {
+        startRemoteListing(w);
+        return;
+    }
     GTask* task = g_task_new(nullptr, w->cancel,
         [](GObject*, GAsyncResult* res, gpointer storep) {
             GListStore* store = G_LIST_STORE(storep);
             Listing* listing = static_cast<Listing*>(
                 g_task_propagate_pointer(G_TASK(res), nullptr));
             DirWatch* dw = watchOf(store);
-            if (dw && !g_cancellable_is_cancelled(dw->cancel)) {
-                if (listing) {
-                    dw->splices = TreeRefresh::splices(dw->rows, listing->rows);
-                    dw->fresh.reset(listing);
-                    listing = nullptr;
-                    dw->nextSplice = 0;
-                    dw->rowsOut = dw->splices.empty() ? 0 : dw->splices[0].removed;
-                    dw->rowsIn = 0;
-                    applyFresh(dw);
-                } else {
-                    // Unreadable (gone, or not ours to read): the rows stay
-                    // as they were; a folder that went is taken away by its
-                    // parent's own listing.
-                    listingDone(dw);
-                }
-            }
-            delete listing;
+            if (dw && !g_cancellable_is_cancelled(dw->cancel)) listingIn(dw, listing);
+            else delete listing;
             g_object_unref(store);
         }, g_object_ref(w->store));
     g_task_set_task_data(task, new ListJob{G_FILE(g_object_ref(w->dir)), w->worktreesNode, w->hideWorktrees},
@@ -486,6 +582,14 @@ void onDirChanged(GFileMonitor*, GFile* file, GFile*, GFileMonitorEvent ev, gpoi
 }
 }  // namespace
 
+void RemoteStores::changed(const std::vector<std::string>& folders) {
+    for (const std::string& f : folders) {
+        auto range = stores.equal_range(f);
+        for (auto it = range.first; it != range.second; ++it)
+            if (DirWatch* dw = watchOf(it->second)) listSoon(dw, dw->pacer.changed(nowMs()));
+    }
+}
+
 // The folder's entries, then a filter (dotfiles) shared by every folder in
 // the tree.
 GListModel* FileTree::makeDirModel(GFile* dir, bool root) {
@@ -504,13 +608,25 @@ GListModel* FileTree::makeDirModel(GFile* dir, bool root) {
         }
         g_free(p);
     }
-    // Watch before listing, so nothing created in between is missed: an
-    // event during the first listing asks for a second.
-    w->monitor = g_file_monitor_directory(dir, G_FILE_MONITOR_WATCH_MOVES, nullptr, nullptr);
-    if (w->monitor) g_signal_connect(w->monitor, "changed", G_CALLBACK(onDirChanged), w);
-    watchWorktreeFolders(w);
+    if (remoteStores_) {
+        // Another machine's folder: the host lists and watches it; nothing of
+        // this disk is read, no monitor made, no Worktrees node.
+        w->worktreesNode = w->hideWorktrees = false;
+        w->remote = remoteStores_;
+        char* p = g_file_get_path(dir);
+        w->path = p ? p : "";
+        g_free(p);
+        remoteStores_->add(w->path, store);
+    } else {
+        // Watch before listing, so nothing created in between is missed: an
+        // event during the first listing asks for a second.
+        w->monitor = g_file_monitor_directory(dir, G_FILE_MONITOR_WATCH_MOVES, nullptr, nullptr);
+        if (w->monitor) g_signal_connect(w->monitor, "changed", G_CALLBACK(onDirChanged), w);
+        watchWorktreeFolders(w);
+    }
     g_object_set_data_full(G_OBJECT(store), "minicode-watch", w, [](gpointer p) {
         auto* dw = static_cast<DirWatch*>(p);
+        if (dw->remote) dw->remote->remove(dw->path, dw->store);
         dropExtraMonitors(dw);
         g_cancellable_cancel(dw->cancel);
         if (dw->timer) g_source_remove(dw->timer);
@@ -794,6 +910,10 @@ void FileTree::onBind(GtkSignalListItemFactory* /*f*/, GObject* obj,
     char* path = file ? g_file_get_path(file) : nullptr;
     g_object_set_data_full(G_OBJECT(label), "minicode-path", path, g_free);
     g_object_set_data(G_OBJECT(label), "minicode-dir", GINT_TO_POINTER(infoIsDir(info) ? 1 : 0));
+    // What the other machine's ignore files ignore (the host's mark, shown in
+    // tree.git-ignored's color).
+    g_object_set_data(G_OBJECT(label), "mutible-ignored",
+                      info ? g_object_get_data(G_OBJECT(info), "mutible-ignored") : nullptr);
     static_cast<FileTree*>(self)->decorate(label);
 
     g_object_set_data(G_OBJECT(label), "minicode-exec",
@@ -856,6 +976,7 @@ void FileTree::decorate(GtkWidget* label) const {
         }
     }
     const char* want = decorator_ && path ? decorator_(path, isDir, &tip) : nullptr;
+    if (!want && g_object_get_data(G_OBJECT(label), "mutible-ignored")) want = "minicode-git-ignored";
     for (const char* c : kClasses)
         if (!want || std::strcmp(c, want) != 0) gtk_widget_remove_css_class(label, c);
     if (want) gtk_widget_add_css_class(label, want);
@@ -1324,8 +1445,10 @@ void FileTree::afterRowsGone() {
     // went with its folder closing or hidden files hidden: it is still on
     // disk, and nothing is chosen for it.
     struct stat st;
+    // (Over SSH nothing of this disk is looked at: the row's own folder
+    // lists again and the selection stays where it is.)
     if (gtk_single_selection_get_selected(GTK_SINGLE_SELECTION(model)) != GTK_INVALID_LIST_POSITION ||
-        !pendingReveal_.empty() || path.empty() || lstat(path.c_str(), &st) == 0)
+        !pendingReveal_.empty() || path.empty() || remote_ || lstat(path.c_str(), &st) == 0)
         return;
     const guint n = g_list_model_get_n_items(G_LIST_MODEL(treeModel_));
     if (n == 0) return;
@@ -2187,6 +2310,7 @@ bool FileTree::inTree(const std::string& relIn) const {
             if (slash == std::string::npos) break;
             at = slash + 1;
         }
+    if (remote_) return true;   // a folder of the other machine: not looked at here
     return g_file_test(joinPath(root_, rel).c_str(), G_FILE_TEST_IS_DIR);
 }
 
@@ -2267,7 +2391,7 @@ void FileTree::applyFocus(const std::vector<std::string>& set, bool lost) {
         else ++it;
     }
     for (const std::string& p : expandedNow())
-        if (!lost || g_file_test(p.c_str(), G_FILE_TEST_IS_DIR)) memory.insert(p);
+        if (!lost || remote_ || g_file_test(p.c_str(), G_FILE_TEST_IS_DIR)) memory.insert(p);
     // Widening (or a root taken into a new folder that holds it): the old
     // root shows open, with every folder on the way down to it, and with
     // one folder before, its row selected.
@@ -2738,7 +2862,7 @@ void FileTree::onBarRightClick(GtkGestureClick* g, int, double x, double y, gpoi
 
 void FileTree::watchFocusPath() {
     unwatchFocusPath();
-    if (foci_.empty()) return;
+    if (foci_.empty() || remote_) return;   // the host watches the listed folders
     // From the window's folder down to each focused folder's parent, once
     // each.
     std::vector<std::string> dirs = {root_};

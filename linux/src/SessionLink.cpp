@@ -339,6 +339,22 @@ bool Link::startRemote(std::string* why) {
     }
     kind_ = Kind::Remote;
     makeClient();
+    // The host watches its disk (Hello flag 32): the notices go to the
+    // listeners, a turn of the loop later (never inside a dispatch, which a
+    // wait can run in the middle of anything).
+    client_->hearDisk(
+        [this](std::uint64_t window, const Json& changed) {
+            diskQueue_.emplace_back(window, changed);
+            if (diskQueued_) return;
+            diskQueued_ = true;
+            std::weak_ptr<Link> weak = wake_->link;
+            g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer p) -> gboolean {
+                auto* w = static_cast<std::weak_ptr<Link>*>(p);
+                if (std::shared_ptr<Link> l = w->lock()) l->flushDisk();
+                return G_SOURCE_REMOVE;
+            }, new std::weak_ptr<Link>(weak), [](gpointer p) { delete static_cast<std::weak_ptr<Link>*>(p); });
+        },
+        nullptr);
     link->connect(*client_);   // its sends written there, the host's messages delivered, its Hello
     socket_ = std::move(link);
     return true;
@@ -402,10 +418,94 @@ void Link::detach() {
     socket_->close();
 }
 
+bool Link::readAsync(Json request, std::function<void(bool, const Json&)> done) {
+    if (lost()) return false;
+    const std::uint64_t req = client_->requestRead(0, std::move(request));
+    if (!req) return false;
+    reads_[req] = std::move(done);
+    return true;
+}
+
+std::uint64_t Link::stream(Json request, StreamFn answers) {
+    if (lost()) return 0;
+    const std::uint64_t req = client_->requestStream(0, std::move(request));
+    if (req) streams_[req] = std::move(answers);
+    return req;
+}
+
+void Link::cancelStream(std::uint64_t req) {
+    auto it = streams_.find(req);
+    if (it == streams_.end()) return;
+    streams_.erase(it);
+    if (!lost()) client_->cancelStream(req, 0);
+}
+
+int Link::addDiskListener(DiskFn f) {
+    const int token = ++nextListener_;
+    diskListeners_[token] = std::move(f);
+    return token;
+}
+
+void Link::removeDiskListener(int token) { diskListeners_.erase(token); }
+
+// Answers that came: each waiting read and stream is given what is in. A
+// callback may ask for more, or cancel (the maps are looked up again).
+void Link::pumpStreams() {
+    if (pumping_) return;
+    pumping_ = true;
+    std::vector<std::uint64_t> ids;
+    for (const auto& r : reads_) ids.push_back(r.first);
+    for (std::uint64_t id : ids) {
+        Json answer;
+        auto it = reads_.find(id);
+        if (it == reads_.end() || !client_->readAnswer(id, &answer)) continue;
+        auto cb = std::move(it->second);
+        reads_.erase(it);
+        cb(true, answer);
+    }
+    ids.clear();
+    for (const auto& s : streams_) ids.push_back(s.first);
+    for (std::uint64_t id : ids) {
+        if (!streams_.count(id)) continue;
+        std::vector<Json> batch;
+        const bool done = client_->takeStream(id, &batch);
+        if (batch.empty() && !done) continue;
+        auto it = streams_.find(id);
+        if (it == streams_.end()) continue;
+        StreamFn cb = done ? std::move(it->second) : it->second;
+        if (done) streams_.erase(it);
+        cb(std::move(batch), done);
+    }
+    pumping_ = false;
+}
+
+// The connection is gone: nothing waiting will be answered.
+void Link::failPending() {
+    auto reads = std::move(reads_);
+    reads_.clear();
+    for (auto& r : reads) r.second(false, Json());
+    auto streams = std::move(streams_);
+    streams_.clear();
+    for (auto& s : streams) s.second({}, true);
+}
+
+void Link::flushDisk() {
+    diskQueued_ = false;
+    auto queue = std::move(diskQueue_);
+    diskQueue_.clear();
+    for (const auto& n : queue) {
+        const auto listeners = diskListeners_;
+        for (const auto& l : listeners)
+            if (diskListeners_.count(l.first)) l.second(n.first, n.second);
+    }
+}
+
 void Link::dispatch() {
     client_->dispatch();
     for (const std::string& e : client_->takeErrors())
         g_printerr("mutible: the session's host for %s: %s\n", folder_.c_str(), e.c_str());
+    pumpStreams();
+    if (client_->lost() && (!reads_.empty() || !streams_.empty())) failPending();
     if (!client_->lost() || detached_ || lostTold_) return;
     lostTold_ = true;
     if (kind_ == Kind::Remote) {
