@@ -4014,7 +4014,8 @@ connects again by itself, and the window takes up what the host kept.
   Each terminal whose `lostSessionTerminal` (kept by `hostWentAway`) the
   host holds: `TerminalView reattachOn:place:`, an `MCSessionTermPlace`
   from the state's pid, size and shell, through `attachHeldShell` (a fresh
-  screen from the host's replay, scrollback included, then live output);
+  screen from the host's replay, scrollback included, parsed before
+  `reattachOn:place:` returns, then live output);
   else `rehostOn:`. While the connection is down a remote terminal says
   its shell runs on there.
 
@@ -4124,6 +4125,14 @@ connection and come back to the same host. The GTK port:
 - **A stale connection holds a terminal's credit.** See "Resuming": the
   remote may keep a dead connection's relay attached for hours, and the
   host reads a pty only while every viewer has credit.
+- **A terminal taken up again is parsed before the window says so.**
+  `attachHeldShell` settles, so the host's replay is in the backlog when
+  it returns, but the backlog was parsed only by the drain, a timer at
+  the next turn: a timer already due fired before it, so a check that
+  ran from one (remote_ssh's look for the output from before the drop,
+  after a reconnect longer than its 50 ms poll) found the fresh, empty
+  screen (CI on #338, and main's retry before #337). `reattachOn:place:`
+  now drains the replay before it returns; the check waits for the text.
 - **Killing the stand-in's group kills only the relay now.** The lasting
   host is in a session of its own; a suite that starts one ends it by its
   idle time or by the pid its terminal reported, never by a pattern.

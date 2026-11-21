@@ -617,7 +617,13 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(![gC.window.title containsString:@"(reconnecting)"] && ![gC.window.title containsString:@"(disconnected)"]);
         gTerm = [gC valueForKey:@"terminal"];
         GCHECK(gTerm.sessionTerminal == gTermId);   // the host's own terminal, taken up again
-        GCHECK([[gTerm recentText:60] containsString:@"before-drop-42"]);
+        // The host's replay, scrollback included, is parsed before the
+        // window takes up the host returns (reattachOn:place:).
+        NSString *recent = [gTerm recentText:60];
+        if (![recent containsString:@"before-drop-42"]) MCGuiNote(@"the terminal after the reconnect: %@", recent);
+    });
+    MCGuiWait(@"its output from before the drop, replayed by the host", 10, ^BOOL {
+        return [[gTerm recentText:60] containsString:@"before-drop-42"];
     });
     MCGuiWait(@"sleep still runs there", 10, ^BOOL { return gTerm.programHasTerminal; });
     MCGuiStep(@"Ctrl+C ends it", ^{

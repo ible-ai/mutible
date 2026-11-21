@@ -845,6 +845,16 @@ struct MCHostTermListener : Shared::Client::TermListener {
     place.link = link;
     _held = place;
     [self attachHeldShell];   // the host's replay on a fresh screen, then live output
+    // The replay is in the backlog (attachHeldShell settles), and parsed
+    // here rather than at the drain's next turn: the window says its
+    // terminals are as they were once this returns, and a fresh, empty
+    // screen was there until the drain ran. A timer already due fired
+    // first (remote_ssh's look at the scrollback after a reconnect that
+    // took longer than its poll, CI on #338).
+    if (_backlog.length > _backlogStart) {
+        [NSObject cancelPreviousPerformRequestsWithTarget:self selector:@selector(drainBacklog) object:nil];
+        [self drainBacklog];
+    }
 }
 
 - (void)closeOnSessionHost {
