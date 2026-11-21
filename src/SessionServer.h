@@ -24,13 +24,16 @@
 // no renderer for `idleMs` (10 minutes) and nothing is unsaved or running
 // (Host::busyReason); until then it lives on, however long that is.
 //
-// Over stdin and stdout (stage 8, the Mac over SSH): `mutible host --stdio
-// <path>` serves one renderer on its own standard input and output instead
-// of a socket (startStdio): no socket, no lock, and it ends as soon as its
-// input closes, which is when the connection carrying it goes. A renderer
-// reaches it through a command's pipes (HostLink::spawn), which for a
-// window over SSH is the user's own ssh running `mutible host --stdio` on
-// the other machine (SshTarget, sshCommand).
+// Over stdin and stdout (stage 8, the Mac over SSH): a renderer reaches a
+// host through a command's pipes (HostLink::spawn), which for a window over
+// SSH is the user's own ssh running `mutible host --stdio <path>` on the
+// other machine (SshTarget, sshCommand). That command finds the folder's
+// host there, or starts one detached that outlives the connection, and
+// relays bytes between its standard input and output and the host's socket
+// ("A host that outlives the connection", below). A host may also serve one
+// renderer on its own standard input and output (startStdio): no socket,
+// no lock, ending as soon as its input closes; `--stdio` falls back to
+// that when no socket folder can be had.
 //
 // Pure C++17 and POSIX (Linux and macOS): the server's own thread polls the
 // listening socket and the connections; the host's thread is SessionHost's.
@@ -259,6 +262,62 @@ std::vector<std::string> sshCommand(const SshTarget& t, const std::string& ssh);
 // not installed there (exit 127) or too old (it did not know `--stdio`,
 // or `host`); else ssh's own last line.
 std::string explainSshFailure(const SshTarget& t, int status, const std::string& stderrText);
+
+// ---- a host that outlives the connection (stage 8)
+//
+// `mutible host --stdio PATH` finds the folder's host (one per folder, its
+// socket in the user's private socket folder: hostSocketName,
+// findHostSocket), starts one detached when there is none (`mutible host
+// --folder DIR --lasting`, by startDetached), and relays bytes between its
+// standard input and output and that host's socket (relayStdio) until
+// either ends. A dropped connection ends only the relay: the host keeps
+// the window's documents (text, unsaved state, undo) and its terminals
+// (running, their screens) for the window's next connection, whose Hello
+// names the old one (Client::setResume, Host::setDrop). The host ends once
+// it has had no renderer for lastingIdleMs and nothing is unsaved or
+// running, as every headless host does.
+
+// How long a host started for a window over SSH waits with no renderer
+// before it ends (when nothing is unsaved or running): `minutes`, the
+// environment's MUTIBLE_HOST_IDLE_MINUTES, when it is a number of minutes
+// (fractions allowed), else kLastingIdleMs, four hours: a laptop closed
+// over lunch, or a train through a tunnel, finds its terminals still there.
+constexpr long long kLastingIdleMs = 4LL * 60 * 60 * 1000;
+long long lastingIdleMs(const char* minutes);
+// Where `--stdio` looks for a running host: `folders` (ControlPaths.h's
+// socketFolders, a host the user's own app started included) and then
+// `lasting`, the folder a lasting host makes its socket in, when it is not
+// one of them.
+std::vector<std::string> withLastingFolder(std::vector<std::string> folders, const std::string& lasting);
+// Starts `argv` (argv[0] a path) detached from this process, in this
+// process's environment: in a session of its own (no controlling terminal,
+// so the end of the login that started it hangs nothing up; SIGHUP is
+// ignored besides), not this process's child (the go-between that starts
+// it is reaped here), no descriptor of this process's, standard input
+// /dev/null, standard output and error appended to `logPath` (made 0600;
+// /dev/null when ""). Its pid, or 0 with why.
+int startDetached(const std::vector<std::string>& argv, const std::string& logPath, std::string* error);
+// The folder's host, connected (a socket descriptor): found in `dirs`
+// (findHostSocket), else started by `start` (its pid, or 0 with why) and
+// waited for, at most `timeoutMs`. A socket nothing listens on (a host
+// that died) counts as none; one whose host is another user's is refused.
+// -1, with why, when there is none to be had.
+int connectOrStartHost(const std::string& folder, const std::vector<std::string>& dirs,
+                       const std::function<int(std::string* why)>& start, int timeoutMs,
+                       std::string* error);
+// Relays bytes between a renderer's `in` and `out` (ssh's pipes) and a
+// host's socket `sock`, until either side ends: what the renderer sends
+// goes to the host as it is, and what the host sends goes to the renderer
+// as it is, but for its Welcome, whose json names `askedFile` (and says
+// "new" when `askedNew`) as a `--stdio` host's own Welcome did
+// (Host::setAskedFile). Blocking writes both ways; closes nothing.
+void relayStdio(int in, int out, int sock, const std::string& askedFile, bool askedNew);
+// The wait before each try at connecting again after a window over SSH lost
+// its connection (BatchMode: no try asks anything), `attempt` 0 for the
+// first: half a second, then doubling, at most 30 s; -1 once
+// kReconnectAttempts have been made (the window then offers Reconnect).
+constexpr int kReconnectAttempts = 12;
+long long reconnectDelayMs(int attempt);
 
 // What `mutible attach --dump` prints: the session `client` is connected
 // to, as text. The folder, then each document (path, version, unsaved or

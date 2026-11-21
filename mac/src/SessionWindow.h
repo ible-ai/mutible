@@ -93,6 +93,17 @@
 
 // Told on the main queue when the window's host goes (a headless one).
 @property(nonatomic, copy) void (^onLost)(void);
+// A window over SSH whose host outlived the dropped connection (stage 8):
+// the window goes on under the same id on `link`, the connection made
+// again to that host, its record sent at once.
+- (void)resumeOn:(MCSessionLinkRef *)link;
+// The automatic reconnection after a drop (EditorController+Session.mm):
+// whether it is trying, and how many tries it has made. `reconnectRound`
+// changes with each drop and each Reconnect, so a try left over from an
+// earlier round does nothing.
+@property(nonatomic, assign) BOOL reconnecting;
+@property(nonatomic, assign) int reconnectAttempt;
+@property(nonatomic, assign) NSUInteger reconnectRound;
 // The status bar's Reconnect, while the host is gone.
 @property(nonatomic, weak) NSButton *reconnectButton;
 @end

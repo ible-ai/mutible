@@ -70,6 +70,40 @@ bool socketAddress(const std::string& path, sockaddr_un* out) {
     return true;
 }
 
+// A connected socket to `path` (blocking, close-on-exec, no SIGPIPE), or
+// -1 with why; `refused` when nothing listens there (a socket a dead host
+// left, or none). A host of another user's is refused too, not `refused`.
+int connectSocket(const std::string& path, std::string* error, bool* refused) {
+    if (refused) *refused = false;
+    sockaddr_un addr;
+    if (!socketAddress(path, &addr)) {
+        if (error) *error = path + ": the path is too long for a socket";
+        return -1;
+    }
+    const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        if (error) *error = std::strerror(errno);
+        return -1;
+    }
+    setFlags(fd, false);
+    int r;
+    do r = ::connect(fd, (sockaddr*)&addr, sizeof addr);
+    while (r != 0 && errno == EINTR);
+    if (r != 0) {
+        const int e = errno;
+        if (refused) *refused = e == ECONNREFUSED || e == ENOENT;
+        if (error) *error = path + ": " + std::strerror(e);
+        ::close(fd);
+        return -1;
+    }
+    if (!peerIsUs(fd)) {
+        if (error) *error = path + ": the host is another user's";
+        ::close(fd);
+        return -1;
+    }
+    return fd;
+}
+
 // `program` as given when it holds a '/', else the first executable of
 // that name in the PATH `env` names (then /usr/bin and /bin).
 std::string findInPath(const std::string& program, const std::vector<std::string>& env) {
@@ -331,6 +365,17 @@ bool HostServer::makeHost(const HostOptions& o) {
         },
         o.delayUs);
     host_->setFolder(o.folder);
+    // A window over SSH coming back names the connection it had (its
+    // Hello's "resume"): the host lets go of that one, and its connection
+    // closes here, however long the remote would take to notice it died.
+    host_->setDrop([this](ClientId gone) {
+        {
+            std::lock_guard<std::mutex> lk(mu_);
+            auto it = conns_.find(gone);
+            if (it != conns_.end()) it->second->dead = true;
+        }
+        wake();
+    });
     if (o.watchDisk) host_->watchDisk(true);   // before any renderer: the Welcome says it
     if (!o.backupDir.empty()) {
         Host::BackupKeeping k;
@@ -506,33 +551,8 @@ bool HostServer::run() {
 
 std::unique_ptr<HostLink> HostLink::open(const std::string& path, std::string* error,
                                          bool* refused) {
-    if (refused) *refused = false;
-    sockaddr_un addr;
-    if (!socketAddress(path, &addr)) {
-        if (error) *error = path + ": the path is too long for a socket";
-        return nullptr;
-    }
-    const int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        if (error) *error = std::strerror(errno);
-        return nullptr;
-    }
-    setFlags(fd, false);
-    int r;
-    do r = ::connect(fd, (sockaddr*)&addr, sizeof addr);
-    while (r != 0 && errno == EINTR);
-    if (r != 0) {
-        const int e = errno;
-        if (refused) *refused = e == ECONNREFUSED || e == ENOENT;
-        if (error) *error = path + ": " + std::strerror(e);
-        ::close(fd);
-        return nullptr;
-    }
-    if (!peerIsUs(fd)) {
-        if (error) *error = path + ": the host is another user's";
-        ::close(fd);
-        return nullptr;
-    }
+    const int fd = connectSocket(path, error, refused);
+    if (fd < 0) return nullptr;
     return std::unique_ptr<HostLink>(new HostLink(fd));
 }
 
@@ -751,6 +771,252 @@ void HostLink::close() {
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
     closed_ = true;
+}
+
+// ---------------------------------------------------------------- a lasting host
+
+long long lastingIdleMs(const char* minutes) {
+    if (!minutes || !*minutes) return kLastingIdleMs;
+    char* end = nullptr;
+    const double m = std::strtod(minutes, &end);
+    if (!end || *end || !(m >= 0) || m > 1e7) return kLastingIdleMs;
+    return (long long)(m * 60000.0);
+}
+
+std::vector<std::string> withLastingFolder(std::vector<std::string> folders, const std::string& lasting) {
+    if (!lasting.empty() && std::find(folders.begin(), folders.end(), lasting) == folders.end())
+        folders.push_back(lasting);
+    return folders;
+}
+
+int startDetached(const std::vector<std::string>& argvIn, const std::string& logPath, std::string* error) {
+    if (argvIn.empty() || argvIn[0].empty()) {
+        if (error) *error = "no command to run";
+        return 0;
+    }
+    // Everything the children need, made before forking: between fork and
+    // exec only what is safe in a child of a threaded process runs.
+    std::vector<std::string> args = argvIn;
+    std::vector<char*> argv;
+    for (std::string& a : args) argv.push_back(&a[0]);
+    argv.push_back(nullptr);
+    const int log = logPath.empty()
+                        ? ::open("/dev/null", O_WRONLY | O_CLOEXEC)
+                        : ::open(logPath.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC | O_NOFOLLOW, 0600);
+    const int logErr = errno;
+    const int null = ::open("/dev/null", O_RDONLY | O_CLOEXEC);
+    int pidPipe[2] = {-1, -1}, execPipe[2] = {-1, -1};
+    auto closeAll = [&] {
+        for (int fd : {log, null, pidPipe[0], pidPipe[1], execPipe[0], execPipe[1]})
+            if (fd >= 0) ::close(fd);
+    };
+    if (log < 0 || null < 0) {
+        if (error)
+            *error = (logPath.empty() || log >= 0 ? std::string("/dev/null") : logPath) + ": " +
+                     std::strerror(log < 0 ? logErr : errno);
+        closeAll();
+        return 0;
+    }
+    if (pipe(pidPipe) != 0 || pipe(execPipe) != 0) {
+        if (error) *error = std::string("no pipe: ") + std::strerror(errno);
+        closeAll();
+        return 0;
+    }
+    for (int fd : {pidPipe[0], pidPipe[1], execPipe[0], execPipe[1]}) fcntl(fd, F_SETFD, FD_CLOEXEC);
+    long maxFd = sysconf(_SC_OPEN_MAX);
+    if (maxFd < 0 || maxFd > 65536) maxFd = 65536;
+    const pid_t middle = fork();
+    if (middle < 0) {
+        if (error) *error = std::string("could not fork: ") + std::strerror(errno);
+        closeAll();
+        return 0;
+    }
+    if (middle == 0) {
+        // The go-between: a session of its own, then the process itself,
+        // whose parent it stops being at once (init, or a subreaper, takes
+        // it), so it is nobody's child here and in no group but its own.
+        setsid();
+        const pid_t pid = fork();
+        if (pid == 0) {
+            sigset_t none;
+            sigemptyset(&none);
+            sigprocmask(SIG_SETMASK, &none, nullptr);
+            const int sigs[] = {SIGINT, SIGQUIT, SIGTSTP, SIGTTIN, SIGTTOU, SIGPIPE, SIGCHLD, SIGTERM, SIGALRM};
+            for (int sig : sigs) signal(sig, SIG_DFL);
+            signal(SIGHUP, SIG_IGN);
+            dup2(null, 0);
+            dup2(log, 1);
+            dup2(log, 2);
+            for (long fd = 3; fd < maxFd; fd++)
+                if (fd != execPipe[1]) ::close((int)fd);
+            execv(argv[0], argv.data());
+            const int e = errno;
+            ssize_t w;
+            do w = ::write(execPipe[1], &e, sizeof e);
+            while (w < 0 && errno == EINTR);
+            _exit(127);
+        }
+        const int got = (int)pid;
+        ssize_t w;
+        do w = ::write(pidPipe[1], &got, sizeof got);
+        while (w < 0 && errno == EINTR);
+        _exit(pid > 0 ? 0 : 1);
+    }
+    ::close(pidPipe[1]);
+    ::close(execPipe[1]);
+    pidPipe[1] = execPipe[1] = -1;
+    int pid = 0;
+    ssize_t n;
+    do n = ::read(pidPipe[0], &pid, sizeof pid);
+    while (n < 0 && errno == EINTR);
+    int st = 0;
+    while (waitpid(middle, &st, 0) < 0 && errno == EINTR) {}
+    if (n != (ssize_t)sizeof pid || pid <= 0) {
+        if (error) *error = "could not start " + argvIn[0];
+        closeAll();
+        return 0;
+    }
+    // The exec's end of its pipe closes as it succeeds; an errno when not.
+    int e = 0;
+    do n = ::read(execPipe[0], &e, sizeof e);
+    while (n < 0 && errno == EINTR);
+    closeAll();
+    if (n == (ssize_t)sizeof e) {
+        if (error) *error = "could not run " + argvIn[0] + ": " + std::strerror(e);
+        return 0;
+    }
+    return pid;
+}
+
+int connectOrStartHost(const std::string& folder, const std::vector<std::string>& dirs,
+                       const std::function<int(std::string* why)>& start, int timeoutMs,
+                       std::string* error) {
+    // The host's socket connected, -1 for none; `none` when no host answers
+    // (no socket, or one a dead host left), not when one refused.
+    auto attempt = [&](bool* none) {
+        *none = false;
+        const std::string path = findHostSocket(folder, dirs);
+        if (path.empty()) {
+            *none = true;
+            return -1;
+        }
+        bool refused = false;
+        std::string why;
+        const int fd = connectSocket(path, &why, &refused);
+        if (fd < 0) {
+            *none = refused;
+            if (!refused && error) *error = why;
+        }
+        return fd;
+    };
+    bool none = false;
+    int fd = attempt(&none);
+    if (fd >= 0 || !none) return fd;
+    std::string why;
+    const int pid = start ? start(&why) : 0;
+    if (pid <= 0) {
+        if (error) *error = why.empty() ? "no host could be started" : why;
+        return -1;
+    }
+    // A host starts in milliseconds; a second one at the same moment finds
+    // the first's lock and ends, and the first's socket comes all the same.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    for (;;) {
+        fd = attempt(&none);
+        if (fd >= 0 || !none) return fd;
+        const bool ended = kill(pid, 0) != 0 && errno == ESRCH;
+        if (ended || std::chrono::steady_clock::now() >= deadline) {
+            fd = attempt(&none);   // one that ended on finding another's
+            if (fd >= 0 || !none) return fd;
+            if (error)
+                *error = "the host it started (pid " + std::to_string(pid) + ") " +
+                         (ended ? std::string("ended")
+                                : "did not answer within " + std::to_string(timeoutMs / 1000) + " seconds");
+            return -1;
+        }
+        usleep(20 * 1000);
+    }
+}
+
+namespace {
+
+bool sendAll(int fd, const char* p, std::size_t n) {
+    while (n > 0) {
+        const ssize_t w = sendSome(fd, p, n);
+        if (w < 0 && errno == EINTR) continue;
+        if (w <= 0) return false;
+        p += w;
+        n -= (std::size_t)w;
+    }
+    return true;
+}
+
+}  // namespace
+
+void relayStdio(int in, int out, int sock, const std::string& askedFile, bool askedNew) {
+    // The host's lines are read whole until its Welcome has gone by (named
+    // for the file asked), then everything passes as it comes.
+    bool welcomed = askedFile.empty();
+    std::string pending;
+    char buf[65536];
+    pollfd fds[2] = {{in, POLLIN, 0}, {sock, POLLIN, 0}};
+    for (;;) {
+        fds[0].revents = fds[1].revents = 0;
+        const int n = poll(fds, 2, -1);
+        if (n < 0) {
+            if (errno == EINTR) continue;
+            return;
+        }
+        if (fds[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+            const ssize_t r = ::read(in, buf, sizeof buf);
+            if (r < 0 && errno == EINTR) continue;
+            if (r <= 0 || !sendAll(sock, buf, (std::size_t)r)) return;   // the renderer gone
+        }
+        if (fds[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+            const ssize_t r = ::read(sock, buf, sizeof buf);
+            if (r < 0 && errno == EINTR) continue;
+            if (r <= 0) return;   // the host gone
+            if (welcomed) {
+                if (!writeAllToPipe(out, std::string(buf, (std::size_t)r))) return;
+                continue;
+            }
+            pending.append(buf, (std::size_t)r);
+            std::string forward;
+            std::size_t start = 0;
+            while (!welcomed) {
+                const std::size_t nl = pending.find('\n', start);
+                if (nl == std::string::npos) break;
+                std::string line = pending.substr(start, nl - start);
+                start = nl + 1;
+                Message m;
+                if (decode(line, &m) && m.kind == Kind::Welcome) {
+                    Json j = m.json.isObject() ? m.json : Json::object();
+                    j.set("file", Json(askedFile));
+                    if (askedNew) j.set("new", Json(true));
+                    m.json = std::move(j);
+                    line = encode(m);
+                    welcomed = true;
+                }
+                forward += line;
+                forward += '\n';
+            }
+            pending.erase(0, start);
+            if (welcomed) {
+                forward += pending;   // the rest as it came
+                pending.clear();
+            } else if (pending.size() > kMaxLine) {
+                return;
+            }
+            if (!forward.empty() && !writeAllToPipe(out, forward)) return;
+        }
+    }
+}
+
+long long reconnectDelayMs(int attempt) {
+    if (attempt < 0 || attempt >= kReconnectAttempts) return -1;
+    long long ms = 500;
+    for (int i = 0; i < attempt && ms < 30000; i++) ms *= 2;
+    return std::min(ms, 30000LL);
 }
 
 // ---------------------------------------------------------------- the dump

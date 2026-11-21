@@ -135,6 +135,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -204,6 +205,18 @@ public:
         askedFile_ = std::move(file);
         askedFileNew_ = isNew;
     }
+    // A renderer coming back (stage 8, a window over SSH reconnecting): its
+    // Hello's json {"resume": token} names the renderer it was before the
+    // connection dropped, by a token of its own. Any renderer still here
+    // with that token is the old connection, which may not have noticed
+    // the drop (a dead TCP connection the remote's sshd sees only hours
+    // later): it is disconnected at once, as if it had gone (its seats
+    // and its place among each terminal's viewers given up, so it holds no
+    // terminal's credit), nothing more is taken from it or sent to it, and
+    // `drop` (the server's) is told so its connection is closed. Set once,
+    // before any renderer.
+    void setDrop(std::function<void(ClientId)> drop) { drop_ = std::move(drop); }
+
     // Why the session must not end now, "" when nothing would be lost: a
     // document with unsaved changes, or a terminal running a program (a
     // command the integration marked running, or a foreground process group
@@ -315,6 +328,7 @@ private:
         bool hearsDirty = false;     // flag 8: told DocDirty
         bool savesThroughHost = false;   // flag 16 (with 4): an app whose saves are DocSave
         bool hearsDisk = false;      // flag 32: told FsChanged and DocDisk
+        std::string resume;          // its Hello's {"resume"}: who it was before a drop
         std::uint64_t idBase = 0;   // its Welcome's: the ids it makes are above it
     };
     // One applied edit, as every renderer may need it again: by whom, in
@@ -390,6 +404,8 @@ private:
     std::string ownShell_;
     std::string askedFile_;
     bool askedFileNew_ = false;
+    std::function<void(ClientId)> drop_;   // setDrop's
+    std::set<ClientId> dropped_;           // replaced by a renderer resuming, until the server lets go
     // A watch op answered (FsData's json), the ask kept.
     Json onWatchAsk(ClientId c, std::uint64_t window, const Json& request);
     void onReload(ClientId c, Message& m);
@@ -607,6 +623,9 @@ public:
     // The host's own shell and environment (Host::setOwnShell), on its
     // thread; before any renderer connects.
     void setOwnShell(std::vector<std::string> env, std::string shell);
+    // Told (on its thread) of a renderer a resuming one replaced, whose
+    // connection is to be closed (Host::setDrop); before any renderer.
+    void setDrop(std::function<void(ClientId)> drop);
     // The file its Welcome names (Host::setAskedFile), on its thread; `isNew`
     // when it is not there yet.
     void setAskedFile(std::string file, bool isNew = false);

@@ -117,6 +117,12 @@ public:
     // setKeepsBackups): a guest's save of a document its window shows is
     // then the host's to make, as the app's are. Before connect().
     void setSavesThroughHost(bool on) { savesThroughHost_ = on; }
+    // A window over SSH (stage 8): a token of its own, the same on every
+    // connection its link makes again after a drop, said in its Hello
+    // ({"resume": token}) so the host lets go at once of the connection it
+    // had, which the remote may not have noticed is dead (Host::setDrop).
+    // Before connect().
+    void setResume(std::string token) { resume_ = std::move(token); }
     // Whether the host saves documents itself (its Welcome said so; a host
     // from before saving does not, and would drop a DocSave). Known once
     // the Welcome is taken (settle after connect()).
@@ -468,6 +474,7 @@ private:
     std::function<void(DocId, bool)> dirtyListener_;
     std::function<void(DocId, std::uint64_t, const Json&)> writtenListener_;
     int hostFlags_ = 0;   // the Welcome's
+    std::string resume_;       // setResume's
     std::string hostFolder_;   // the Welcome's name
     Json welcome_;             // the Welcome's json
     Send send_;
