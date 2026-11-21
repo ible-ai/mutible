@@ -316,11 +316,14 @@ void Link::detach() {
 }
 
 void Link::dispatch() {
+    if (!client_) return;   // let go of (too old a host there), a wake still queued
     client_->dispatch();
-    // Connecting again after a drop (reconnectRemote): the Welcome came, or
-    // ssh ended first.
+    // Connecting (connectRemote, reconnectRemote): the Welcome came, or ssh
+    // ended first.
     if (connecting_) {
         if (client_->idBase()) {
+            // What ssh said before it, for the stages passed (`--stdio`'s start).
+            if (socket_) progress_.heard(socket_->stderrText());
             finishConnecting(true, "");
             if (!client_) return;   // too old a host there: let go of
         } else if (client_->lost()) {
@@ -619,10 +622,10 @@ std::string Link::key() const {
 }
 
 // `mutible host --stdio <path>` on the target, through the user's ssh (or
-// $MUTIBLE_SSH, the checks' stand-in), attached to over its pipes. False,
-// with why in the window's words, when its Welcome does not come or the
-// host there is too old for a window over SSH; nothing of it is kept then.
-bool Link::startRemote(std::weak_ptr<Link> self, std::string *why, bool wait) {
+// $MUTIBLE_SSH, the checks' stand-in), attached to over its pipes without
+// waiting for its Welcome (finishConnecting takes it). False, with why,
+// when ssh could not be run.
+bool Link::startRemote(std::weak_ptr<Link> self, std::string *why) {
     std::string ssh = EnvString(@"MUTIBLE_SSH");
     if (ssh.empty()) ssh = "/usr/bin/ssh";
     std::vector<std::string> env;
@@ -634,17 +637,8 @@ bool Link::startRemote(std::weak_ptr<Link> self, std::string *why, bool wait) {
         *why = error;
         return false;
     }
-    Shared::HostLink *transport = link.get();
     kind_ = Kind::Remote;
-    if (!attachClient(std::move(link), self, wait ? 30000 : 0)) {
-        // close() waited for ssh's end: its status and what it said.
-        *why = Shared::explainSshFailure(target_, transport->exitStatus(), transport->stderrText());
-        socket_.reset();
-        owned_.reset();
-        client_ = nullptr;
-        return false;
-    }
-    return !wait || takeWelcome(why);
+    return attachClient(std::move(link), self, 0);   // the Welcome comes in dispatch()
 }
 
 bool Link::takeWelcome(std::string *why) {
@@ -785,83 +779,49 @@ static std::string NewResumeToken() {
     return s;
 }
 
-std::shared_ptr<Link> forRemote(const std::string &address, std::string *why) {
+std::string remoteName(const std::string &address) {
     Shared::SshTarget t;
-    std::string error;
-    if (!Shared::parseSshUrl(address, &t, &error)) {
-        if (why) *why = error;
-        return nullptr;
-    }
-    const std::string name = Shared::sshMachineKey(t) + "\n" + t.path;
-    auto &reg = RemoteRegistry();
-    std::shared_ptr<Link> lost;
-    if (std::shared_ptr<Link> have = reg[name].lock()) {
-        if (!have->lost()) return have;
-        lost = have;
-    }
-    std::shared_ptr<Link> link(new Link());
-    link->target_ = t;
-    link->address_ = address;
-    link->machine_ = Shared::sshMachineKey(t);
-    // Reconnect's link is the lost one's again, as the host knows it.
-    link->resume_ = lost ? lost->resume_ : NewResumeToken();
-    reg[name] = link;   // before starting: its wake holds it by this
-    if (!link->startRemote(link, &error)) {
-        os_log_error(SessionLog(), "no window over ssh for %{public}s: %{public}s", address.c_str(), error.c_str());
-        reg.erase(name);
-        if (why) *why = error;
-        return nullptr;
-    }
-    // The title's "host:path": the folder as the address names it, so a
-    // file's address shows its folder.
-    Shared::SshTarget folder = t;
-    if (!link->askedFile_.empty()) {
-        const std::size_t slash = t.path.rfind('/');
-        folder.path = slash == std::string::npos ? "~" : slash == 0 ? "/" : t.path.substr(0, slash);
-    }
-    link->label_ = Shared::sshLabel(folder);
-    os_log(SessionLog(), "a window over ssh: %{public}s, the host's folder %{public}s", address.c_str(),
-           link->folder_.c_str());
-    return link;
+    if (!Shared::parseSshUrl(address, &t, nullptr)) return "";
+    return Shared::sshMachineKey(t) + "\n" + t.path;
 }
 
-// Links connecting again (reconnectRemote), held until they say how it went.
+std::string remoteMachine(const std::string &address) {
+    Shared::SshTarget t;
+    if (!Shared::parseSshUrl(address, &t, nullptr)) return "";
+    return Shared::sshMachineKey(t);
+}
+
+using RemoteDone = std::function<void(std::shared_ptr<Link>, const std::string &)>;
+
+static void AnswerLater(RemoteDone done, std::shared_ptr<Link> link, std::string why) {
+    dispatch_async(dispatch_get_main_queue(), ^{ done(link, why); });
+}
+
+// Links connecting (connectRemote, reconnectRemote), held until they say
+// how it went.
 static std::set<std::shared_ptr<Link>> &Connecting() {
     static auto *s = new std::set<std::shared_ptr<Link>>();
     return *s;
 }
 
-void reconnectRemote(std::shared_ptr<Link> lost, std::function<void(std::shared_ptr<Link>, const std::string &)> done) {
-    auto later = [done](std::shared_ptr<Link> l, std::string why) {
-        dispatch_async(dispatch_get_main_queue(), ^{ done(l, why); });
-    };
-    if (!lost || lost->kind() != Link::Kind::Remote) {
-        later(nullptr, "not a window over SSH");
-        return;
-    }
-    const std::string name = lost->machine_ + "\n" + lost->target_.path;
-    auto &reg = RemoteRegistry();
-    if (std::shared_ptr<Link> have = reg[name].lock(); have && have != lost && !have->lost()) {
-        later(have, "");
-        return;
-    }
-    std::shared_ptr<Link> link(new Link());
-    link->target_ = lost->target_;
-    link->address_ = lost->address_;
-    link->machine_ = lost->machine_;
-    link->label_ = lost->label_;
-    link->resume_ = lost->resume_;
+// ssh started for `link` (its target, address, machine and token set) and
+// its client attached without waiting: Link::dispatch sees the Welcome or
+// ssh's end and calls finishConnecting, which registers the link under
+// `name` when it connected and answers `done` on the next main queue turn.
+std::shared_ptr<Link> startConnecting(std::shared_ptr<Link> link, const std::string &name, RemoteDone done) {
     std::string why;
-    if (!link->startRemote(link, &why, false)) {
-        later(nullptr, why);
-        return;
+    if (!link->startRemote(link, &why)) {
+        os_log_error(SessionLog(), "no window over ssh for %{public}s: %{public}s", link->address_.c_str(),
+                     why.c_str());
+        AnswerLater(done, nullptr, why);
+        return nullptr;
     }
     Connecting().insert(link);
     link->connecting_ = true;
-    link->connected_ = [link = std::weak_ptr<Link>(link), name, later](bool ok, const std::string &why) {
+    link->connected_ = [link = std::weak_ptr<Link>(link), name, done](bool ok, const std::string &why) {
         std::shared_ptr<Link> l = link.lock();
         if (ok && l) RemoteRegistry()[name] = l;
-        later(ok ? l : nullptr, why);
+        AnswerLater(done, ok ? l : nullptr, why);
     };
     // ssh's ConnectTimeout is 20 s: past 30 the try is over.
     std::weak_ptr<Link> weak = link;
@@ -871,6 +831,69 @@ void reconnectRemote(std::shared_ptr<Link> lost, std::function<void(std::shared_
     });
     // A Welcome already dispatched (nothing waits on this turn) is taken
     // by the next dispatch, which its arrival schedules.
+    return link;
+}
+
+std::shared_ptr<Link> connectRemote(const std::string &address, RemoteDone done) {
+    Shared::SshTarget t;
+    std::string error;
+    if (!Shared::parseSshUrl(address, &t, &error)) {
+        AnswerLater(done, nullptr, error);
+        return nullptr;
+    }
+    const std::string name = Shared::sshMachineKey(t) + "\n" + t.path;
+    auto &reg = RemoteRegistry();
+    std::shared_ptr<Link> lost;
+    if (std::shared_ptr<Link> have = reg[name].lock()) {
+        if (!have->lost()) {
+            AnswerLater(done, have, "");
+            return have;
+        }
+        lost = have;
+    }
+    std::shared_ptr<Link> link(new Link());
+    link->target_ = t;
+    link->address_ = address;
+    link->machine_ = Shared::sshMachineKey(t);
+    // Over a lost link the token is the lost one's, as the host knows it.
+    link->resume_ = lost ? lost->resume_ : NewResumeToken();
+    return startConnecting(link, name, done);
+}
+
+void reconnectRemote(std::shared_ptr<Link> lost, RemoteDone done) {
+    if (!lost || lost->kind() != Link::Kind::Remote) {
+        AnswerLater(done, nullptr, "not a window over SSH");
+        return;
+    }
+    const std::string name = lost->machine_ + "\n" + lost->target_.path;
+    auto &reg = RemoteRegistry();
+    if (std::shared_ptr<Link> have = reg[name].lock(); have && have != lost && !have->lost()) {
+        AnswerLater(done, have, "");
+        return;
+    }
+    std::shared_ptr<Link> link(new Link());
+    link->target_ = lost->target_;
+    link->address_ = lost->address_;
+    link->machine_ = lost->machine_;
+    link->label_ = lost->label_;
+    link->resume_ = lost->resume_;
+    startConnecting(link, name, done);
+}
+
+const Shared::ConnectProgress &Link::progress() {
+    if (connecting_ && socket_) progress_.heard(socket_->stderrText());
+    return progress_;
+}
+
+pid_t Link::commandPid() const { return socket_ ? (pid_t)socket_->pid() : 0; }
+
+void Link::cancelConnecting() {
+    if (!connecting_) return;
+    progress_.cancel();
+    connected_ = nullptr;   // nobody is told
+    if (socket_) socket_->terminate();
+    os_log(SessionLog(), "stopped connecting over ssh: %{public}s", address_.c_str());
+    finishConnecting(false, "");
 }
 
 void Link::finishConnecting(bool ok, std::string why) {
@@ -884,14 +907,34 @@ void Link::finishConnecting(bool ok, std::string why) {
     auto done = std::move(connected_);
     connected_ = nullptr;
     if (!ok) {
+        progress_.failed();   // a cancelled one stays cancelled
         lostTold_ = true;
-        // ssh let go of on the next turn, not inside a dispatch of its own.
+        // ssh let go of on the next turn, not inside a dispatch of its own;
+        // killed first when it still runs (30 s gone by, or cancelled), so
+        // that close does not wait on the main thread for it to hang up.
         if (self)
             dispatch_async(dispatch_get_main_queue(), ^{
-                if (self->socket_) self->socket_->close();
+                if (self->socket_) {
+                    self->socket_->terminate();
+                    self->socket_->close();
+                }
             });
     } else {
-        os_log(SessionLog(), "a window over ssh connected again: %{public}s", address_.c_str());
+        progress_.welcomed(folder_);
+        // The title's "host:path": the folder as the address names it, so a
+        // file's address shows its folder.
+        if (label_.empty()) {
+            Shared::SshTarget folder = target_;
+            if (!askedFile_.empty()) {
+                const std::size_t slash = target_.path.rfind('/');
+                folder.path = slash == std::string::npos ? "~"
+                              : slash == 0               ? "/"
+                                                         : target_.path.substr(0, slash);
+            }
+            label_ = Shared::sshLabel(folder);
+        }
+        os_log(SessionLog(), "a window over ssh connected: %{public}s, the host's folder %{public}s",
+               address_.c_str(), folder_.c_str());
     }
     if (done) done(ok, why);
 }

@@ -3566,10 +3566,12 @@ through its host, so this is mostly a transport.
   `openRemoteAddress:` (main.mm), which first asks the open windows'
   hosts whether one holds the address ("Addresses an open window holds",
   below).
-- **The Mac's link** (`MCSession::forRemote`, Link::Kind::Remote): one per
-  machine and path as addressed, its client attached through the same
-  `attachClient` as a folder's socket link, waiting at most 30 s for the
-  Welcome on the main thread. `key()` (the machine's ssh:// and the
+- **The Mac's link** (`MCSession::forRemote` at first, `connectRemote`
+  since the fifth slice, Link::Kind::Remote): one per machine and path as
+  addressed, its client attached through the same `attachClient` as a
+  folder's socket link; at first waiting at most 30 s for the Welcome on
+  the main thread, since the fifth slice not waiting ("Connecting off the
+  main thread", below). `key()` (the machine's ssh:// and the
   folder) is what Reconnect moves windows by, so a remote folder spelled
   as a local one is never confused with it.
 - **The window** is an ordinary EditorController on the remote folder's
@@ -3998,8 +4000,10 @@ connects again by itself, and the window takes up what the host kept.
   (0.5, 1, 2, 4, 8, 16, then 30 s, twelve tries, about three and a half
   minutes); a try from an older round, a closing window or a link already
   moved does nothing. Success moves every window on the lost link
-  (`moveWindowsToLink:`); the last try failing shows Reconnect (which runs
-  the blocking `forRemote` as before, now carrying the token).
+  (`moveWindowsToLink:`); the last try failing shows Reconnect (which ran
+  the blocking `forRemote`, carrying the token; since the fifth slice one
+  more `reconnectRemote` try, "Reconnecting to host:path…" in the status
+  bar meanwhile).
 - **Taking up the host again** (`moveToSessionLink:`): over SSH it asks the
   new link's `sessionState()`; the window's record still there means
   `MCSessionWindow resumeOn:` (the same window id, `Link::adoptWindow`),
@@ -4046,6 +4050,107 @@ connects again by itself, and the window takes up what the host kept.
   (0.05 there). Not run here (the builder had no screen to use): CI runs
   it. A real drop between two machines (sleep, a network change, the
   remote sshd keeping the dead connection) needs the owner.
+
+#### Connecting off the main thread (2026-11-21, fifth slice)
+
+Before this, `mutible ssh://host/path` waited on the main thread for ssh to
+connect and the host there to answer (`forRemote`, up to 30 s on a slow or
+unreachable machine): the app beachballed, its other windows froze, and the
+failure's alert came after. Since #334 only the tries after a drop ran off
+the main thread. Now the first connect does too, and so does Reconnect.
+
+- **The link** (`MCSession::connectRemote`, SessionLink.h, which replaced
+  `forRemote`): the live link for the machine and path when there is one
+  (given on the next turn), else ssh spawned and the client attached
+  without waiting, through `startConnecting`, which `reconnectRemote` uses
+  too: `Link::dispatch` sees the Welcome (`idBase()`) or ssh's end
+  (`lost()`) and calls `finishConnecting`, which takes the Welcome
+  (`takeWelcome`, too old a host refused), makes the title's label from
+  the address (a file's folder for a file), registers the link and answers
+  `done` on the next main queue turn; 30 s with neither ends the try. A
+  lost link registered for the address gives its resume token, as
+  `forRemote` did. `done` is never called inside the call, and never for a
+  cancelled try.
+- **How far it got** (`Shared::ConnectProgress`, SessionServer.h, in the
+  core with `hostserver:connect-progress`): Connecting, Starting, Opening,
+  Open, or Failed or Cancelled, which end it from any stage before Open
+  and then nothing moves it; `passed(stage)` says a stage was reached even
+  if too short to be seen. Starting is `mutible host --stdio` saying
+  `Shared::kStdioStartedLine` ("mutible: host --stdio started") on its
+  standard error as the first thing it does (tools/mutible-cli.cpp), which
+  ssh carries back: the link's `progress()` looks at the command's stderr
+  (`HostLink::stderrText`) while connecting, and dispatch looks once more
+  before taking the Welcome. A host from before this says nothing, so the
+  line goes from connecting to opening. `explainSshFailure` leaves that
+  line out of what it quotes (`withoutStdioStarted`). The line: "Connecting
+  to host…", "Starting mutible on host…", "Opening <the Welcome's folder>
+  on host…".
+- **Cancel** (`Link::cancelConnecting`): the progress cancelled, the try's
+  `done` dropped, then `HostLink::terminate()` (new in the core: SIGKILL to
+  the command's process group and pid while it is not reaped, so the pid
+  is still its), and `finishConnecting(false)`, whose next-turn close
+  reaps it at once. A failed try's close terminates first too, so the 30 s
+  timeout's ssh, still running, is not waited for on the main thread
+  (close's hang-up waits up to 2.5 s).
+- **The connecting window** (`MCRemoteConnect`, mac/src/RemoteConnect.{h,mm}):
+  `openRemoteAddress:` (main.mm, now void) asks the open windows first, as
+  before (#327); then an address with the same machine, account and path as
+  a connect under way (`pendingForAddress:`, `MCSession::remoteName`) brings
+  that connect's window to front; one on the same machine and account
+  (`pendingOnMachineOf:`) is queued on it (`queueAddress:`), since the
+  window it opens may hold it; else `connectTo:opened:ended:` shows a
+  small window at once (460 by 118, not tabbed: a spinner, the line, the
+  address, Cancel with Esc as its key; the close button cancels too) and
+  polls the link's progress every 100 ms (common modes). The Welcome: the
+  line says "Opening …", and 50 ms later (so it is drawn) `opened` makes
+  the editor window on the link (`openWindowOnRemoteLink:`, what followed
+  `forRemote` before) and the small window closes. A failure: "Could not
+  open <address>" with `explainSshFailure`'s words as a sheet on the small
+  window, which closes when it is answered. `ended` then routes the queued
+  addresses again (`openRemoteAddress:`), so a file of the folder just
+  opened goes to its window through its host, and one the window does not
+  hold connects on its own; a cancelled connect drops its queue (they
+  would wait on the same machine). `+pending` lists the connects under way;
+  applicationDidFinishLaunching counts them as windows opened, so a launch
+  by `mutible ssh://...` neither restores the last session's windows nor
+  opens the cwd while it connects.
+- **Reconnect** over SSH (`reconnectSessionHost:`): one `reconnectRemote`
+  try, the button hidden and "Reconnecting to host:path…" in the status bar
+  meanwhile (`MCSessionWindow reconnectPressed`, so a second press waits);
+  failing, "Could not reconnect to host:path: why" and the button again;
+  succeeding, every window on the lost link moves, as the automatic tries
+  do. GTK's Reconnect was already one async try (#338).
+- **The GTK port** (#340 and before) polls the Welcome on its main loop
+  (`connectRemote`, a 20 ms timeout) with no window until it comes, and
+  each address opens a window of its own; the Mac's small window, its
+  stages, Cancel and the queue are not ported yet.
+
+#### Checks (fifth slice)
+
+- `make test`: `hostserver:connect-progress` (each stage's line, the
+  stages passed, `stdioStarted` on a line of its own, an older host's
+  connecting straight to opening, opened only from opening, cancel and
+  failure ending it for good); `hostserver:ssh-command`
+  (`explainSshFailure` leaving `--stdio`'s line out, alone, before and
+  after another); `hostserver:spawn` (`terminate()` killing a command and
+  the child in its group at once, then nothing).
+- `make guitest SUITES=remote_ssh`, its first steps, with the stand-in
+  sleeping (the number in its `ssh-slow` file) after it records its pid:
+  `openURLs:` returning with no editor window and one `MCRemoteConnect`
+  saying "Connecting to standin…" (its title `standin:<file> — mutible`);
+  a 50 ms timer firing while the stand-in sleeps; Esc through the window's
+  key equivalents cancelling it, the stand-in's pid gone, no window and no
+  alert; the stand-in refusing: "Could not open ssh://standin/<folder>",
+  "Connection refused" in its words, as a sheet on the connecting window,
+  which closed; then a 2 s sleep with the same address again (one connect)
+  and src/util.c's queued, the timer firing ten times or more meanwhile,
+  the stages passed through Starting and Opening ("Opening <folder> on
+  standin…" shown), one editor window, util.c's address opened in it
+  through its host, and the suite going on from there as before (the
+  `ssh://other/...` and outside-folder windows waited for). Not run here
+  (the builder had no screen to use): CI runs it. The small window's look
+  and a real slow ssh (an unreachable host's 20 s ConnectTimeout, Cancel
+  meanwhile) need the owner's eyes.
 
 #### The GTK window over SSH, the lasting host (2026-11-21, third slice)
 

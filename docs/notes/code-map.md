@@ -264,7 +264,9 @@ goes here first, with tests; the GUI only displays it.
   and what it took from a closed window's, stage 6), `RemoteWorkspace`
   (a window over SSH's folder through its host: the tree's `MCTreeSource`,
   the host's disk notices, Quick Open's list, Find in Folder, new files;
-  stage 8), `TypesetPages`
+  stage 8), `RemoteConnect` (the small window of a window over SSH
+  connecting off the main thread: its progress line, Cancel, the addresses
+  waiting for it; stage 8), `TypesetPages`
   (the session web page's LaTeX pages drawn as PNGs with CoreGraphics,
   off the main thread; `docs/notes/session-host.md`),
   `PalettePanel`, `Navigation`, `HintsSearchBox` (the hints panel's search box),

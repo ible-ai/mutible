@@ -102,7 +102,7 @@
 - (void)detachFromSessionHost;
 // A window over SSH (stage 8, `mutible ssh://host/path`): before
 // showWindow, the window is put on the remote host's link (an
-// MCSessionLinkRef whose link is MCSession::forRemote's), so its files are
+// MCSessionLinkRef whose link is MCSession::connectRemote's), so its files are
 // read and saved there and its terminals run there.
 - (void)useRemoteSessionLink:(id)link;
 // Whether the window is on another machine's host, and its "host:path".

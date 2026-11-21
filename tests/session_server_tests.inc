@@ -839,6 +839,25 @@ static void testSessionServer() {
             CHECK(st != -1 && WIFSIGNALED(st) && (WTERMSIG(st) == SIGHUP || WTERMSIG(st) == SIGKILL));
             if (!(st != -1 && WIFSIGNALED(st))) std::printf("  sleep's status: %d\n", st);
         }
+        // terminate(): the command and its group (a child it started)
+        // killed at once, so close() has nothing to wait for; then nothing.
+        link = Shared::HostLink::spawn({"sh", "-c", "sleep 30 & echo $! >&2; wait"}, {"PATH=/usr/bin:/bin"}, &error);
+        CHECK(link != nullptr);
+        if (link) {
+            std::atomic<bool> ended{false};
+            link->start([](Shared::Message&&) {}, [&] { ended = true; });
+            const int pid = link->pid();
+            CHECK(waitUntil([&] { return !link->stderrText().empty() && link->stderrText().back() == '\n'; }, 5000));
+            const int child = std::atoi(link->stderrText().c_str());
+            CHECK(child > 0);
+            link->terminate();
+            CHECK(waitUntil([&] { return ended.load(); }, 5000));
+            link->close();
+            const int st = link->exitStatus();
+            CHECK(gone(pid) && st != -1 && WIFSIGNALED(st) && WTERMSIG(st) == SIGKILL);
+            CHECK(child > 0 && waitUntil([&] { return kill(child, 0) != 0 && errno == ESRCH; }, 5000));
+            link->terminate();   // ended: nothing to do
+        }
         // A program that is not there: no link, or one that ends at once
         // with 127 (a libc that reports exec's failure only so).
         link = Shared::HostLink::spawn({"/nonexistent/ssh-stand-in"}, {}, &error);
@@ -919,6 +938,80 @@ static void testSessionServer() {
         CHECK(Shared::parseSshUrl("ssh://eric@box:2200/p", &t, nullptr));
         s = Shared::explainSshFailure(t, exited(255), "Permission denied\n");
         CHECK(s.find("`ssh -p 2200 eric@box`") != std::string::npos);
+        // `--stdio`'s word that it started is never the reason quoted.
+        const std::string started = std::string(Shared::kStdioStartedLine) + "\n";
+        s = Shared::explainSshFailure(t, exited(1), started);
+        CHECK(s == "The host on eric@box ended (exit status 1).");
+        s = Shared::explainSshFailure(t, exited(1), "mutible: /x: no such file or folder\n" + started);
+        CHECK(s == "The host on eric@box ended: mutible: /x: no such file or folder");
+        s = Shared::explainSshFailure(t, exited(1), started + "mutible: no lasting host\n");
+        CHECK(s == "The host on eric@box ended: mutible: no lasting host");
+    }
+
+    GROUP("hostserver:connect-progress");
+    {
+        // A window over SSH connecting: its line through each stage, the
+        // stages passed, and the ends it cannot leave.
+        Shared::SshTarget t;
+        CHECK(Shared::parseSshUrl("ssh://eric@pi/~/proj", &t, nullptr));
+        using Stage = Shared::ConnectProgress::Stage;
+        const std::string started = Shared::kStdioStartedLine;
+        CHECK(Shared::stdioStarted(started + "\n") && Shared::stdioStarted("Warning: added key\r\n" + started));
+        CHECK(Shared::stdioStarted(started));   // its line not ended yet
+        CHECK(!Shared::stdioStarted("") && !Shared::stdioStarted("x" + started + "\n"));
+        CHECK(!Shared::stdioStarted(started.substr(0, started.size() - 1)));   // half of it so far
+
+        Shared::ConnectProgress p;
+        CHECK(p.stage() == Stage::Connecting && !p.ended() && p.passed(Stage::Connecting));
+        CHECK(p.line(t) == "Connecting to eric@pi…");
+        p.heard("");
+        p.heard("Warning: Permanently added 'pi' to the list of known hosts.\n");
+        CHECK(p.stage() == Stage::Connecting && !p.passed(Stage::Starting));
+        p.heard("Warning: ...\n" + started + "\n");
+        CHECK(p.stage() == Stage::Starting && p.line(t) == "Starting mutible on eric@pi…");
+        p.welcomed("/home/eric/proj");
+        CHECK(p.stage() == Stage::Opening && p.line(t) == "Opening /home/eric/proj on eric@pi…");
+        p.heard(started);   // heard again: nothing goes back
+        CHECK(p.stage() == Stage::Opening);
+        p.opened();
+        CHECK(p.stage() == Stage::Open && p.ended() && p.line(t) == "Opened /home/eric/proj on eric@pi.");
+        CHECK(p.passed(Stage::Connecting) && p.passed(Stage::Starting) && p.passed(Stage::Opening));
+        CHECK(!p.cancel() && p.stage() == Stage::Open);   // too late to cancel
+        p.failed();
+        CHECK(p.stage() == Stage::Open && !p.passed(Stage::Failed));
+
+        // An older host says nothing as it starts: connecting, then opening.
+        Shared::ConnectProgress old;
+        old.welcomed("/srv");
+        CHECK(old.stage() == Stage::Opening && !old.passed(Stage::Starting));
+        CHECK(old.line(t) == "Opening /srv on eric@pi…");
+        old.opened();
+        CHECK(old.stage() == Stage::Open);
+
+        // Opened only from opening.
+        Shared::ConnectProgress early;
+        early.opened();
+        CHECK(early.stage() == Stage::Connecting);
+
+        // Cancelled while ssh connects: it ends there, and nothing later moves it.
+        Shared::ConnectProgress c;
+        CHECK(c.cancel() && c.stage() == Stage::Cancelled && c.ended());
+        CHECK(c.line(t) == "Stopped connecting to eric@pi.");
+        c.heard(started);
+        c.welcomed("/x");
+        c.opened();
+        c.failed();
+        CHECK(c.stage() == Stage::Cancelled && !c.passed(Stage::Starting) && !c.passed(Stage::Failed));
+        CHECK(!c.cancel());
+
+        // Failed while mutible starts there.
+        Shared::ConnectProgress f;
+        f.heard(started + "\n");
+        f.failed();
+        CHECK(f.stage() == Stage::Failed && f.passed(Stage::Starting) && f.line(t) == "Could not connect to eric@pi.");
+        CHECK(!f.cancel());
+        f.welcomed("/x");
+        CHECK(f.stage() == Stage::Failed && !f.passed(Stage::Opening));
     }
 
     GROUP("hostserver:own-shell");

@@ -25,6 +25,8 @@
 
 namespace Shared {
 
+const char* const kStdioStartedLine = "mutible: host --stdio started";
+
 namespace {
 
 // A connection's line, or what waits to be written to it, past which the
@@ -716,6 +718,14 @@ bool HostLink::send(const Message& m) {
     return true;
 }
 
+void HostLink::terminate() {
+    // Not reaped yet, so the pid (and its group, the command's own session)
+    // is still the command's.
+    if (pid_ <= 0 || status_.load() != -1) return;
+    kill(-pid_, SIGKILL);
+    kill(pid_, SIGKILL);
+}
+
 void HostLink::close() {
     if (pid_ > 0) {
         // A command: its input closed, which ends a `mutible host --stdio`
@@ -1143,6 +1153,22 @@ std::string lastLine(const std::string& text) {
 
 bool contains(const std::string& hay, const char* needle) { return hay.find(needle) != std::string::npos; }
 
+// `text` without the lines that are kStdioStartedLine.
+std::string withoutStdioStarted(const std::string& text) {
+    std::string out;
+    std::size_t at = 0;
+    while (at < text.size()) {
+        std::size_t end = text.find('\n', at);
+        const std::size_t next = end == std::string::npos ? text.size() : end + 1;
+        if (end == std::string::npos) end = text.size();
+        std::string line = text.substr(at, end - at);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line != kStdioStartedLine) out.append(text, at, next - at);
+        at = next;
+    }
+    return out;
+}
+
 }  // namespace
 
 bool parseSshUrl(const std::string& url, SshTarget* out, std::string* error) {
@@ -1256,7 +1282,8 @@ std::string explainSshFailure(const SshTarget& t, int status, const std::string&
     const std::string who = (t.user.empty() ? "" : t.user + "@") + t.host;
     const std::string typed = sshAsTyped(t);
     const int code = status >= 0 && WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-    const std::string last = lastLine(err);
+    // `--stdio`'s word that it started explains nothing.
+    const std::string last = lastLine(withoutStdioStarted(err));
     if (contains(err, "Host key verification failed") || contains(err, "IDENTIFICATION HAS CHANGED") ||
         contains(err, "authenticity of host") || contains(err, "No ED25519 host key is known") ||
         contains(err, "host key is known"))
@@ -1285,6 +1312,52 @@ std::string explainSshFailure(const SshTarget& t, int status, const std::string&
     if (status >= 0 && WIFSIGNALED(status))
         return "The connection to " + who + " ended (signal " + std::to_string(WTERMSIG(status)) + ").";
     return "The connection to " + who + " closed.";
+}
+
+bool stdioStarted(const std::string& stderrText) {
+    return withoutStdioStarted(stderrText).size() != stderrText.size();
+}
+
+void ConnectProgress::moveTo(Stage s) {
+    if (ended()) return;
+    stage_ = s;
+    passed_ |= 1u << unsigned(s);
+}
+
+void ConnectProgress::heard(const std::string& stderrText) {
+    if (stage_ == Stage::Connecting && stdioStarted(stderrText)) moveTo(Stage::Starting);
+}
+
+void ConnectProgress::welcomed(const std::string& folder) {
+    if (stage_ != Stage::Connecting && stage_ != Stage::Starting) return;
+    folder_ = folder;
+    moveTo(Stage::Opening);
+}
+
+void ConnectProgress::opened() {
+    if (stage_ == Stage::Opening) moveTo(Stage::Open);
+}
+
+void ConnectProgress::failed() { moveTo(Stage::Failed); }
+
+bool ConnectProgress::cancel() {
+    if (ended()) return false;
+    moveTo(Stage::Cancelled);
+    return true;
+}
+
+std::string ConnectProgress::line(const SshTarget& t) const {
+    const std::string who = (t.user.empty() ? "" : t.user + "@") + t.host;
+    const std::string folder = folder_.empty() ? t.path : folder_;
+    switch (stage_) {
+    case Stage::Connecting: return "Connecting to " + who + "…";
+    case Stage::Starting: return "Starting mutible on " + who + "…";
+    case Stage::Opening: return "Opening " + folder + " on " + who + "…";
+    case Stage::Open: return "Opened " + folder + " on " + who + ".";
+    case Stage::Failed: return "Could not connect to " + who + ".";
+    case Stage::Cancelled: return "Stopped connecting to " + who + ".";
+    }
+    return "";
 }
 
 }  // namespace Shared
