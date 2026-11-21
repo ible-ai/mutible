@@ -1212,7 +1212,8 @@ place on its link, and `EditorController+Session.mm` the window's hooks.
   (`attachHeldShell`) makes a fresh screen at the host's size, attaches
   (the replay, then output; replay bytes are never acknowledged), and
   says its own size. Its marks count only with the nonce this process gave
-  the shell (`HostNonces`); its prompt state starts from the host's
+  the shell (`HostNonces`, by the link's `key()` and the terminal's id:
+  every host hands out the same ids); its prompt state starts from the host's
   `TermShell`. A shell from before a relaunch has no nonce here and runs
   without the integration's marks (the foreground decides, as after
   `exec bash`).
@@ -3927,6 +3928,15 @@ connects again by itself, and the window takes up what the host kept.
   code that reads or stamps the tab's path locally passes there and fails
   on a real remote. Every local look in a remote window goes through
   `sessionIsRemote`; a new one must too.
+- **A terminal id names a terminal only on its own host.** Every host
+  gives its first renderer the same range, so ids repeat across hosts.
+  `HostNonces` was keyed by the id alone: in the full GUI run an SSH
+  window's terminal, taken up again after a drop, found the nonce of
+  host_reattach's local terminal of the same id, so it believed the
+  integration was on, waited for marks its remote shell never sends, and
+  neither saw `sleep` as a program nor typed a command (remote_ssh
+  passed alone, failed after host_reattach). Anything kept per terminal
+  across links is keyed by the host too.
 - **A remote pid is not a process here.** `proc_name`, `KERN_PROC_*` and
   `proc_pidpath` of a remote terminal's pids name whatever local process
   has that number; TerminalView's `_remote` guards each.

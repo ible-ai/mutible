@@ -79,6 +79,7 @@
 #include <deque>
 #include <map>
 #include <memory>
+#include <utility>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -888,12 +889,19 @@ struct MCHostTermListener : Shared::Client::TermListener {
     [self startShell];
 }
 
-// The nonce of each shell this process opened on a host, by its terminal
-// id: a held one this process started keeps its marks believed when a
-// window takes it over (a shell from before a relaunch has none here, and
-// runs without the integration's marks).
-static std::map<Shared::TermId, std::string> &HostNonces() {
-    static auto *m = new std::map<Shared::TermId, std::string>();
+// The nonce of each shell this process opened on a host, by the host (its
+// link's key: the folder here, the machine and folder over SSH) and the
+// terminal's id there: a held one this process started keeps its marks
+// believed when a window takes it over (a shell from before a relaunch has
+// none here, and runs without the integration's marks). Not by the id
+// alone: every host hands out the same ids (its first renderer's range), so
+// an SSH window's terminal, reattached after a drop, found the nonce of a
+// local host's terminal of the same id, waited for marks its remote shell
+// never sends, and neither ran a command nor saw a program (remote_ssh in
+// the full GUI run, after host_reattach's shells).
+using MCHostNonceKey = std::pair<std::string, Shared::TermId>;
+static std::map<MCHostNonceKey, std::string> &HostNonces() {
+    static auto *m = new std::map<MCHostNonceKey, std::string>();
     return *m;
 }
 
@@ -910,7 +918,7 @@ static std::map<Shared::TermId, std::string> &HostNonces() {
         [self note:@"[the session's host went away: no shell can start here]" color:0xF48771];
         return;
     }
-    auto known = HostNonces().find(h.heldTerm);
+    auto known = HostNonces().find({_link->key(), h.heldTerm});
     std::string nonce;
     if (known != HostNonces().end()) nonce = known->second;
     _integrated = !nonce.empty();
@@ -2693,7 +2701,10 @@ static NSString *MCBrowserHelperPath(void) {
             spec.nonce.clear();
         }
         _hostTerm = [self hostClient].newId();   // from the client's range on the host
-        if (_integrated) HostNonces()[_hostTerm] = nonce;
+        // A shell without the integration (a remote one) has no nonce: one
+        // left from an ended host's terminal of the same id goes.
+        if (_integrated) HostNonces()[{_link->key(), _hostTerm}] = nonce;
+        else HostNonces().erase({_link->key(), _hostTerm});
         _hostShell = Shared::TermShell();
         _hostInput.clear();
         _shellStarted = [NSDate date];
