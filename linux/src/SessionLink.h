@@ -69,21 +69,24 @@
 #include <utility>
 #include <vector>
 
+#include "FolderSearch.h"
 #include "SessionClient.h"
+#include "SessionServer.h"
 
 namespace Model {
 class Window;
 }
 namespace Shared {
 class SessionHost;
-class HostLink;
 }
 
 namespace SessionLink {
 
 class Link {
 public:
-    enum class Kind { InProcess, Loopback, Socket };
+    // Remote: `mutible host --stdio` on another machine through the user's
+    // ssh (stage 8, connectRemote).
+    enum class Kind { InProcess, Loopback, Socket, Remote };
     ~Link();
     Link(const Link&) = delete;
     Link& operator=(const Link&) = delete;
@@ -98,6 +101,33 @@ public:
     pid_t startedHost() const { return startedHost_; }
     // The headless host went away.
     bool lost() const { return client_->lost(); }
+
+    // ---- a remote link (Kind::Remote, stage 8)
+    // Which host this is, for moving windows to its replacement: the folder
+    // for a link on this machine, the other machine's ssh:// and the folder
+    // there for a remote one.
+    std::string key() const { return kind_ == Kind::Remote ? machine_ + "\n" + folder_ : folder_; }
+    // Its address as given (ssh://...), its title's "host:path" (the folder
+    // as the address names it, ~ kept), the file the address named (spelled
+    // under folder(), as the host resolved it; "" for a folder), and why the
+    // connection went (ssh's status and last words, in the window's words)
+    // once lost.
+    const std::string& address() const { return address_; }
+    const std::string& label() const { return label_; }
+    const std::string& askedFile() const { return askedFile_; }
+    const std::string& failure() const { return failure_; }
+    // A file's text read through the host (FsRead "read", piece by piece, 64
+    // MB at most), decoded as a local file is (FolderSearch::decodeFileText).
+    // `ok` false when it cannot be read or is not text; `tooLarge` past the
+    // limit. Waits on the host (at most 20 s a piece). Never a stamp: the
+    // file is on the other machine.
+    struct RemoteText {
+        bool ok = false, tooLarge = false;
+        std::string text;
+        FolderSearch::TextEncoding encoding = FolderSearch::TextEncoding::Utf8;
+        bool bom = false;
+    };
+    RemoteText readText(const std::string& path);
     // For checks: the in-process host, null on a headless one
     // (SessionHost::diskWatchSettled).
     Shared::SessionHost* inProcessHost() const { return host_.get(); }
@@ -185,18 +215,23 @@ public:
 
 private:
     friend std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
+    friend void connectRemote(const std::string& address,
+                              std::function<void(std::shared_ptr<Link>, std::string)> done);
     Held free(bool all);
     Json tabsJson(std::uint64_t window, const Model::Window& w) const;
     Link() = default;
     struct Wake;
     void startInProcess(bool loopback, unsigned delayUs);
     bool startSocket(std::string* why);
+    bool startRemote(std::string* why);
     void makeClient();
     static int dispatchOnMain(void* wake);   // a GSourceFunc
     std::uint64_t hostWindow(std::uint64_t window);
 
     Kind kind_ = Kind::InProcess;
     std::string folder_, socketPath_;
+    std::string address_, label_, machine_, askedFile_, failure_;
+    Shared::SshTarget target_;
     pid_t startedHost_ = 0;
     std::shared_ptr<Wake> wake_;
     // Destroyed in this order (~Link): the transport first, whose thread
@@ -234,6 +269,18 @@ private:
 // is passed over: the folder gets a new one (stage 6, step 2: the windows
 // on the old one move to it, Editor::rehost), found or started again.
 std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
+// A window over SSH (stage 8): `address` is ssh://[user@]host[:port]/path.
+// The user's ssh ($MUTIBLE_SSH names another program, for the checks)
+// running `mutible host --stdio <path>` there is started, and `done` is
+// called on the main loop, never inside this call, with the live link once
+// the host's Welcome has come (at most 30 s: ssh's connection), or with a
+// null link and why in the window's words (ssh needed a password or a host
+// key confirmed, mutible missing or too old there, ssh's own last line).
+// The main loop runs meanwhile (the start is a spawn, the wait polls), so
+// nothing waits on a connection. A live link for that machine and path is
+// given again.
+void connectRemote(const std::string& address, std::function<void(std::shared_ptr<Link>, std::string)> done);
+
 // Whether the folder's link now has lost its host (a new window, or
 // Reconnect, finds or starts it again).
 bool folderLost(const std::string& root);

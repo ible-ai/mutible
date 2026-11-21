@@ -483,6 +483,10 @@ public:
     uint64_t id() const { return id_; }
     // The link to the session's host it was opened on.
     SessionLink::Link* sessionLink() const { return link_.get(); }
+    // On a host over SSH (stage 8): the file is on the other machine, so
+    // nothing of this machine's disk at its path is looked at, stamped,
+    // watched or written; the host reads it (Editor::loadInto) and writes it.
+    bool remote() const { return link_ && link_->kind() == SessionLink::Link::Kind::Remote; }
     const std::shared_ptr<SessionLink::Link>& sessionLinkShared() const { return link_; }
 
     // ---- Big files (LargeFileView.cpp, PARITY.md item 1.12)

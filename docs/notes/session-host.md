@@ -3781,6 +3781,86 @@ own folder brings it to front.
   and a file in a scratch folder outside each opening a window of their
   own, closed with their hosts. Not run here: CI runs it.
 
+#### The GTK port over SSH (2026-11-21, first slice)
+
+`mutible ssh://host/path` (and `mbl`) opens a GTK window on a folder of
+another machine, by the same core as the Mac's (`HostLink::spawn`,
+`sshCommand`, `explainSshFailure`, the Welcome's flags 1, 2 and 32). The
+GTK binary hands an `ssh://` argument to `handleCommandLine` (main.cpp),
+which `openRemoteAddress`es it; no other argument is read as a path.
+
+- **The link** (`linux/src/SessionLink.{h,cpp}`): `Kind::Remote`, made by
+  `SessionLink::connectRemote(address, done)`. The spawn is cheap, so it
+  runs on the main loop; the Welcome is waited for by a 20 ms poll on the
+  main loop (the client's wake dispatches the host's messages there), 30 s
+  at most, so nothing blocks on ssh's connection and no GTask is needed.
+  `done` is always called from the main loop, never inside the call. A
+  failure (ssh's status and last words, through `explainSshFailure`; a
+  Welcome without flags 1, 2 and 32 or no folder: "too old") closes the
+  link first, so ssh's end is reaped, and gives a null link and the words.
+  `key()` (the machine's ssh:// and the folder) is what Reconnect moves
+  windows by. One link per machine and path as addressed; a live one is
+  given again. `readText` is the Mac's (FsRead "read" in 4 MB pieces, 64
+  MB at most, decoded as a local file is).
+- **The window** is `newWindow(folder, file, nullptr, link)`: an ordinary
+  window put on the link, its title `file — host:path — mutible`
+  (`WindowTitle::Input::remote`, " (disconnected)" while lost, this
+  machine's home not used). `Editor::loadInto` reads a remote window's
+  files through the link (no stat, no sniff, no viewers: images, PDFs,
+  media, databases are not offered), the large-file question is skipped,
+  and a file the Welcome says is new (`"new": true`) opens as an empty
+  untitled tab at its path, which Ctrl+S makes through the host. In a
+  `Document` (`remote()`) nothing of this machine's disk at the path is
+  looked at: no stamp (`rememberDisk`), no file monitor, no external-change
+  check, no reload from disk, and `save` is the host's write alone, never
+  the local write that a lost host falls back to for a local folder: with
+  the connection gone it says "It is on host:path, and the connection
+  there is lost. Reconnect (in the status bar) to save it there; your text
+  is kept here." `Persistence::setRemote` turns off the window's session,
+  backups and auto-save (a folder of this machine at the same path is
+  another folder); remote windows are left out of the windows brought
+  back at the next launch and of the recent folders; no language server
+  (no observer) and no change bars (`GitGutter`); Open Folder in a remote
+  window opens its folder in a window of its own. Closing a remote window
+  detaches and then `Link::detach()`es, which ends the remote host.
+- **Terminals** (`Terminal::spawnShell`): on a remote link the TermSpec has
+  `hostShell = true`, `TERM`, `COLORTERM` and `TERM_PROGRAM` only, no
+  nonce and no integration (bash's `--rcfile` and zsh's `ZDOTDIR` are this
+  machine's files), so a remote shell has no marks; `shellDirectory` never
+  reads `/proc/<pid>/cwd` for a pid that is the other machine's.
+- **A dropped connection**: the link's lost listener says so in the status
+  bar (the core's `explainSshFailure` of the reaped status, "Disconnected
+  from host:path: ... Your text is kept here; Reconnect opens it there
+  again"), shows Reconnect and retitles the window. Reconnect runs
+  `connectRemote` for the same address and moves every window and terminal
+  on the old link to the new one by `key()` (`rehostWindows`,
+  `Editor::rehost`: each buffer opened on the new host from its text, the
+  file's text as the host's saved text, undo started again; terminals get
+  new shells). A host that cannot be had says why in the status bar and the
+  window waits.
+- **Failures**: an alert "Could not open ssh://..." with the core's
+  sentence (a password or passphrase or host key to confirm: run `ssh host`
+  once; mutible not installed there; too old); the same words go to the
+  command line's stderr.
+- **What this slice leaves out**: the remote tree (the window's tree is an
+  empty placeholder, rooted at a path that does not exist), Quick Open,
+  Find in Folder and Replace in Folder, the tree's New File and Folder
+  there, `ssh://` addresses opening in an existing window (each opens a
+  window, or brings forward the one on that link), git, language servers
+  and the session browser for such a window, and a host that outlives the
+  connection (the Mac session's next core change).
+- **Checked**: `remote_ssh` (RemoteSshSuite.cpp): a stand-in for ssh runs
+  this build's `mutible` as the remote, so the "remote" is this machine
+  through `host --stdio`: three failing stand-ins (a password asked for,
+  mutible missing, no `--stdio`) each give an alert with the core's
+  words and no window; then the window, its title, its tab read through
+  the host (no stamp), ssh's arguments, typing and Ctrl+S written by the
+  host, a terminal whose parent is the host in the stand-in's environment,
+  the connection killed (disconnected title, Reconnect button, the text
+  kept and typed into, a save refused with its words), Reconnect (a new
+  host, everything typed there, saved there, a new shell that runs a
+  command), and the host ending with the window. No real ssh is ever run.
+
 #### Traps
 
 - **A stand-in that serves the Mac's own disk hides local reads.** The

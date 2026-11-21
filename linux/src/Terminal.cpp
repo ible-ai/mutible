@@ -1003,7 +1003,8 @@ std::string Terminal::shellDirectory() const {
         if (!dir.empty()) return dir;
     }
 #endif
-    if (shellPid_ > 0) {
+    // A remote shell's pid names some other process here.
+    if (shellPid_ > 0 && link_->kind() != SessionLink::Link::Kind::Remote) {
         const std::string link = "/proc/" + std::to_string(shellPid_) + "/cwd";
         if (char* dir = g_file_read_link(link.c_str(), nullptr)) {
             std::string out = dir;
@@ -2063,6 +2064,20 @@ void Terminal::spawnShell() {
     spec.rows = std::max(1, (int)vte_terminal_get_row_count(t));
     spec.scrollback = (int)vte_terminal_get_scrollback_lines(t);
     spec.nonce = nonce_;
+    if (link_->kind() == SessionLink::Link::Kind::Remote) {
+        // A window over SSH (stage 8): the remote host's own login shell and
+        // environment (TermSpec's hostShell), where this machine's PATH,
+        // ZDOTDIR and helpers name nothing. Only what the screen here needs
+        // goes over it, and no integration's marks: its script is a file of
+        // this machine's.
+        spec.program.clear();
+        spec.argv.clear();
+        spec.env = {"TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Mutible"};
+        spec.hostShell = true;
+        spec.nonce.clear();
+        nonce_.clear();
+        bashShell_ = false;
+    }
     hostTerm_ = link_->client().newId();   // from the client's range on the host
     sentCols_ = spec.cols;
     sentRows_ = spec.rows;

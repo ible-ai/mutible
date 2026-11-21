@@ -250,6 +250,11 @@ struct App {
     Shared::TermDock heldDock;
     std::set<uint64_t> dropOnClose;
     GtkWidget* reconnectButton = nullptr;
+    // A window on another machine (stage 8, `mutible ssh://host/path`): its
+    // folder, files and shells are there, through its host over ssh; the
+    // folder's path names nothing of this machine's disk.
+    bool remote = false;
+    bool reconnecting = false;   // a Reconnect's connection is being made
     // View > Session Browser's page of the window's tabs (SessionBrowser.h),
     // made the first time it is asked for; stopped before the window
     // detaches from its host.
@@ -295,7 +300,13 @@ Shared g;
 // A window on `root`, with `file` open; `record` brings back a window from
 // the last run (its own tabs, size and panels; restoreOpenWindows).
 static App* newWindow(const std::string& root, const std::string& file,
-                      const TabSessions::Window* record = nullptr);
+                      const TabSessions::Window* record = nullptr,
+                      std::shared_ptr<SessionLink::Link> remoteLink = nullptr);
+// `mutible ssh://host/path` (stage 8): connects, then a window on the
+// folder there, or the open one on that link; an alert says why when it
+// cannot be had. `printerr` takes the same words for the command line.
+static void openRemoteAddress(const std::string& address, bool hold,
+                              const std::function<void(const std::string&)>& printerr);
 // Every open window's record written for the next launch (Persistence.h).
 static void saveOpenWindows();
 // A window on `root`, or the one already on it brought forward.
@@ -412,6 +423,13 @@ static void setWindowTitle(App* app) {
     in.folder = app->rootDir;
     const char* home = g_get_home_dir();
     in.home = home ? home : "";
+    // A window over SSH (stage 8): its host and folder, and whether the
+    // connection is there; this machine's home names nothing there.
+    if (app->remote && app->link) {
+        in.home.clear();
+        in.remote = app->link->label();
+        if (app->link->lost()) in.remote += " (disconnected)";
+    }
     if (app->editor->isDiff()) {
         in.name = app->editor->diffTitle();   // "name (diff)" or "<short hash> <subject>"
     } else {
@@ -587,6 +605,7 @@ static void listenForLoss(App* app) {
         if (app->dead) return;
         flashStatus(app, message);
         if (app->reconnectButton) gtk_widget_set_visible(app->reconnectButton, TRUE);
+        if (app->remote) setWindowTitle(app);   // "(disconnected)"
     });
 }
 
@@ -1190,6 +1209,11 @@ static void treeOpenCb(const std::string& path, EditorTabs::OpenFrom from, void*
 // about their unsaved changes), as on the Mac, so the editor never holds a
 // file the tree no longer shows.
 static void openFolder(App* app, const std::string& dir) {
+    // A window over SSH stays on its machine: the folder opens in a window of its own.
+    if (app->remote) {
+        showFolderWindow(dir);
+        return;
+    }
     RecentList::note(dir);
     app->persist->saveSession();   // the old folder's tabs, for when it is back
     app->rootDir = dir;
@@ -3257,7 +3281,7 @@ static void sessionGitChanged(App* app) {
 // Control's commands (GitPanel.h) work before it is first shown; its widget
 // joins the sidebar on the first Ctrl+Shift+G.
 static void makeGitPanel(App* app) {
-    app->git = new GitPanel(app->rootDir);
+    app->git = new GitPanel(app->remote ? std::string("/nonexistent/mutible-remote") : app->rootDir);
     app->git->applySettings(g.settings->settings());
     app->git->hostWindow = GTK_WINDOW(app->window);
     app->git->onShowDiff = [app](const std::string& name, const std::string&,
@@ -3299,14 +3323,16 @@ static void makeGitPanel(App* app) {
     // The editor's change bars (GitGutter.h), made with the panel as on the
     // Mac; its Stage Change has the panel look again, and the panel's
     // refresh has the bars look again.
-    app->gitGutter = new GitGutter(app->editor);
-    app->gitGutter->onNote = [app](const std::string& text) {
-        if (!app->dead) flashStatus(app, text);
-    };
-    app->gitGutter->onIndexChanged = [app] {
-        if (!app->dead && app->git) app->git->refresh();
-    };
-    app->gitGutter->installActions(G_ACTION_MAP(app->window));
+    if (!app->remote) {   // git there is stage 9's; this machine's repository at that path is another
+        app->gitGutter = new GitGutter(app->editor);
+        app->gitGutter->onNote = [app](const std::string& text) {
+            if (!app->dead) flashStatus(app, text);
+        };
+        app->gitGutter->onIndexChanged = [app] {
+            if (!app->dead && app->git) app->git->refresh();
+        };
+        app->gitGutter->installActions(G_ACTION_MAP(app->window));
+    }
     makeTestGutter(app);
     // The editor's merge conflicts (EditorConflicts.h): a choice says in the
     // status bar how many are left, as on the Mac.
@@ -4639,7 +4665,7 @@ static std::vector<App*> windowsFrontFirst() {
     std::vector<App*> out;
     for (GList* l = gtk_application_get_windows(g.gapp); l; l = l->next)
         if (App* a = appForWindow(GTK_WINDOW(l->data)))
-            if (!a->dead && a->persist) out.push_back(a);
+            if (!a->dead && a->persist && !a->remote) out.push_back(a);   // a remote window is not brought back
     return out;
 }
 
@@ -5298,6 +5324,10 @@ static void detachWindow(App* app) {
     for (SessionLink::Link* l : links)
         if (!l->lost()) l->client().settle(5000);
     SessionLink::keepWhileHolding(app->link);
+    // A window over SSH ends its connection with it (stage 8): `mutible host
+    // --stdio` keeps nothing for a next window, and ends as its input
+    // closes, its shells with it.
+    if (app->link->kind() == SessionLink::Link::Kind::Remote) app->link->detach();
 }
 
 // The folder's host went and `link` is the one found or started for it
@@ -5315,23 +5345,51 @@ static void rehostApp(App* a, const std::shared_ptr<SessionLink::Link>& link) {
 #ifdef MUTIBLE_ENABLE_TERMINAL
     if (a->termDock)
         for (Terminal* t : a->termDock->all())
-            if (t->sessionLink() && t->sessionLink()->lost() && t->sessionLink()->folder() == link->folder())
+            if (t->sessionLink() && t->sessionLink()->lost() && t->sessionLink()->key() == link->key())
                 t->rehost(link);
 #endif
     if (a->reconnectButton) gtk_widget_set_visible(a->reconnectButton, FALSE);
     reportTerminals(a);
-    flashStatus(a, "The session's host for " + link->folder() + " is back: your files are open on it again");
+    if (link->kind() == SessionLink::Link::Kind::Remote)
+        flashStatus(a, "Connected to " + link->label() + " again: your files are open there again");
+    else
+        flashStatus(a, "The session's host for " + link->folder() + " is back: your files are open on it again");
+    setWindowTitle(a);
 }
 
 static void rehostWindows(const std::shared_ptr<SessionLink::Link>& link) {
     for (App* a : g.windows)
-        if (!a->dead && a->link && (a->link == link || a->link->lost()) && a->link->folder() == link->folder())
+        if (!a->dead && a->link && (a->link == link || a->link->lost()) && a->link->key() == link->key())
             rehostApp(a, link);
 }
 
 // The status bar's Reconnect: the folder's host found or started again.
 static void reconnectHost(App* app) {
     if (app->dead || !app->link || !app->link->lost()) return;
+    if (app->link->kind() == SessionLink::Link::Kind::Remote) {
+        // Over SSH: the same address again. A host that cannot be had says why
+        // and the window waits, its text kept, for another try. The windows
+        // on the lost link all move to the new one.
+        const std::string address = app->link->address(), label = app->link->label();
+        if (app->reconnecting) return;
+        app->reconnecting = true;
+        flashStatus(app, "Reconnecting to " + label + "…");
+        SessionLink::connectRemote(address, [app, label](std::shared_ptr<SessionLink::Link> link, std::string why) {
+            // The window may be gone by now (the pointer is then only compared).
+            bool alive = false;
+            for (App* a : g.windows)
+                if (a == app && !a->dead) alive = true;
+            if (!alive) return;
+            app->reconnecting = false;
+            if (!link) {
+                flashStatus(app, "Could not reconnect to " + label + ": " + why);
+                return;
+            }
+            rehostWindows(link);
+            rehostApp(app, link);
+        });
+        return;
+    }
     useSessionLink(app, app->link->folder());   // moves every window on the old link
     // Another window found the host first: this one moves too.
     if (app->link && !app->link->lost() && app->reconnectButton &&
@@ -5472,7 +5530,7 @@ static void onWindowRemoved(GtkApplication*, GtkWindow* window, gpointer) {
         if (!Bench::active()) {
             std::vector<TabSessions::Window> list;
             for (App* a : windowsFrontFirst()) list.push_back(a->persist->windowRecord());
-            if (list.empty()) list.push_back(app->persist->windowRecord());
+            if (list.empty() && !app->remote) list.push_back(app->persist->windowRecord());
             Persistence::putWindows(list);
         }
     }
@@ -5584,13 +5642,14 @@ static void onWindowRemoved(GtkApplication*, GtkWindow* window, gpointer) {
 
 // Build a window rooted at `root`, showing `file` if one is named.
 static App* newWindow(const std::string& root, const std::string& file,
-                      const TabSessions::Window* record) {
+                      const TabSessions::Window* record, std::shared_ptr<SessionLink::Link> remoteLink) {
     initShared();
     App* app = new App;
     static int nextControlId = 1;
     app->controlId = nextControlId++;
     app->rootDir = root;
-    RecentList::note(root);
+    app->remote = remoteLink != nullptr;
+    if (!app->remote) RecentList::note(root);   // a folder of another machine is no folder here
     g.windows.push_back(app);
 
     app->window = gtk_application_window_new(g.gapp);
@@ -5634,7 +5693,9 @@ static App* newWindow(const std::string& root, const std::string& file,
     }), nullptr);
 
     // Core widgets.
-    app->tree = new FileTree(app->rootDir, g.showHidden);
+    // A window over SSH lists nothing of this machine's disk: its tree is
+    // a placeholder for now (the remote tree is the next slice).
+    app->tree = new FileTree(remoteLink ? std::string("/nonexistent/mutible-remote") : app->rootDir, g.showHidden);
     StartupLog::mark("window: file tree");
     app->treeFollow = new TreeFollow(app->tree, TreeFollow::Host{
         [app] { return treeFollowablePath(app); },
@@ -5670,9 +5731,15 @@ static App* newWindow(const std::string& root, const std::string& file,
     app->treeColors->onBranchChange = [app] {
         if (!app->dead && app->branchItem) app->branchItem->show(app->treeColors->statusBranch());
     };
-    app->treeColors->setRoot(app->rootDir);
-    setupWorktrees(app);
-    useSessionLink(app, app->rootDir);
+    if (!remoteLink) {
+        app->treeColors->setRoot(app->rootDir);
+        setupWorktrees(app);
+        useSessionLink(app, app->rootDir);
+    } else {
+        // The link made by connectRemote, shared by no other folder's windows.
+        app->link = remoteLink;
+        listenForLoss(app);
+    }
     StartupLog::mark("window: the session's host");
     app->editor = new Editor(app->link);
 #ifdef MUTIBLE_ENABLE_PDF
@@ -5813,6 +5880,7 @@ static App* newWindow(const std::string& root, const std::string& file,
     // A window brought back is the same window in the backups: its own
     // unsaved buffers come back to it (Persistence::backupKey).
     if (record) app->persist->setBackupKey(record->backupKey);
+    if (app->remote) app->persist->setRemote();   // no session, backups or auto-save of this machine's
     app->editor->onDocumentsChanged = [app](Document* d) {
         if (!app->dead && app->persist) app->persist->changed(d);
     };
@@ -6112,7 +6180,8 @@ static App* newWindow(const std::string& root, const std::string& file,
         m.byteLength = len;
         openMatch(app, m, EditorTabs::OpenFrom::CodeNavigation);
     };
-    app->editor->setObserver(app->lsp);   // onCloseRequest shuts it down
+    // A file on another machine has no language server here (stage 9's).
+    if (!app->remote) app->editor->setObserver(app->lsp);   // onCloseRequest shuts it down
     StartupLog::mark("window: language server session");
 
     // Actions. The menu bar and the accelerators are the application's
@@ -6353,7 +6422,15 @@ static App* newWindow(const std::string& root, const std::string& file,
     // is already rendered when the window appears rather than flashing the
     // welcome text first. Markdown arrives rendered, the same as a click in the
     // sidebar would give (Editor::openFile decides that).
-    if (!file.empty()) openFileCb(file, app);
+    if (!file.empty()) {
+        // On another machine a file not there yet (the Welcome says "new") opens
+        // as an empty untitled tab at its path, which Ctrl+S makes through the
+        // host.
+        if (app->remote && app->link && app->link->client().welcomeJson()["new"].asBool())
+            app->editor->addUntitled(file);
+        else
+            openFileCb(file, app);
+    }
 
     // make membench-linux (inert unless MUTIBLE_BENCH is set): the workload
     // the memory benchmark measures, driven through this first window.
@@ -6681,11 +6758,47 @@ static void openRecentFolder(App* front, const std::string& dir) {
 // HANDLES_COMMAND_LINE (rather than HANDLES_OPEN) is what lets us keep parsing
 // argv[1] ourselves: it can be a directory or a file, and GApplication must not
 // guess which.
+// An alert over `parent` (or none), the Mac's: what could not be opened, and why.
+static void alertCouldNotOpen(const std::string& address, const std::string& why) {
+    GtkAlertDialog* dlg = gtk_alert_dialog_new("Could not open %s", address.c_str());
+    gtk_alert_dialog_set_detail(dlg, why.c_str());
+    GtkWindow* parent = g.gapp ? gtk_application_get_active_window(g.gapp) : nullptr;
+    gtk_alert_dialog_show(dlg, parent);
+    g_object_unref(dlg);
+}
+
+static void openRemoteAddress(const std::string& address, bool hold,
+                              const std::function<void(const std::string&)>& printerr) {
+    // A window already on this link is brought forward; else a new one on
+    // the folder the host named (a file's folder for a file, the file open).
+    if (hold) g_application_hold(G_APPLICATION(g.gapp));
+    SessionLink::connectRemote(address, [address, hold, printerr](std::shared_ptr<SessionLink::Link> link,
+                                                                  std::string why) {
+        if (!link) {
+            printerr("mutible: " + address + ": " + why);
+            alertCouldNotOpen(address, why);
+        } else {
+            App* have = nullptr;
+            for (App* a : g.windows)
+                if (!a->dead && a->link == link && a->remote) have = a;
+            if (have) {
+                gtk_window_present(GTK_WINDOW(have->window));
+                if (!link->askedFile().empty()) openFileCb(link->askedFile(), have);
+            } else {
+                newWindow(link->folder(), link->askedFile(), nullptr, link);
+                reopenFoldersWithBackups();
+                startControlChannel();
+            }
+        }
+        if (hold) g_application_release(G_APPLICATION(g.gapp));
+    });
+}
+
 static void handleCommandLine(char** args, int n, const char* cwd,
                               const std::function<void(const std::string&)>& printerr) {
     // Web addresses are never paths: http and https ones go to the browser
     // window (PARITY.md 4.8); the first other argument is the path, as before.
-    std::vector<std::string> addresses;
+    std::vector<std::string> addresses, remotes;   // web addresses, ssh:// ones
     const char* pathArg = nullptr;
     bool chooseOne = false;   // --open-folder: the dock icon's Open Folder…
     bool newOne = false;      // --new-window: a window of its own, never one raised
@@ -6693,9 +6806,10 @@ static void handleCommandLine(char** args, int n, const char* cwd,
         if (std::string(args[i]) == "--open-folder") chooseOne = true;
         else if (std::string(args[i]) == "--new-window") newOne = true;
         else if (WebBookmark::isWebAddress(args[i])) addresses.push_back(args[i]);
+        else if (std::strncmp(args[i], "ssh://", 6) == 0) remotes.push_back(args[i]);
         else if (!pathArg) pathArg = args[i];
     }
-    const bool pathWanted = pathArg || (addresses.empty() && !chooseOne);
+    const bool pathWanted = pathArg || (addresses.empty() && remotes.empty() && !chooseOne);
     Startup st = pathWanted
         ? resolveStartupPath(pathArg, cwd)
         : Startup();
@@ -6730,6 +6844,13 @@ static void handleCommandLine(char** args, int n, const char* cwd,
             newWindow(st.root, st.file);
             windowMade = true;
         }
+    }
+    // `mutible ssh://host/path`: a window on a folder of another machine
+    // (stage 8). The connection is made while the app runs on; the
+    // application is held until the window is up or the alert has been shown.
+    for (const std::string& address : remotes) {
+        initShared();
+        openRemoteAddress(address, true, printerr);
     }
     if (!addresses.empty()) {
         // The window rooted at the bookmark folder, made with the folder when

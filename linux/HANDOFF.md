@@ -9224,3 +9224,44 @@ side's; two are fixed, one left alone on purpose.
   the seven `tree_*` suites 498 passed; `tree_clicks` alone three times.
 - **Not covered.** On a machine where the unplaced moment never comes, the
   hand-out guard is not exercised; it still is on an idle one.
+
+### 152. The window over SSH, first slice (stage 8; November 2026)
+
+- **What it is.** `mutible ssh://host/path` (and `mbl`) opens a GTK window
+  on a folder of another machine, the port of the Mac's #314 (a5d18897,
+  f0da6beb): the user's own ssh (BatchMode, no pty; `$MUTIBLE_SSH` names a
+  stand-in) runs `mutible host --stdio <path>` there and the window is a
+  renderer of it over ssh's pipes (`HostLink::spawn`). Files are read
+  through the host (`Link::readText`, FsRead "read") and saved by it (the
+  stage 7 write, never the local fallback), terminals run in the remote's
+  login shell (TermSpec `hostShell`, Welcome flag 32). Design and traps:
+  docs/notes/session-host.md, "The GTK port over SSH".
+- **Where.** `SessionLink.{h,cpp}` (`Kind::Remote`, `connectRemote`,
+  `readText`, `key()`, `label()`, `failure()`), main.cpp
+  (`openRemoteAddress`, `newWindow`'s fourth argument, `App::remote`, the
+  title, Reconnect by `key()`), `Tabs.cpp` (`loadInto`), `DocumentView.cpp`
+  (`Document::remote()`: no stamp, monitor, disk check or local write),
+  `Persistence` (`setRemote`), `Terminal.cpp` (the host's shell).
+- **Connect is not blocking.** The spawn runs on the main loop (a
+  `posix_spawn`); the Welcome is polled every 20 ms on the loop, 30 s at
+  most, so no thread is needed and `done` never runs inside the call.
+- **Remote window for now.** Its tree is an empty placeholder (rooted at a
+  path that does not exist), and Quick Open, Find in Folder, New File and
+  Folder in the tree, git, language servers, the session browser and the
+  viewers (pictures, PDFs, media, databases) are not the remote's yet;
+  slice 2 is the tree, Quick Open and search, slice 3 `ssh://` addresses
+  opening in an existing window. Not done, as asked: a host outliving the
+  connection.
+- **Checked.** `remote_ssh` (new, RemoteSshSuite.cpp, 41 checks): three
+  failing stand-ins (password asked for, no mutible there, no `--stdio`)
+  each an alert in the core's words and no window; connect, title,
+  ssh's arguments, notes.txt read through the host with no stamp, typing
+  and Ctrl+S written by the host, a terminal whose parent is the host in
+  the stand-in's environment, the connection killed (title
+  "(disconnected)", Reconnect, text kept, a save refused with its words),
+  Reconnect (new host, everything typed, saved there, a new shell), and
+  the host ending with the window.
+- **Not verified.** Real ssh and real auth prompts (never run); the look
+  of the alert and the status bar's words on a desktop; a window opened
+  by a second `mutible ssh://...` process through D-Bus (the checks call
+  `handleCommandLine`, as the other launch checks do).

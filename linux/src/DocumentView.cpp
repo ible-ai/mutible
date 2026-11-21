@@ -510,12 +510,13 @@ void Document::askAboutDiskChange() {
 }
 
 bool Document::goneFromDisk() const {
+    if (remote()) return false;
     struct stat st;
     return diskStamp_.exists && !path_.empty() && stat(path_.c_str(), &st) != 0;
 }
 
 bool Document::changedOnDisk() const {
-    if (kind_ != Kind::Text || path_.empty()) return false;
+    if (kind_ != Kind::Text || path_.empty() || remote()) return false;
     struct stat st;
     const bool exists = stat(path_.c_str(), &st) == 0;
     // Never read here (gone when it came back from a backup): a file there
@@ -574,13 +575,13 @@ void Document::rememberDisk(const std::string& content, const FolderSearch::File
     diskQuestion_ = false;
     diskStamp_ = DiskStamp();
     struct stat st;
-    if (written && written->exists) {
+    if (written && written->exists && !remote()) {
         // The stamp the write left, so a writer after it is a change.
         diskStamp_.exists = true;
         diskStamp_.mtime = (double)written->mtimeSec + written->mtimeNsec / 1e9;
         diskStamp_.inode = written->inode;
         diskStamp_.size = (int64_t)written->size;
-    } else if (!path_.empty() && stat(path_.c_str(), &st) == 0) {
+    } else if (!path_.empty() && !remote() && stat(path_.c_str(), &st) == 0) {
         diskStamp_.exists = true;
         diskStamp_.mtime = (double)st.st_mtim.tv_sec + st.st_mtim.tv_nsec / 1e9;
         diskStamp_.inode = (uint64_t)st.st_ino;
@@ -819,6 +820,21 @@ bool Document::save(std::string* error) {
     saveNote_.clear();
     const std::string body = text();
 
+    // A file on another machine (stage 8) is written by its host alone:
+    // never this machine's file at that path. With the connection gone the
+    // save waits for Reconnect, the text kept here.
+    if (remote()) {
+        if (hostSavesFile()) {
+            bool lost = false;
+            if (saveThroughHost(body, error, &lost)) return true;
+            if (!lost) return false;
+        }
+        if (error)
+            *error = "It is on " + link_->label() + ", and the connection there is lost. Reconnect (in the "
+                     "status bar) to save it there; your text is kept here.";
+        return false;
+    }
+
     // Write through a symlink to the file it names (a dotfile repo links its
     // files into place), and keep the file's permissions. The write itself is
     // atomic, a temporary file renamed over the old one, so a full disk or a
@@ -968,7 +984,7 @@ bool Document::saveThroughHost(const std::string& body, std::string* error, bool
         saved = text();
     } else {
         std::string disk;
-        if (readText(path_, disk) == Read::Ok) saved = disk;
+        if (!remote() && readText(path_, disk) == Read::Ok) saved = disk;
     }
     // The stamp the host wrote it with, so the write is not taken for a
     // change made outside. Never DocSaved after the host's own write: that
@@ -1023,6 +1039,7 @@ void Document::takeHostWrite() {
     if (!w.path.empty() && w.path != path_) return;   // renamed since
     // Written over again since: a change made outside, as the disk checks
     // see it.
+    if (remote()) return;   // no stamps here of a file on another machine
     const FolderSearch::FileStamp now = FolderSearch::stampOf(path_);
     if (w.stamp.exists && now != w.stamp) return;
     std::string saved = w.text;
@@ -1128,7 +1145,7 @@ void Document::setPath(const std::string& path, bool tellHost) {
 // so a clean tab in the background follows its file too, as on the Mac.
 
 void Document::watch() {
-    if (path_.empty() || monitor_) return;
+    if (path_.empty() || monitor_ || remote()) return;
     GFile* f = g_file_new_for_path(path_.c_str());
     // WATCH_MOVES, so a save that renames a temporary file over this one
     // (what mutible and most tools do) arrives as a rename, not a deletion.
@@ -1173,7 +1190,7 @@ void Document::onFileChanged(GFileMonitor*, GFile*, GFile*, GFileMonitorEvent ev
 }
 
 void Document::checkExternalChange() {
-    if (kind_ != Kind::Text || path_.empty() || !diskKnown_) return;
+    if (kind_ != Kind::Text || path_.empty() || !diskKnown_ || remote()) return;
     // Gone, unreadable, replaced by a pipe, grown past what the editor opens
     // or no longer text: what is in the editor stays, as on the Mac.
     std::string content;
@@ -1207,7 +1224,7 @@ void Document::checkExternalChange() {
 }
 
 bool Document::reloadFromDisk() {
-    if (kind_ != Kind::Text || path_.empty()) return false;
+    if (kind_ != Kind::Text || path_.empty() || remote()) return false;
     std::string content;
     FileEncoding encoding;
     if (readText(path_, content, &encoding) != Read::Ok) return false;

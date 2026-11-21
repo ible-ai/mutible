@@ -188,6 +188,19 @@ bool Editor::textRead(Document* d, const std::string& path, int result,
 }
 
 bool Editor::loadInto(Document* d, const std::string& path) {
+    // A file on another machine (stage 8): read through its host as text;
+    // nothing of this machine's disk at that path is looked at, and the
+    // viewers that read the disk themselves (pictures, PDFs, players, a
+    // database, Quick Look) are not offered for it yet.
+    if (link_ && link_->kind() == SessionLink::Link::Kind::Remote) {
+        const SessionLink::Link::RemoteText r = link_->readText(path);
+        Document::FileEncoding encoding;
+        encoding.encoding = r.encoding;
+        encoding.bom = r.bom;
+        return textRead(d, path, (int)(r.ok ? Document::Read::Ok : r.tooLarge ? Document::Read::TooLarge
+                                                                             : Document::Read::Failed),
+                        r.text, encoding);
+    }
     // A named pipe, socket or device is refused before anything opens it:
     // opening a pipe waits for a writer, and would hang every window.
     struct stat st;
@@ -252,7 +265,7 @@ bool Editor::openFile(const std::string& path, EditorTabs::OpenFrom from) {
         return d->kind() != Document::Kind::Message;
     }
     // A file over 50 MB asks first (LargeFileView.h); Open Anyway opens it then.
-    if (!large_->mayOpen(path, from)) {
+    if (!(link_ && link_->kind() == SessionLink::Link::Kind::Remote) && !large_->mayOpen(path, from)) {
         refreshStrip();   // a preview tab prepareOpen kept shows it
         return false;
     }
