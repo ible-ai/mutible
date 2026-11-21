@@ -113,14 +113,7 @@ Terminal::Terminal(const std::string& cwd, std::shared_ptr<SessionLink::Link> li
     // Its host going (a headless one, killed): the shell went with it, and
     // nothing starts another until the host can be reached again (stage 6,
     // step 2 reconnects).
-    lostListener_ = link_->addLostListener([this](const std::string&) {
-        hostGone_ = true;
-        const bool had = hostTerm_ != 0;
-        hostTerm_ = 0;
-        shellPid_ = -1;
-        navLine_ = -1;
-        if (vte_ && had) feedNotice("[the session's host went away, and this terminal's shell with it]");
-    });
+    listenForLoss();
     // The scroller sits in an overlay so the hovered link's underline can be
     // drawn over the terminal: VTE underlines only its own regex matches, and
     // a regex cannot know which paths exist.
@@ -699,21 +692,59 @@ void Terminal::detachFromHost() {
     heldTerm_ = 0;   // never attached here: nothing to let go of
 }
 
+void Terminal::listenForLoss() {
+    lostListener_ = link_->addLostListener([this](const std::string&) {
+        hostGone_ = true;
+        const bool had = hostTerm_ != 0;
+        if (had) lostTerm_ = hostTerm_;
+        hostTerm_ = 0;
+        shellPid_ = -1;
+        navLine_ = -1;
+        // Over SSH the host's shell may run on, and the window connects again
+        // by itself: no word of a lost shell until it is known to be one.
+        if (vte_ && had && link_->kind() != SessionLink::Link::Kind::Remote)
+            feedNotice("[the session's host went away, and this terminal's shell with it]");
+    });
+}
+
+bool Terminal::reattach(const std::shared_ptr<SessionLink::Link>& link, Shared::TermId id, int pid,
+                        const Shared::TermShell& shell) {
+    if (!link || link == link_ || !vte_ || !lostTerm_ || id != lostTerm_) return false;
+    link_->removeLostListener(lostListener_);
+    link_ = link;
+    listenForLoss();
+    hostGone_ = false;
+    // The screen is the host's replay again: this one's is cleared first.
+    vte_terminal_reset(VTE_TERMINAL(vte_), TRUE, TRUE);
+    heldTerm_ = id;
+    heldPid_ = pid;
+    shellPid_ = pid;
+    host_ = shell;
+    lostTerm_ = 0;
+    attachShell();
+    return true;
+}
+
+void Terminal::closeOnHost() {
+    if (link_->lost()) return;
+    if (heldTerm_) {
+        link_->client().attachTerminal(heldTerm_, nullptr);
+        link_->client().closeTerminal(heldTerm_);
+        heldTerm_ = 0;
+    }
+    if (hostTerm_) link_->client().closeTerminal(hostTerm_);
+    hostTerm_ = 0;
+}
+
 void Terminal::rehost(std::shared_ptr<SessionLink::Link> link) {
     if (!link || link == link_) return;
     link_->removeLostListener(lostListener_);
     if (hostTerm_ && !link_->lost()) link_->client().closeTerminal(hostTerm_);
     hostTerm_ = heldTerm_ = 0;
     link_ = std::move(link);
-    lostListener_ = link_->addLostListener([this](const std::string&) {
-        hostGone_ = true;
-        const bool had = hostTerm_ != 0;
-        hostTerm_ = 0;
-        shellPid_ = -1;
-        navLine_ = -1;
-        if (vte_ && had) feedNotice("[the session's host went away, and this terminal's shell with it]");
-    });
+    listenForLoss();
     hostGone_ = false;
+    lostTerm_ = 0;
     if (!vte_) return;   // its shell starts when it is first shown
     feedNotice("[the session's host is back: a new shell]");
     spawnShell();
@@ -1003,7 +1034,8 @@ std::string Terminal::shellDirectory() const {
         if (!dir.empty()) return dir;
     }
 #endif
-    if (shellPid_ > 0) {
+    // A remote shell's pid names some other process here.
+    if (shellPid_ > 0 && link_->kind() != SessionLink::Link::Kind::Remote) {
         const std::string link = "/proc/" + std::to_string(shellPid_) + "/cwd";
         if (char* dir = g_file_read_link(link.c_str(), nullptr)) {
             std::string out = dir;
@@ -2063,6 +2095,20 @@ void Terminal::spawnShell() {
     spec.rows = std::max(1, (int)vte_terminal_get_row_count(t));
     spec.scrollback = (int)vte_terminal_get_scrollback_lines(t);
     spec.nonce = nonce_;
+    if (link_->kind() == SessionLink::Link::Kind::Remote) {
+        // A window over SSH (stage 8): the remote host's own login shell and
+        // environment (TermSpec's hostShell), where this machine's PATH,
+        // ZDOTDIR and helpers name nothing. Only what the screen here needs
+        // goes over it, and no integration's marks: its script is a file of
+        // this machine's.
+        spec.program.clear();
+        spec.argv.clear();
+        spec.env = {"TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Mutible"};
+        spec.hostShell = true;
+        spec.nonce.clear();
+        nonce_.clear();
+        bashShell_ = false;
+    }
     hostTerm_ = link_->client().newId();   // from the client's range on the host
     sentCols_ = spec.cols;
     sentRows_ = spec.rows;

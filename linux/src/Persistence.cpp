@@ -156,6 +156,7 @@ void Persistence::changed(Document* d) {
 }
 
 void Persistence::flushSession() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     if (!closing_ && plan_.takeSession()) saveSession();
 }
 
@@ -236,6 +237,7 @@ TabSessions::Session Persistence::session() {
 }
 
 void Persistence::saveSession() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     plan_.takeSession();   // written now, not again a second later
     if (key_.empty()) return;
     std::vector<TabSessions::Session> others;
@@ -271,6 +273,7 @@ void Persistence::setBackupKey(const std::string& key) {
 // that one's save, so what is remembered is what was open when the folder's
 // last window went.
 void Persistence::saveSessionClosing() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     std::vector<Persistence*> others = host_.sameFolder ? host_.sameFolder() : std::vector<Persistence*>();
     if (!others.empty()) others.front()->saveSession();
     else saveSession();
@@ -279,6 +282,7 @@ void Persistence::saveSessionClosing() {
 }
 
 void Persistence::restoreSession(const TabSessions::Session* own) {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     TabSessions::Session saved;
     if (own) {
         saved = *own;   // a window brought back has its own tabs
@@ -529,6 +533,7 @@ void Persistence::tick() {
 // now, and a changed buffer is written when typing pauses (SavePlan.h). A
 // comparison of counts per tab, no text copied, so it can run on every key.
 void Persistence::scheduleBackups() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     if (closing_) return;
     apply(plan_.backupsChanged(planTabs(), monoNow()));
     arm();
@@ -536,6 +541,7 @@ void Persistence::scheduleBackups() {
 
 // Every changed buffer to the store's thread now.
 void Persistence::writeBackups() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     if (closing_) return;
     for (Document* d : editor_->documents())
         if (needsBackup(d)) writeBackup(d);
@@ -544,6 +550,7 @@ void Persistence::writeBackups() {
 // One buffer to the store's thread; the main thread only copies the text
 // out of the document.
 void Persistence::writeBackup(Document* d) {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     if (closing_ || !needsBackup(d)) return;
     BackupStore& store = BackupStore::shared();
     Document::Backup& b = d->backup();
@@ -567,6 +574,7 @@ void Persistence::writeBackup(Document* d) {
 }
 
 void Persistence::discardBackup(Document* d) {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     Document::Backup& b = d->backup();
     if (b.written) BackupStore::shared().remove(b.id);
     b.written = false;
@@ -619,6 +627,7 @@ bool Persistence::takesAutoSave(Document* d) const { return SavePlan::autoSaves(
 // After the setting changed, and with every edit and change to the tabs:
 // after-delay planned again from now.
 void Persistence::scheduleAutoSave() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     if (closing_) return;
     plan_.setAutoSave(autoSaveMode(), editor_->documentSettings().autoSaveDelay());
     plan_.autoSaveChanged(planTabs(), monoNow());
@@ -628,6 +637,7 @@ void Persistence::scheduleAutoSave() {
 // Saved on the next turn of the main loop, not inside the focus change, and
 // never cancelled by an edit's planning (SavePlan.h).
 void Persistence::autoSaveOnFocusChange() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     if (closing_) return;
     plan_.setAutoSave(autoSaveMode(), editor_->documentSettings().autoSaveDelay());
     plan_.focusChanged(monoNow());
@@ -635,6 +645,7 @@ void Persistence::autoSaveOnFocusChange() {
 }
 
 void Persistence::autoSaveNow() {
+    if (remote_) return;   // a window over SSH keeps no session, backups or auto-save here
     if (closing_ || autoSaveMode() == Settings::AutoSave::Off) return;
     std::vector<std::string> changed;
     const std::vector<Document*> docs = editor_->documents();   // a save edits nothing, but safely

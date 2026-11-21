@@ -9224,3 +9224,115 @@ side's; two are fixed, one left alone on purpose.
   the seven `tree_*` suites 498 passed; `tree_clicks` alone three times.
 - **Not covered.** On a machine where the unplaced moment never comes, the
   hand-out guard is not exercised; it still is on an idle one.
+
+### 152. The window over SSH, first slice (stage 8; November 2026)
+
+- **What it is.** `mutible ssh://host/path` (and `mbl`) opens a GTK window
+  on a folder of another machine, the port of the Mac's #314 (a5d18897,
+  f0da6beb): the user's own ssh (BatchMode, no pty; `$MUTIBLE_SSH` names a
+  stand-in) runs `mutible host --stdio <path>` there and the window is a
+  renderer of it over ssh's pipes (`HostLink::spawn`). Files are read
+  through the host (`Link::readText`, FsRead "read") and saved by it (the
+  stage 7 write, never the local fallback), terminals run in the remote's
+  login shell (TermSpec `hostShell`, Welcome flag 32). Design and traps:
+  docs/notes/session-host.md, "The GTK port over SSH".
+- **Where.** `SessionLink.{h,cpp}` (`Kind::Remote`, `connectRemote`,
+  `readText`, `key()`, `label()`, `failure()`), main.cpp
+  (`openRemoteAddress`, `newWindow`'s fourth argument, `App::remote`, the
+  title, Reconnect by `key()`), `Tabs.cpp` (`loadInto`), `DocumentView.cpp`
+  (`Document::remote()`: no stamp, monitor, disk check or local write),
+  `Persistence` (`setRemote`), `Terminal.cpp` (the host's shell).
+- **Connect is not blocking.** The spawn runs on the main loop (a
+  `posix_spawn`); the Welcome is polled every 20 ms on the loop, 30 s at
+  most, so no thread is needed and `done` never runs inside the call.
+- **Remote window for now.** Its tree is an empty placeholder (rooted at a
+  path that does not exist), and Quick Open, Find in Folder, New File and
+  Folder in the tree, git, language servers, the session browser and the
+  viewers (pictures, PDFs, media, databases) are not the remote's yet;
+  slice 2 is the tree, Quick Open and search, slice 3 `ssh://` addresses
+  opening in an existing window. Not done, as asked: a host outliving the
+  connection.
+- **Checked.** `remote_ssh` (new, RemoteSshSuite.cpp, 41 checks): three
+  failing stand-ins (password asked for, no mutible there, no `--stdio`)
+  each an alert in the core's words and no window; connect, title,
+  ssh's arguments, notes.txt read through the host with no stamp, typing
+  and Ctrl+S written by the host, a terminal whose parent is the host in
+  the stand-in's environment, the connection killed (title
+  "(disconnected)", Reconnect, text kept, a save refused with its words),
+  Reconnect (new host, everything typed, saved there, a new shell), and
+  the host ending with the window.
+- **Not verified.** Real ssh and real auth prompts (never run); the look
+  of the alert and the status bar's words on a desktop; a window opened
+  by a second `mutible ssh://...` process through D-Bus (the checks call
+  `handleCommandLine`, as the other launch checks do).
+
+### 153. The window over SSH, second slice: tree, Quick Open, Find in Folder (stage 8; November 2026)
+
+- **What it is.** The Mac's #322 (7cae4ace, 86cbbd9f) on GTK: a remote
+  window's file tree, Ctrl+P and Ctrl+Shift+F read the host, never this
+  disk at that path. Design, traps and the checks:
+  docs/notes/session-host.md, "The GTK window's tree, Quick Open and Find in
+  Folder over SSH"; docs/notes/tree.md, "The file tree (GTK) over SSH".
+- **Where.** `SessionLink.{h,cpp}`: `readAsync`, `stream`, `cancelStream`,
+  `addDiskListener` (a remote client `hearDisk`s; notices are delivered from
+  an idle), pumped at the end of `dispatch()`, failed when the link is lost.
+  `RemoteWorkspace.{h,cpp}` (new, plain C++). `FileTree.{h,cpp}` (third
+  constructor argument; `DirWatch::remote`, `RemoteStores`, `startRemoteListing`,
+  the shared `sortedListing`/`listingIn`, the ignored mark, the local-disk
+  guards). `PalettePanel` (`Context::remoteList`), `Search` (`setHostSearch`,
+  `runHostSearch`), main.cpp (`App::remoteWs`, `refuseOverSsh`, New File as an
+  untitled tab, `useHostSearch`, `rehostApp` re-attaches the workspace).
+  Tests: `AppSeam` exposes `remoteWs`; RemoteSshSuite.cpp is 65 checks.
+- **Not done.** `Link::readText` is still the blocking read (up to 20 s a
+  piece on the main thread): it is not small, since every caller of
+  `Editor::loadInto` expects the text on return (the large-file path's
+  `beginLoading`/`documentLoaded` is the model for making it async).
+  `locate` (slice 3), Replace in Folder over SSH (refused, as on the Mac),
+  TODOs, git, language servers, a host that outlives the connection.
+- **Not verified.** Real ssh; the look of the dimmed rows and the status
+  note on a desktop; a tree of more than 10,000 entries in a folder (the
+  host's "more" is not shown). A row opened from a remote search puts the
+  caret on its line only: the host gives code-point columns and highlights of
+  the display text, so `byteColumn` and `byteLength` stay 0 (`revealLine`
+  then selects no match).
+
+### 154. The window over SSH and the lasting host (stage 8; November 2026)
+
+- **What it is.** The Mac's #334 (bac9506), on GTK: `host --stdio` finds or
+  starts a detached `--lasting` host per folder, so a window over SSH loses
+  its connection and comes back to the same host. Design and traps:
+  docs/notes/session-host.md, "The GTK window over SSH, the lasting host".
+- **(a) Where.** `SessionLink.{h,cpp}`: one token per window (`resume_`),
+  `Client::setResume` before every connect, `reconnectRemote` (the lost
+  link's address and token; `connectRemoteFor` registers a link only once it
+  has its Welcome, so a failed try keeps the token), `resumeWindowFrom`,
+  `lastingSocketFolder`. main.cpp: `startAutoReconnect`,
+  `scheduleAutoReconnect`, `tryAutoReconnect` (the delays are the core's
+  `reconnectDelayMs`, none left shows slice 1's Reconnect), the title's
+  "(reconnecting)", `rehostApp` taking up what the host holds (documents by
+  id, terminals by host term, the window record) and opening the rest anew.
+  `Document::reattach` (the host's text taken, not applied; the buffer's
+  difference sent as an edit outside the history), `Terminal::reattach`
+  (VTE reset, the host's replay), `Editor::rehost(link, held)`. A closing
+  remote window now closes its record, files and shells on the host
+  (`detachWindow`; `Document::closeOnHost`, `Terminal::closeOnHost`), or a
+  running shell would keep a lasting host alive for ever.
+- **(b) Where.** `forFolder`: with the default (`MUTIBLE_HOST` unset, host
+  off) a lasting host found by `findHostSocket` over `withLastingFolder` is
+  attached to (`Kind::Socket`, `startedHost() == 0`); `startSocket` looks in
+  the lasting folder too and takes `onlyExisting`.
+- **Checked.** `remote_ssh` (84 checks; the stand-in refuses while a flag
+  file exists; MUTIBLE_HOST_IDLE_MINUTES=0.15 ends the hosts it started; each
+  is also ended by its recorded pid): drop, "(reconnecting)", no Reconnect
+  button, typing while away, two refused tries, a connection by itself to the
+  same host with the same document id and the same shell (variable, pid,
+  parent), a save; a second drop run out (`AppSeam::reconnectAttempt` set to
+  all but the last, then one real refused try), Reconnect with its words, the
+  user's Reconnect to the same host; the window closing ends the shell and the
+  host after its idle time; (b) a lasting host the check started, a window on
+  its folder attached over its socket, and a folder with none keeping the
+  in-process host.
+- **Not done.** Undo across a drop is not checked (a text typed while away
+  goes to the host outside the history, so Ctrl+Z may not reach back over it);
+  `Link::readText` is still blocking; (b) does not start a lasting host (the
+  default stays in-process); the status bar's words and the title on a desktop.

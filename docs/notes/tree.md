@@ -485,7 +485,24 @@ found through that list.
   file operations other than New File say they do not work over SSH yet
   (`refuseOverSsh:`).
 
+## The file tree (GTK) over SSH (2026-11-21)
+
+A window over SSH builds its tree with a `RemoteWorkspace` (`FileTree`'s
+third argument): each folder's store is listed by the host (FsRead "list",
+asked without waiting, answered on the main loop) and kept by the host's
+notices (FsChanged names the folders to list again, which go through the
+same pacer a local monitor's event does). Rows are `GFileInfo`s built from
+the entries, their `standard::file` a name only (never opened), the host's
+ignored mark in the info's data (`mutible-ignored`, drawn in
+tree.git-ignored's color). The rest of the tree is the local tree's,
+including sorting, splicing, expansion, selection and scroll. Nothing local
+is read: no monitor, no Worktrees node, no `access()`, no `lstat` or
+`g_file_test` of a row's path. New Folder, Rename, Trash, drops and Reveal
+are refused with a status note. Details: `docs/notes/session-host.md`, "The
+GTK window's tree, Quick Open and Find in Folder over SSH".
+
 ## Traps
+
 
 Each trap's first sentence, in the order it appears above; the whole
 text is in place in its section.
@@ -503,3 +520,4 @@ text is in place in its section.
 - The file tree (GTK): Trap: a popover on the list that has the keyboard as it closes gives it back only at the window's next after-paint, to the popover's parent, and when the idle that unparents the popover runs first GTK finds no parent and tabs into the window from its start, so the list focuses row 0 and scrolls to its top (GtkListBase's tab behavior "all", then `set_focus_child`'s `scroll_to_item`); the name box's "closed" gives the list the keyboard itself, before the idle (its focus row, the row asked about: no scroll).
 - The file tree (GTK): Trap: the 300 ms that `keepRows` undoes a jump to the top for counted wall time, and on a loaded machine (several builds, load 50) the frame clock may draw no layout in 300 ms, so the jump came after the keep ended and `tree_edits` failed "the tree kept its place" about one run in nine; the keep lasts at least `kKeepFrames` layouts as well, and at most `kKeepMostUs`.
 - The file tree (Mac): Trap: a remote window's rows are another machine's paths, so anything in the tree that reads this Mac's disk at a row's path (a stat, a file URL, Quick Look, the folder sizer) shows some other file or nothing; ask the row's `source` or pass over a row that has one.
+- The file tree (GTK over SSH): Trap: a path in a remote window names a file of another machine, so any call on it that reads this disk (`g_file_test`, `lstat`, a monitor, `access`, a GFile that is opened) is wrong even when the scratch "remote" of a check passes it; the stand-in serves this machine's own folder, so such a call passes the checks and fails on a real remote (the listing's count of workspace reads and the ignored mark are what a check can see).

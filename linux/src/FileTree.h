@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "EditorTabs.h"
+#include "RemoteWorkspace.h"
 
 class FileTree {
 public:
@@ -35,7 +36,12 @@ public:
                                       const std::string& dir, bool move)>;
 
     // The tree starts with dotfiles shown or hidden per showHidden.
-    explicit FileTree(const std::string& rootDir, bool showHidden = false);
+    // `remote`: a window over SSH (stage 8): rootDir is the folder on the
+    // other machine, and every listing is the host's (RemoteWorkspace),
+    // never this machine's disk at that path; nothing local is read, watched
+    // or changed for a row.
+    explicit FileTree(const std::string& rootDir, bool showHidden = false,
+                      std::shared_ptr<RemoteWorkspace> remote = nullptr);
     // Called while the window's widgets still exist (main.cpp tears a window
     // down from GtkApplication's window-removed): takes every handler that
     // names this object off the models and the list view.
@@ -137,6 +143,7 @@ public:
     // application's: main.cpp sets it on every window's tree, as the Mac's is
     // one global flag. The expanded folders and the selection survive it; a
     // selected row that is hidden is no longer selected.
+    bool remote() const { return remote_ != nullptr; }
     void setShowHidden(bool show);
     bool showHidden() const { return showHidden_; }
 
@@ -385,7 +392,9 @@ private:
     static void        onBind(GtkSignalListItemFactory* f, GObject* obj, gpointer self);
 
     std::string  root_;
-    GtkWidget*   box_      = nullptr;     // the bar over the scroller
+    std::shared_ptr<RemoteWorkspace> remote_;   // a window over SSH
+    std::shared_ptr<struct RemoteStores> remoteStores_;   // its folders' stores, by path
+    GtkWidget*   box_     = nullptr;     // the bar over the scroller
     GtkWidget*   scroller_ = nullptr;
     GtkWidget*   listView_ = nullptr;
     GtkFilter*   filter_   = nullptr;     // shared dotfile filter

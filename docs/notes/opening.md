@@ -50,6 +50,9 @@ found through that list.
   and `ssh://` addresses (mode "ssh", stage 8: each opens a window on that
   machine's `mutible host --stdio` through `openRemoteAddress:`;
   docs/notes/session-host.md, "The Mac over SSH"); `-n` runs the binary detached;
+  on Linux an `ssh://` argument goes to `handleCommandLine`, which connects
+  (`SessionLink::connectRemote`, off the main loop's blocking) and opens a window on it
+  (docs/notes/session-host.md, "The GTK port over SSH");
   an `ssh://` address goes as a local path does (2026-11-21): a file
   that an open remote window's folder on the same machine and account
   holds (`Shared::sshMachineKey`) opens in the innermost such window,

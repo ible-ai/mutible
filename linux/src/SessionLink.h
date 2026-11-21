@@ -69,21 +69,24 @@
 #include <utility>
 #include <vector>
 
+#include "FolderSearch.h"
 #include "SessionClient.h"
+#include "SessionServer.h"
 
 namespace Model {
 class Window;
 }
 namespace Shared {
 class SessionHost;
-class HostLink;
 }
 
 namespace SessionLink {
 
 class Link {
 public:
-    enum class Kind { InProcess, Loopback, Socket };
+    // Remote: `mutible host --stdio` on another machine through the user's
+    // ssh (stage 8, connectRemote).
+    enum class Kind { InProcess, Loopback, Socket, Remote };
     ~Link();
     Link(const Link&) = delete;
     Link& operator=(const Link&) = delete;
@@ -98,6 +101,67 @@ public:
     pid_t startedHost() const { return startedHost_; }
     // The headless host went away.
     bool lost() const { return client_->lost(); }
+
+    // ---- a remote link (Kind::Remote, stage 8)
+    // Which host this is, for moving windows to its replacement: the folder
+    // for a link on this machine, the other machine's ssh:// and the folder
+    // there for a remote one.
+    std::string key() const { return kind_ == Kind::Remote ? machine_ + "\n" + folder_ : folder_; }
+    // Its address as given (ssh://...), its title's "host:path" (the folder
+    // as the address names it, ~ kept), the file the address named (spelled
+    // under folder(), as the host resolved it; "" for a folder), and why the
+    // connection went (ssh's status and last words, in the window's words)
+    // once lost.
+    const std::string& address() const { return address_; }
+    const std::string& label() const { return label_; }
+    const std::string& askedFile() const { return askedFile_; }
+    const std::string& failure() const { return failure_; }
+    // The token of the window over SSH this link belongs to, the same on
+    // every connection it makes again (Client::setResume), "" for no
+    // remote link.
+    const std::string& resume() const { return resume_; }
+    // After a reconnect (stage 8, the lasting host): `window`'s record on
+    // this link's host, when the host still holds the one `old` (the lost
+    // link) had made for it; false when it ended meanwhile.
+    bool resumeWindowFrom(const Link& old, std::uint64_t window);
+    // A file's text read through the host (FsRead "read", piece by piece, 64
+    // MB at most), decoded as a local file is (FolderSearch::decodeFileText).
+    // `ok` false when it cannot be read or is not text; `tooLarge` past the
+    // limit. Waits on the host (at most 20 s a piece). Never a stamp: the
+    // file is on the other machine.
+    struct RemoteText {
+        bool ok = false, tooLarge = false;
+        std::string text;
+        FolderSearch::TextEncoding encoding = FolderSearch::TextEncoding::Utf8;
+        bool bom = false;
+    };
+    RemoteText readText(const std::string& path);
+    // ---- the host's reads without waiting (stage 8, second slice). The
+    // host's answers are dispatched on the main loop (dispatchOnMain), so
+    // these never block and their callbacks run there, from dispatch(),
+    // never inside the call. A lost link answers each one still waiting
+    // with failure at once.
+    // One FsRead (Shared::Client::requestRead): `done(ok, answer)`. False,
+    // calling nothing, when the link is lost.
+    bool readAsync(Json request, std::function<void(bool ok, const Json& answer)> done);
+    // One of the heavier reads ("files", "search"; Client::requestStream):
+    // `answers(batch, done)` for each batch as it comes, the last with done
+    // true (also when the link is lost: an empty batch). 0, calling nothing,
+    // when the host does not take them.
+    using StreamFn = std::function<void(std::vector<Json>&& answers, bool done)>;
+    std::uint64_t stream(Json request, StreamFn answers);
+    // Stops one: the host is told, nothing more is called for it.
+    void cancelStream(std::uint64_t req);
+    // What the host saw change on disk (Hello flag 32; `mutible host
+    // --stdio` watches, a remote link's client hears it): `folders` as
+    // Client::hearDisk's, each on a turn of the main loop of its own, never
+    // inside a dispatch. Only a remote link hears the disk.
+    using DiskFn = std::function<void(std::uint64_t window, const Json& changed)>;
+    int addDiskListener(DiskFn f);
+    void removeDiskListener(int token);
+    // Reads and streams still waiting (checks).
+    std::size_t pending() const { return reads_.size() + streams_.size(); }
+
     // For checks: the in-process host, null on a headless one
     // (SessionHost::diskWatchSettled).
     Shared::SessionHost* inProcessHost() const { return host_.get(); }
@@ -185,18 +249,27 @@ public:
 
 private:
     friend std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
+    friend void connectRemote(const std::string& address,
+                              std::function<void(std::shared_ptr<Link>, std::string)> done);
+    friend void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+                                 std::function<void(std::shared_ptr<Link>, std::string)> done);
+    friend void reconnectRemote(const std::shared_ptr<Link>& lost,
+                                std::function<void(std::shared_ptr<Link>, std::string)> done);
     Held free(bool all);
     Json tabsJson(std::uint64_t window, const Model::Window& w) const;
     Link() = default;
     struct Wake;
     void startInProcess(bool loopback, unsigned delayUs);
-    bool startSocket(std::string* why);
+    bool startSocket(std::string* why, bool onlyExisting = false);
+    bool startRemote(std::string* why);
     void makeClient();
     static int dispatchOnMain(void* wake);   // a GSourceFunc
     std::uint64_t hostWindow(std::uint64_t window);
 
     Kind kind_ = Kind::InProcess;
     std::string folder_, socketPath_;
+    std::string address_, label_, machine_, askedFile_, failure_, resume_;
+    Shared::SshTarget target_;
     pid_t startedHost_ = 0;
     std::shared_ptr<Wake> wake_;
     // Destroyed in this order (~Link): the transport first, whose thread
@@ -208,6 +281,18 @@ private:
     bool detached_ = false, lostTold_ = false;
     std::map<Shared::DocId, DocNotices*> notices_;   // listen
     std::map<int, std::function<void(const std::string&)>> lostListeners_;
+    // readAsync and stream: by the client's request id, polled at the end of
+    // each dispatch (pumpStreams). The disk's notices wait for a turn of
+    // the loop (flushDisk).
+    void pumpStreams();
+    void failPending();
+    void flushDisk();
+    std::map<std::uint64_t, std::function<void(bool, const Json&)>> reads_;
+    std::map<std::uint64_t, StreamFn> streams_;
+    std::map<int, DiskFn> diskListeners_;
+    std::vector<std::pair<std::uint64_t, Json>> diskQueue_;
+    bool diskQueued_ = false;
+    bool pumping_ = false;
     int nextListener_ = 0;
     // What each window's tabs were last sent as, and each window's id on
     // the host by its id in the app's Model::Session (which numbers windows
@@ -234,6 +319,33 @@ private:
 // is passed over: the folder gets a new one (stage 6, step 2: the windows
 // on the old one move to it, Editor::rehost), found or started again.
 std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
+// A window over SSH (stage 8): `address` is ssh://[user@]host[:port]/path.
+// The user's ssh ($MUTIBLE_SSH names another program, for the checks)
+// running `mutible host --stdio <path>` there is started, and `done` is
+// called on the main loop, never inside this call, with the live link once
+// the host's Welcome has come (at most 30 s: ssh's connection), or with a
+// null link and why in the window's words (ssh needed a password or a host
+// key confirmed, mutible missing or too old there, ssh's own last line).
+// The main loop runs meanwhile (the start is a spawn, the wait polls), so
+// nothing waits on a connection. A live link for that machine and path is
+// given again.
+void connectRemote(const std::string& address, std::function<void(std::shared_ptr<Link>, std::string)> done);
+
+void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+                      std::function<void(std::shared_ptr<Link>, std::string)> done);
+
+// A window over SSH's connection made again after it dropped (stage 8): the
+// lost link's address and token, so the lasting host there lets go of the
+// stale connection and the window's documents and terminals can be taken up
+// again from it. `done` as connectRemote's; the lost link stays registered
+// until a try succeeds.
+void reconnectRemote(const std::shared_ptr<Link>& lost,
+                     std::function<void(std::shared_ptr<Link>, std::string)> done);
+
+// The folder a lasting host's socket is in, as `mutible host --stdio` makes
+// it (tools/mutible-cli.cpp, lastingSocketDir).
+std::string lastingSocketFolder();
+
 // Whether the folder's link now has lost its host (a new window, or
 // Reconnect, finds or starts it again).
 bool folderLost(const std::string& root);

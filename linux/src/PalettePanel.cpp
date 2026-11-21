@@ -648,6 +648,25 @@ void PalettePanel::listFiles() {
         filesListed_ = true;
         return;
     }
+    if (ctx_.remoteList) {
+        // The host's list, asked without waiting; a palette that closed or
+        // listed again meanwhile takes nothing.
+        const unsigned gen = ++listGen_;
+        std::weak_ptr<int> alive = life_;
+        ctx_.remoteList([this, gen, alive](std::vector<std::string> files, bool truncated) {
+            if (alive.expired() || gen != listGen_ || !open_) return;
+            files_ = std::move(files);
+            fileKeys_.clear();
+            fileKeys_.reserve(files_.size());
+            for (const std::string& f : files_) fileKeys_.push_back(Lsp::toUtf16(f));
+            filesTruncated_ = truncated;
+            filesOffMain_ = false;
+            filesListed_ = true;
+            const std::string text = gtk_editable_get_text(GTK_EDITABLE(entry_));
+            if (CommandPalette::parse(Lsp::toUtf16(text)).mode == CommandPalette::Mode::Files) refilter();
+        });
+        return;
+    }
     auto* job = new ListJob;
     job->gen = ++listGen_;
     job->root = ctx_.root;

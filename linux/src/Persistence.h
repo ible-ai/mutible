@@ -109,6 +109,11 @@ public:
     static std::vector<TabSessions::Window> savedWindows();
     static void putWindows(const std::vector<TabSessions::Window>& windows);
     const std::string& key() const { return key_; }
+    // A window on another machine (stage 8): its tabs are not remembered
+    // between runs, backed up or auto-saved here (the files are there, and a
+    // folder of this machine at the same path is another folder).
+    void setRemote() { remote_ = true; }
+    bool remote() const { return remote_; }
     // Open Folder: the old folder's session saved first, then this, then
     // restoreSession for the new one.
     void setRoot(const std::string& root);
@@ -199,4 +204,5 @@ private:
     SavePlan::Planner plan_;
     guint planTimer_ = 0;
     bool editorHadFocus_ = false;
+    bool remote_ = false;
 };

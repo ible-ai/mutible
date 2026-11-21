@@ -143,3 +143,4 @@ MarkdownAlertsSuite.cpp
 MarkdownDetailsSuite.cpp
 CsvHeaderSuite.cpp
 LargeMemorySuite.cpp
+RemoteSshSuite.cpp

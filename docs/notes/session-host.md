@@ -3790,6 +3790,153 @@ own folder brings it to front.
   and a file in a scratch folder outside each opening a window of their
   own, closed with their hosts. Not run here: CI runs it.
 
+#### The GTK port over SSH (2026-11-21, first slice)
+
+`mutible ssh://host/path` (and `mbl`) opens a GTK window on a folder of
+another machine, by the same core as the Mac's (`HostLink::spawn`,
+`sshCommand`, `explainSshFailure`, the Welcome's flags 1, 2 and 32). The
+GTK binary hands an `ssh://` argument to `handleCommandLine` (main.cpp),
+which `openRemoteAddress`es it; no other argument is read as a path.
+
+- **The link** (`linux/src/SessionLink.{h,cpp}`): `Kind::Remote`, made by
+  `SessionLink::connectRemote(address, done)`. The spawn is cheap, so it
+  runs on the main loop; the Welcome is waited for by a 20 ms poll on the
+  main loop (the client's wake dispatches the host's messages there), 30 s
+  at most, so nothing blocks on ssh's connection and no GTask is needed.
+  `done` is always called from the main loop, never inside the call. A
+  failure (ssh's status and last words, through `explainSshFailure`; a
+  Welcome without flags 1, 2 and 32 or no folder: "too old") closes the
+  link first, so ssh's end is reaped, and gives a null link and the words.
+  `key()` (the machine's ssh:// and the folder) is what Reconnect moves
+  windows by. One link per machine and path as addressed; a live one is
+  given again. `readText` is the Mac's (FsRead "read" in 4 MB pieces, 64
+  MB at most, decoded as a local file is).
+- **The window** is `newWindow(folder, file, nullptr, link)`: an ordinary
+  window put on the link, its title `file — host:path — mutible`
+  (`WindowTitle::Input::remote`, " (disconnected)" while lost, this
+  machine's home not used). `Editor::loadInto` reads a remote window's
+  files through the link (no stat, no sniff, no viewers: images, PDFs,
+  media, databases are not offered), the large-file question is skipped,
+  and a file the Welcome says is new (`"new": true`) opens as an empty
+  untitled tab at its path, which Ctrl+S makes through the host. In a
+  `Document` (`remote()`) nothing of this machine's disk at the path is
+  looked at: no stamp (`rememberDisk`), no file monitor, no external-change
+  check, no reload from disk, and `save` is the host's write alone, never
+  the local write that a lost host falls back to for a local folder: with
+  the connection gone it says "It is on host:path, and the connection
+  there is lost. Reconnect (in the status bar) to save it there; your text
+  is kept here." `Persistence::setRemote` turns off the window's session,
+  backups and auto-save (a folder of this machine at the same path is
+  another folder); remote windows are left out of the windows brought
+  back at the next launch and of the recent folders; no language server
+  (no observer) and no change bars (`GitGutter`); Open Folder in a remote
+  window opens its folder in a window of its own. Closing a remote window
+  detaches and then `Link::detach()`es, which ends the remote host.
+- **Terminals** (`Terminal::spawnShell`): on a remote link the TermSpec has
+  `hostShell = true`, `TERM`, `COLORTERM` and `TERM_PROGRAM` only, no
+  nonce and no integration (bash's `--rcfile` and zsh's `ZDOTDIR` are this
+  machine's files), so a remote shell has no marks; `shellDirectory` never
+  reads `/proc/<pid>/cwd` for a pid that is the other machine's.
+- **A dropped connection**: the link's lost listener says so in the status
+  bar (the core's `explainSshFailure` of the reaped status, "Disconnected
+  from host:path: ... Your text is kept here; Reconnect opens it there
+  again"), shows Reconnect and retitles the window. Reconnect runs
+  `connectRemote` for the same address and moves every window and terminal
+  on the old link to the new one by `key()` (`rehostWindows`,
+  `Editor::rehost`: each buffer opened on the new host from its text, the
+  file's text as the host's saved text, undo started again; terminals get
+  new shells). A host that cannot be had says why in the status bar and the
+  window waits.
+- **Failures**: an alert "Could not open ssh://..." with the core's
+  sentence (a password or passphrase or host key to confirm: run `ssh host`
+  once; mutible not installed there; too old); the same words go to the
+  command line's stderr.
+- **What the first slice left out** (the tree, Quick Open and Find in
+  Folder came in the second, below): `ssh://` addresses opening in an
+  existing window (each opens a window, or brings forward the one on that
+  link), git, language servers and the session browser for such a window,
+  and a host that outlives the connection (the Mac session's next core
+  change).
+- **Checked**: `remote_ssh` (RemoteSshSuite.cpp): a stand-in for ssh runs
+  this build's `mutible` as the remote, so the "remote" is this machine
+  through `host --stdio`: three failing stand-ins (a password asked for,
+  mutible missing, no `--stdio`) each give an alert with the core's
+  words and no window; then the window, its title, its tab read through
+  the host (no stamp), ssh's arguments, typing and Ctrl+S written by the
+  host, a terminal whose parent is the host in the stand-in's environment,
+  the connection killed (disconnected title, Reconnect button, the text
+  kept and typed into, a save refused with its words), Reconnect (a new
+  host, everything typed there, saved there, a new shell that runs a
+  command), and the host ending with the window. No real ssh is ever run.
+
+#### The GTK window's tree, Quick Open and Find in Folder over SSH (2026-11-21, second slice)
+
+The Mac's #322 on GTK: the three consumers of the folder read the host, never
+this machine's disk at that path.
+
+- **The async layer** (`SessionLink::Link`): the host's answers already
+  arrive on the main loop (the client's wake, `dispatchOnMain`), and the
+  Client is not thread-safe, so none of this blocks or leaves the main
+  thread. `readAsync(json, done(ok, answer))` sends one FsRead and polls its
+  `readAnswer` at the end of each `dispatch()`; `stream(json, fn(batch,
+  done))` and `cancelStream(req)` do the same for the "files" and "search"
+  reads (0 from a host without Welcome flag 8); a lost link answers every
+  read and stream still waiting (failure, an empty last batch) so no
+  callback is kept for ever. A remote link's client `hearDisk`s (Hello flag
+  32): the host's FsChanged notices are queued and delivered to
+  `addDiskListener`'s functions from an idle of their own, never inside a
+  dispatch (which a settle can run in the middle of anything).
+- **`RemoteWorkspace`** (`linux/src/RemoteWorkspace.{h,cpp}`, plain C++, the
+  Mac's MCRemoteWorkspace): the folder as the host resolved it, the paths
+  both ways (`relative`, `absolute`), `listFolder` ("list" with hidden: the
+  tree's own filter hides dotfiles, as it does for a local listing),
+  `watchFolders` (the folders with a store in the tree, sent through
+  `Client::watchFolders` once per turn of the loop, again to a new host:
+  `attachLink` in `rehostApp`), `listFiles`, `search`/`cancelSearch`.
+  Counters (`listings`, `notices`, `fileLists`, `searches`) are for checks.
+- **The tree** (`FileTree` given the workspace): `makeDirModel` makes the
+  folder's store as always but with no `GFileMonitor`, no Worktrees node and
+  no `access()`: `startListing` asks the workspace, builds the entries'
+  `GFileInfo`s on the main thread (name, type, a `standard::file` that is
+  never opened, the host's `ignored` mark as object data, shown in
+  tree.git-ignored's color) and hands them to the same sort and splice path
+  as a local listing's (`sortedListing`, `listingIn`), so open folders, the
+  selection and the scroll are kept. A link out of the folder ("outside") is
+  a leaf. A notice names the folders whose listing the host sent again; the
+  tree lists those again through its pacer (`RemoteStores::changed`, as a
+  monitor's event would) instead of applying the notice's own copy, so a
+  listing never lands on one still going in. The lookups of this disk (the
+  `lstat` for a selected row that went, `inTree`'s `g_file_test`, the lost
+  focus check, the focus monitors) are skipped for a remote tree. Show
+  Hidden Files is the filter's, as locally.
+- **Refused with the status note** "X does not work in a window over SSH yet:
+  the files are on host:path. The terminal runs there." (`refuseOverSsh`):
+  New Folder, Rename, Move to Trash, drops into the tree, Reveal in Files.
+  New File asks the name and opens an empty untitled tab at the path, which
+  its first save makes through the host. Find in Folder's TODOs and Replace in
+  Folder (Replace All, one row) say so in the panel's status line.
+- **Quick Open** (`PalettePanel::Context::remoteList`): the host's file list
+  fills the same `files_`/`fileKeys_` as the local walk's, with the same
+  generation guard and ranking; picks open through the host as any file.
+- **Find in Folder** (`SearchPanel::setHostSearch`): the query goes as a
+  "search" stream (hidden dotfiles on, as the local search reads them), rows
+  are added as each batch comes ("Searching... N lines so far"), the last
+  answer gives "N matches in M files" and the usual notes; a newer search or
+  the panel's close cancels the stream; the scope stays the folder.
+- **Not done**: the browser's `locate` (ssh:// addresses opening in an open
+  window, slice 3), Replace in Folder over SSH (as the Mac), `Link::readText`
+  still waits for the host on the main thread (opening a remote file blocks
+  up to 20 s a piece; the large-file path's `beginLoading` is the way to make
+  it async, but every caller of `loadInto` expects the text on return).
+- **Checked**: `remote_ssh`'s second half, in the same stand-in: the tree's
+  top level from the host (folders first, the ignored log marked, counted
+  listings), src opened, two files made on disk appear through the notices,
+  Enter opens a row through the host, New Folder's note, Ctrl+P lists the
+  host's files without the ignored log and opens src/main.c, Find in Folder
+  "2 matches in 2 files" with the log left out and a row opening its file,
+  Replace All refused with the files untouched, and a file made after
+  Reconnect appearing from the new host.
+
 #### A host that outlives the connection (2026-11-21, fourth slice)
 
 Before this, the remote host was `--stdio`'s own and died with the ssh
@@ -3899,6 +4046,63 @@ connects again by itself, and the window takes up what the host kept.
   (0.05 there). Not run here (the builder had no screen to use): CI runs
   it. A real drop between two machines (sleep, a network change, the
   remote sshd keeping the dead connection) needs the owner.
+
+#### The GTK window over SSH, the lasting host (2026-11-21, third slice)
+
+The Mac's #334 (bac9506): `host --stdio` finds or starts a detached `--lasting`
+host per folder (its socket in `$TMPDIR/mutible-<uid>`, ended after four hours
+idle, `MUTIBLE_HOST_IDLE_MINUTES`), so a window over SSH can lose its
+connection and come back to the same host. The GTK port:
+
+- **One token per window** (`Link::resume_`, 16 random bytes in hex, made by
+  `connectRemote` and kept by `reconnectRemote` from the lost link), said in
+  every connection's Hello (`Client::setResume`, before `connect`), so the host
+  drops the stale connection of that window. A fresh `host --stdio` per try.
+- **Connecting again by itself** (main.cpp, `startAutoReconnect`,
+  `scheduleAutoReconnect`, `tryAutoReconnect`): the lost listener of a remote
+  link starts the tries instead of showing Reconnect. Each waits
+  `Shared::reconnectDelayMs(attempt)` (0.5 s doubling to 30 s), and after
+  `kReconnectAttempts` the window says so and Reconnect shows (the manual
+  Reconnect, also by `reconnectRemote`, stays). The title says "(reconnecting)"
+  meanwhile (the Mac's words), then "(disconnected)". A round counter voids a
+  timer or an answer of an earlier round (a Reconnect, a closed window). A try
+  that fails leaves the lost link registered (`connectRemoteFor` registers a
+  new link only once it has its Welcome), so its token is still there for the
+  next one.
+- **Taking up the host's state** (`rehostApp`): the new link's state query says
+  which documents, terminals and window record the host still holds under the
+  ids this window used. `Link::resumeWindowFrom` makes the window's record the
+  host's own again; `Document::reattach` opens the same id (an empty text opens
+  a document the host holds), takes the host's text without applying it
+  (`capturing_`), and sends what the buffer has beyond it as an edit outside
+  the history (as `hostSavedFromDisk` does), so the host's undo and unsaved
+  count carry on; `Terminal::reattach` clears VTE and attaches the held shell
+  (`attachShell`, the host's replay redraws it), from `lostTerm_`, the host
+  term the lost listener noted. What the host does not hold (it ended
+  meanwhile) opens anew as slice 1's Reconnect did (`rehost`).
+- **A closing remote window closes its things on the host** (`detachWindow`):
+  its record, files and shells, as the Mac's `closeOnRemoteHost`; with a lasting
+  host, detaching them would leave a running shell that keeps the host alive for
+  ever.
+- **A local window shares a lasting host** (`forFolder`): with
+  `editor.session-host = off` and `MUTIBLE_HOST` unset, when
+  `findHostSocket(folder, withLastingFolder(socketFolders(), lastingSocketFolder()))`
+  finds a host for the folder (one a Mac window over SSH started on this
+  machine), the window attaches to it (`Kind::Socket`, `startedHost() == 0`)
+  instead of making a second host; nothing found, the default is as it was. The
+  headless socket mode looks in the lasting folder too. `lastingSocketFolder()`
+  is `mutible-cli`'s `lastingSocketDir()` on Linux (`MUTIBLE_CONTROL_DIR`,
+  `$TMPDIR`, never `XDG_RUNTIME_DIR`).
+- **Checked** in `remote_ssh` (the stand-in refuses while a flag file exists,
+  so the tries are seen): the drop, "(reconnecting)", no Reconnect button, text
+  typed away, two refused tries, then a connection by itself to the same host,
+  the document's id the same, the shell the same (a variable, its pid and its
+  parent), a save; a second drop that exhausts the tries (the attempt counter set
+  to all but the last, then one real refused try), Reconnect shown with its
+  words, and the user's Reconnect to the same host; the window closing ends the
+  shell and the lasting host after its idle time; and a lasting host started by
+  the check for another folder, a window opened on it with `MUTIBLE_HOST` unset,
+  attached over its socket. Every host the checks start is ended by its pid.
 
 #### Traps
 

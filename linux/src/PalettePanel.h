@@ -68,6 +68,11 @@ public:
         // Open a file of the folder (an absolute path below root), on the
         // turn after the palette closed.
         std::function<void(const std::string& path)> openFile;
+        // A window over SSH (stage 8): the folder's files from the host
+        // instead of this disk's walk (RemoteWorkspace::listFiles); `done`
+        // comes once, on the main loop, with the files ('/'-separated from
+        // the folder) and whether the list was cut short.
+        std::function<void(std::function<void(std::vector<std::string> files, bool truncated)> done)> remoteList;
         // Go to Symbol in File from the file's language server (PARITY.md
         // 2.12, LspSession::documentSymbols): false when none of its
         // servers lists symbols (the outline stands in); else `done` comes
