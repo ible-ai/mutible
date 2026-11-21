@@ -3504,13 +3504,17 @@ through its host, so this is mostly a transport.
   terminal's palette), the undo menu's asking, and its backups of what it
   shows.
 - **A dropped connection.** The window keeps every tab's text and stays
-  editable; the title says "(disconnected)", the status bar says why and
-  shows Reconnect. Reconnect runs ssh again and reattaches through the
-  stage 6 path (`moveToSessionLink:`): each document opened on the new
-  host from the window's text, the file's text as the host's saved text,
-  so unsaved text is never lost (undo starts again), and each terminal a
-  new shell. A save while disconnected says to reconnect; the window
-  never writes the Mac's file at that path.
+  editable; since the fourth slice ("A host that outlives the
+  connection", below) the remote host outlives the drop and the window
+  connects again by itself, "(reconnecting)" in its title, taking up its
+  documents (text, unsaved state, undo) and terminals (scrollback, running
+  programs) under their ids. When the tries give up, the title says
+  "(disconnected)", the status bar says why and shows Reconnect. A host
+  that ended meanwhile (a reboot there) is met as before: each document
+  opened on the new host from the window's text, the file's text as the
+  host's saved text, so unsaved text is never lost (undo starts again),
+  and each terminal a new shell. A save while disconnected says to
+  reconnect; the window never writes the Mac's file at that path.
 - **Left out of this stage.** Port forwarding for the browser pane (a
   dev server on the remote's localhost), dragging a file from Finder to
   the remote, the Mac's Quick Look (and its image, PDF and media viewers)
@@ -3519,10 +3523,12 @@ through its host, so this is mostly a transport.
 #### As built (2026-11-21)
 
 - **`mutible host --stdio PATH`** (`HostServer::startStdio`, `runHostStdio`
-  in tools/mutible-cli.cpp): the headless host serving one renderer on its
-  stdin and stdout, no socket and no lock (another host of the folder may
-  run beside it), ending as soon as its input closes (`run()` returns
-  true when the one connection goes). PATH is a folder, or a file whose
+  in tools/mutible-cli.cpp): at first the headless host serving one
+  renderer on its stdin and stdout, no socket and no lock (another host of
+  the folder may run beside it), ending as soon as its input closes
+  (`run()` returns true when the one connection goes). Since the fourth
+  slice it relays to the folder's lasting host instead, and serves the
+  window itself this way only when no lasting host can be had. PATH is a folder, or a file whose
   folder it serves; the Welcome then names the file (`json {"file"}`,
   `Client::welcomeJson`), so the window shows it. The CLI moves fd 1 off
   the protocol's pipe (stdout becomes stderr, stdin /dev/null) before any
@@ -3579,9 +3585,11 @@ through its host, so this is mostly a transport.
   session, no local language server, no viewer that reads the disk, the
   auto-save loop's disk check skipped, the large-file question skipped,
   and the window's own write refused (`writeText:toTab:`). Its title is "file — host:path — mutible"
-  (WindowTitle's `remote`, with " (disconnected)" while the link is lost).
-  Closing it detaches as stage 6 does and then lets the link go
-  (`Link::detach`), which ends the remote host.
+  (WindowTitle's `remote`, with " (reconnecting)" while it tries again and
+  " (disconnected)" once it gave up). Closing it closes its terminals and
+  documents on the remote host (`closeOnRemoteHost`, since the fourth
+  slice; before, it detached and the host ended with the connection) and
+  lets the link go (`Link::detach`), which ends the relay there.
 
 #### Checks
 
@@ -3781,8 +3789,139 @@ own folder brings it to front.
   and a file in a scratch folder outside each opening a window of their
   own, closed with their hosts. Not run here: CI runs it.
 
+#### A host that outlives the connection (2026-11-21, fourth slice)
+
+Before this, the remote host was `--stdio`'s own and died with the ssh
+connection, taking the remote terminals, unsaved host-side state and undo
+with it. Now `--stdio` is a relay to the folder's lasting host, the Mac
+connects again by itself, and the window takes up what the host kept.
+
+- **Find or start** (`Shared::connectOrStartHost`, SessionServer.h): the
+  folder's socket (`findHostSocket`, `hostSocketName`) in
+  `withLastingFolder(socketFolders(), lastingSocketDir())`, so a host the
+  user's own GTK app started for the folder (XDG_RUNTIME_DIR) is found
+  too; a socket nothing listens on counts as none; none, it starts
+  `<self> host --folder DIR --lasting` with `Shared::startDetached` (a go-
+  between forks it in a session of its own and exits, so it is init's
+  child, not the relay's; SIGHUP ignored; stdin /dev/null; stdout and
+  stderr appended to `host-<hash>.log` beside the socket, 0600; every
+  descriptor above 2 closed) and waits up to 10 s for its socket. Two
+  relays starting at once both end up on the one host that took the lock.
+  `<self>` is `_NSGetExecutablePath` on the Mac (a link's name kept, so
+  `ps` says mutible), /proc/self/exe on Linux (the PPA's binary hands
+  `host` to `mutibleCliMain`). No socket folder or no path to itself:
+  `--stdio` serves the window itself as before, saying so on stderr.
+- **`--lasting`** (`runHost`): the socket in `lastingSocketDir()`, which is
+  ControlPaths' rule without XDG_RUNTIME_DIR on Linux (`/tmp/mutible-<uid>`
+  or `$TMPDIR`'s), the Mac's first socket folder there; SIGHUP ignored
+  (`takeStopSignals(false)`); idle time `Shared::lastingIdleMs` of
+  MUTIBLE_HOST_IDLE_MINUTES, else `kLastingIdleMs` (four hours); the
+  busy rule (unsaved, running) as every headless host. Every `mutible host`
+  now passes its environment as the shells' (`HostOptions::shellEnv`), so
+  a window over SSH relayed to any host there gets a real environment in
+  its terminals (only TermSpec's hostShell reads it).
+- **The relay** (`Shared::relayStdio`): blocking both ways (the host never
+  blocks on a connection, the Mac's reader always reads), each side's bytes
+  passed as they come but the host's Welcome, whose json gets `{"file",
+  "new"}` from `stdioTarget` as the one-shot host's `setAskedFile` gave it.
+  The renderer's input ending ends it, and the CLI closes the socket (the
+  host detaches the renderer); the host going closes stdout (ssh ends).
+- **Resuming** (`Client::setResume`, Hello json `{"resume": token}`,
+  `Host::setDrop`): each remote link has a random token
+  (`NewResumeToken`), carried to the link made again for it (by
+  `reconnectRemote` and by `forRemote` over a lost link). A Hello with a
+  token makes the host disconnect, at once, any other renderer with that
+  token (its seats, its open step, its place among the terminals'
+  viewers), ignore and send nothing to it (`dropped_`), and tell the
+  server (`HostServer`'s drop callback marks the connection dead, so the
+  stale relay there ends). Without that, a dead TCP connection that the
+  remote sshd notices only hours later (TCPKeepAlive) keeps a viewer that
+  never acks, and the terminal stops being read once its unacked bytes
+  pass `kTermCredit`.
+- **Connecting again on the Mac** (`MCSession::reconnectRemote`,
+  SessionLink.mm): ssh spawned and the client attached without waiting
+  (`attachClient` with no timeout); `Link::dispatch` sees the Welcome
+  (`idBase()`) or ssh's end (`lost()`) and calls `finishConnecting`,
+  which checks the Welcome (`takeWelcome`, too old a host refused),
+  registers the link under the address and calls back on the next main
+  queue turn; 30 s with neither ends the try. Links trying are held in
+  `Connecting()`. The window's lost listener (`sessionHostWentAway`) sets
+  `MCSessionWindow reconnecting`, `reconnectAttempt` and a new
+  `reconnectRound`, and schedules tries by `Shared::reconnectDelayMs`
+  (0.5, 1, 2, 4, 8, 16, then 30 s, twelve tries, about three and a half
+  minutes); a try from an older round, a closing window or a link already
+  moved does nothing. Success moves every window on the lost link
+  (`moveWindowsToLink:`); the last try failing shows Reconnect (which runs
+  the blocking `forRemote` as before, now carrying the token).
+- **Taking up the host again** (`moveToSessionLink:`): over SSH it asks the
+  new link's `sessionState()`; the window's record still there means
+  `MCSessionWindow resumeOn:` (the same window id, `Link::adoptWindow`),
+  else `moveTo:`. Each tab whose document id the host holds:
+  `MCSessionDoc reattachOn:` (the lost client's entry closed, the document
+  opened under its id with an empty text, the host's text captured as
+  `initWithTab:held:` does, then the tab's difference from it as one
+  "Edit" step through `textWillChangeFrom:to:`, so typing while away and
+  edits lost in flight are undoable on top of the host's history); one it
+  does not hold, or that does not answer, `rehostOn:saved:` as before.
+  Each terminal whose `lostSessionTerminal` (kept by `hostWentAway`) the
+  host holds: `TerminalView reattachOn:place:`, an `MCSessionTermPlace`
+  from the state's pid, size and shell, through `attachHeldShell` (a fresh
+  screen from the host's replay, scrollback included, then live output);
+  else `rehostOn:`. While the connection is down a remote terminal says
+  its shell runs on there.
+
+#### Checks (fourth slice)
+
+- `make test`: `hostserver:lasting-rules` (`lastingIdleMs`,
+  `withLastingFolder`, `reconnectDelayMs` and its total, `--lasting` on the
+  command line and in the usage); `hostserver:start-detached` (not this
+  process's child, a session of its own, SIGHUP it sent itself ignored,
+  /dev/null in, its log 0600 with its output, a descriptor of the test's
+  not kept, a program not there); `hostserver:lasting` (find or start
+  through a callback, once; the relay's Welcome naming the file; a
+  document typed into and a terminal with output; a second relay with the
+  same resume token while the first is left open and silent: the first
+  dropped by the host, the document under its id unsaved with the host's
+  text and undo, the terminal's replay and the same shell typing on, three
+  thousand lines through it; the renderer going ends the relay and the host
+  stays; a start that fails says why).
+- `make guitest SUITES=remote_ssh`: the terminal's shell's parent is the
+  lasting host, not the relay; `sleep 600` running and text typed, the
+  relay killed with the stand-in refusing to connect: "(reconnecting)", no
+  Reconnect button, the lasting host alive, typing kept, two refused
+  tries; the stand-in let through: the window back by itself on a new
+  relay, the same terminal id with its earlier output, sleep still
+  running, Ctrl+C and the same shell's pid, the document's text with what
+  was typed meanwhile, unsaved, the host's text the tab's, two undos going
+  back past the drop and two redos, Cmd+S; then the window's close ending
+  its relay and the lasting host ending after MUTIBLE_HOST_IDLE_MINUTES
+  (0.05 there). Not run here (the builder had no screen to use): CI runs
+  it. A real drop between two machines (sleep, a network change, the
+  remote sshd keeping the dead connection) needs the owner.
+
 #### Traps
 
+- **XDG_RUNTIME_DIR does not last.** systemd removes /run/user/<uid> when
+  the user's last session ends, which on a machine reached only by ssh is
+  the dropped connection: a lasting host's socket there would vanish and
+  the next connection would start a second host. Hence
+  `lastingSocketDir()`. A GTK app on that machine with
+  editor.session-host = headless looks only in XDG_RUNTIME_DIR, so it does
+  not find a lasting host and may start a second host for the folder (two
+  socket folders, two locks). With systemd's KillUserProcesses=yes (not
+  Ubuntu's default) the lasting host is killed at logout all the same;
+  `loginctl enable-linger` keeps it.
+- **A detached host must hold nothing of the relay's.** `--stdio`'s dups of
+  fds 0 and 1 are not close-on-exec; a host keeping them would keep ssh's
+  pipes open, so sshd would never see the session end. `startDetached`
+  closes every descriptor above 2, and the relay marks its dups
+  close-on-exec too.
+- **A stale connection holds a terminal's credit.** See "Resuming": the
+  remote may keep a dead connection's relay attached for hours, and the
+  host reads a pty only while every viewer has credit.
+- **Killing the stand-in's group kills only the relay now.** The lasting
+  host is in a session of its own; a suite that starts one ends it by its
+  idle time or by the pid its terminal reported, never by a pattern.
 - **A stand-in that serves the Mac's own disk hides local reads.** The
   GUI check's "remote" folder is a scratch folder of this Mac's, so any
   code that reads or stamps the tab's path locally passes there and fails
@@ -3832,11 +3971,8 @@ own folder brings it to front.
 
 ### Still to do
 
-- **Stage 8, after the second slice** (in order of value): a lasting host
-  behind the stdio end (`--stdio` bridging to the folder's socket host on
-  the remote, so terminals, undo and unsaved text survive a drop there,
-  and the window reconnects by itself); the host's file operations for the
-  tree (a folder made, a rename, a delete, a move: refused over SSH now)
+- **Stage 8, after the fourth slice** (in order of value): the host's file
+  operations for the tree (a folder made, a rename, a delete, a move: refused over SSH now)
   and its Replace in Folder for the window (#307's op, joined with the
   Mac's way of editing open tabs); open clean tabs following the remote
   disk (the host leaves a document an app's window holds to the window,
@@ -3845,7 +3981,11 @@ own folder brings it to front.
   connecting off the main thread with a progress line; the shell
   integration's marks on the remote (the remote mutible's own integration
   file, a nonce from the Mac); viewers for remote pictures, PDFs and media
-  through FsRead "read"; then stage 9 (git, servers, formatters, agents)
+  through FsRead "read"; a new window over SSH taking up what a crashed
+  app, or a window closed while disconnected, left on the lasting host
+  (closing a connected window closes what it had there, but those leave it
+  until the idle time, or for good while it is unsaved or running); the first connection and Reconnect off the main
+  thread too (only the automatic tries are); then stage 9 (git, servers, formatters, agents)
   and the parts left out above (ports for the browser pane, Finder drags,
   Quick Look).
 - **Stage 7, after the watching, the Mac's and GTK's saves, Quick Open and

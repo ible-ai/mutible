@@ -9,9 +9,13 @@
 // in CI. Included in run_tests.cpp after session_terminal_tests.inc, whose
 // helpers (TestMirror, scratchFolder, nowMs, gone) it uses.
 
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
+
+#include <iterator>
 
 #include "SessionServer.h"
 
@@ -939,5 +943,227 @@ static void testSessionServer() {
         CHECK(Shared::termSpecFrom(Shared::termSpecJson(s)).hostShell);
         CHECK(!Shared::termSpecFrom(Shared::termSpecJson(Shared::TermSpec())).hostShell);
         CHECK(!Shared::termSpecJson(Shared::TermSpec()).has("hostShell"));
+    }
+
+    GROUP("hostserver:lasting-rules");
+    {
+        // A host started for a window over SSH (stage 8): its idle time
+        // from the environment, else four hours; where `--stdio` looks for
+        // one; and the waits before each try at connecting again.
+        CHECK(Shared::lastingIdleMs(nullptr) == 4LL * 60 * 60 * 1000);
+        CHECK(Shared::lastingIdleMs("") == Shared::kLastingIdleMs);
+        CHECK(Shared::lastingIdleMs("0.5") == 30000);
+        CHECK(Shared::lastingIdleMs("90") == 90LL * 60000);
+        CHECK(Shared::lastingIdleMs("0") == 0);
+        CHECK(Shared::lastingIdleMs("soon") == Shared::kLastingIdleMs);
+        CHECK(Shared::lastingIdleMs("-1") == Shared::kLastingIdleMs);
+        CHECK(Shared::lastingIdleMs("5m") == Shared::kLastingIdleMs);
+        CHECK((Shared::withLastingFolder({"/run/user/1/mutible"}, "/tmp/mutible-1") ==
+               std::vector<std::string>{"/run/user/1/mutible", "/tmp/mutible-1"}));
+        CHECK((Shared::withLastingFolder({"/tmp/mutible-1"}, "/tmp/mutible-1") ==
+               std::vector<std::string>{"/tmp/mutible-1"}));
+        CHECK(Shared::reconnectDelayMs(0) == 500 && Shared::reconnectDelayMs(1) == 1000);
+        CHECK(Shared::reconnectDelayMs(4) == 8000 && Shared::reconnectDelayMs(5) == 16000);
+        CHECK(Shared::reconnectDelayMs(6) == 30000 && Shared::reconnectDelayMs(11) == 30000);
+        CHECK(Shared::reconnectDelayMs(Shared::kReconnectAttempts) == -1 && Shared::reconnectDelayMs(-1) == -1);
+        long long total = 0;
+        for (int i = 0; Shared::reconnectDelayMs(i) >= 0; i++) total += Shared::reconnectDelayMs(i);
+        CHECK(total > 2 * 60000 && total < 5 * 60000);   // a few minutes of trying, then Reconnect
+        // The command line: --lasting with --folder only.
+        using namespace ControlChannel;
+        auto exists = [](const std::string&) { return true; };
+        CliCommand c = parseCommandLine({"host", "--folder", "p", "--lasting"}, "/w", "/h", exists);
+        CHECK(c.error.empty() && c.args["lasting"].asBool() && c.args["folder"].asString() == "/w/p");
+        CHECK(!parseCommandLine({"host", "--stdio", "p", "--lasting"}, "/w", "/h", exists).error.empty());
+        CHECK(usageText("host").find("--lasting") != std::string::npos);
+        CHECK(usageText("host").find("MUTIBLE_HOST_IDLE_MINUTES") != std::string::npos);
+    }
+
+    GROUP("hostserver:start-detached");
+    {
+        // What `--stdio` starts a lasting host with: not this process's
+        // child, in a session of its own, SIGHUP ignored, reading
+        // /dev/null, writing to its log (0600), holding no descriptor of
+        // this process's.
+        signal(SIGPIPE, SIG_IGN);
+        const std::string dir = scratchFolder();
+        const std::string log = dir + "/host.log", mark = dir + "/mark";
+        int held[2];
+        CHECK(pipe(held) == 0);   // not close-on-exec: the child must not keep it
+        std::string error;
+        const int pid = Shared::startDetached(
+            {"/bin/sh", "-c",
+             "echo \"pid=$$ ppid=$PPID\" > '" + mark + "'; kill -HUP $$; read x; echo \"read=$?\" >> '" + mark +
+                 "'; echo to-the-log; exec sleep 30"},
+            log, &error);
+        CHECK(pid > 0);
+        if (pid > 0) {
+            auto markText = [&] {
+                std::ifstream f(mark);
+                return std::string((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            };
+            CHECK(waitUntil([&] { return markText().find("read=") != std::string::npos; }, 5000));
+            const std::string m = markText();
+            CHECK(m.find("pid=" + std::to_string(pid) + " ") == 0);
+            CHECK(m.find(" ppid=" + std::to_string(getpid()) + "\n") == std::string::npos);   // not ours
+            CHECK(m.find("read=1") != std::string::npos);   // /dev/null: no line, EOF
+            CHECK(getsid(pid) != getsid(0));   // (EPERM, where the system says so, is another session too)
+            CHECK(!gone(pid));   // the hangup it sent itself was ignored
+            int st = 0;
+            CHECK(waitpid(pid, &st, WNOHANG) < 0 && errno == ECHILD);
+            struct stat s;
+            CHECK(stat(log.c_str(), &s) == 0 && (s.st_mode & 0777) == 0600);
+            CHECK(waitUntil([&] {
+                std::ifstream f(log);
+                std::string t((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+                return t.find("to-the-log") != std::string::npos;
+            }, 5000));
+            // The pipe's write end was ours alone: closed here, it reads EOF.
+            close(held[1]);
+            pollfd p{held[0], POLLIN, 0};
+            CHECK(poll(&p, 1, 3000) == 1);
+            char b;
+            CHECK(read(held[0], &b, 1) == 0);
+            kill(pid, SIGKILL);   // this check's own, by the pid it started (init reaps it)
+        } else {
+            close(held[1]);
+        }
+        close(held[0]);
+        CHECK(Shared::startDetached({dir + "/no-such-program"}, "", &error) == 0);
+        CHECK(error.find("could not run") == 0);
+        CHECK(Shared::startDetached({}, "", &error) == 0);
+    }
+
+    GROUP("hostserver:lasting");
+    {
+        // `mutible host --stdio` over a lasting host: found or started
+        // (connectOrStartHost), relayed to (relayStdio, the Welcome naming
+        // the file asked for), and outliving the connection: a renderer
+        // coming back with the same resume token finds its document (text,
+        // unsaved, undo) and its terminal (its screen, the same shell), and
+        // the old connection, which never noticed it was gone, is let go of
+        // at once (Host::setDrop), so it holds no terminal's credit.
+        signal(SIGPIPE, SIG_IGN);
+        ServerRig rig;
+        {
+            std::ofstream f(rig.proj + "/notes.txt");
+            f << "one\n";
+        }
+        int starts = 0;
+        auto start = [&](std::string* why) {
+            starts++;
+            const Shared::HostServer::Start s = rig.start(60000, why);
+            return s == Shared::HostServer::Start::Ok ? (int)getpid() : 0;
+        };
+        std::string error;
+        mkdir(rig.dir.c_str(), 0700);
+        // A relay: two pipes to a renderer, the socket to the host.
+        struct Relay {
+            int toRelay[2] = {-1, -1}, fromRelay[2] = {-1, -1};
+            int sock = -1;
+            std::thread thread;
+            std::atomic<bool> done{false};
+            PipeRenderer r;
+            void run(int s, const std::string& file, const std::string& token) {
+                sock = s;
+                CHECK(pipe(toRelay) == 0 && pipe(fromRelay) == 0);
+                thread = std::thread([this, file] {
+                    Shared::relayStdio(toRelay[0], fromRelay[1], sock, file, false);
+                    // As `--stdio` does: the host's socket closed (the host
+                    // detaches this renderer), and ssh's end.
+                    ::close(sock);
+                    sock = -1;
+                    ::close(fromRelay[1]);
+                    fromRelay[1] = -1;
+                    done = true;
+                });
+                r.connect(toRelay[1], fromRelay[0], [&](Shared::Client& c) { c.setResume(token); });
+            }
+            ~Relay() {
+                r.closeInput();
+                if (thread.joinable()) thread.join();
+                for (int fd : {toRelay[0], sock}) if (fd >= 0) ::close(fd);
+            }
+        };
+        const int s1 = Shared::connectOrStartHost(rig.proj, {rig.dir}, start, 5000, &error);
+        CHECK(s1 >= 0 && starts == 1);
+        if (s1 >= 0) {
+            auto a = std::make_unique<Relay>();
+            a->run(s1, rig.proj + "/notes.txt", "window-1");
+            CHECK(a->r.client->settle());
+            const Json w = a->r.client->welcomeJson();
+            CHECK(w["file"].asString() == rig.proj + "/notes.txt" && !w.has("new"));
+            CHECK(a->r.client->hostFolder() == rig.proj && a->r.client->hostRunsOwnShell());
+            const Shared::DocId d = a->r.client->newId();
+            const Shared::TermId t = a->r.client->newId();
+            a->r.mirror.doc = d;
+            a->r.mirror.text = u"one\n";
+            a->r.client->open(d, rig.proj + "/notes.txt", "one\n", &a->r.mirror);
+            a->r.mirror.caret = 4;
+            a->r.mirror.type(u"two\n");
+            CHECK(a->r.client->settle());
+            CHECK(a->r.client->hostDocument(d).dirty);
+            a->r.client->openTerminal(t, shellSpec(rig.proj, {"sh"}), &a->r);
+            CHECK(a->r.wait([&] { return a->r.pid > 0; }));
+            const int shell = a->r.pid;
+            a->r.client->terminalInput(t, "echo before-$((6*7))\n");
+            CHECK(a->r.wait([&] { return a->r.screen.text().find("before-42") != std::string::npos; }));
+
+            // The second connection finds the host running: nothing started.
+            const int s2 = Shared::connectOrStartHost(rig.proj, {rig.dir}, start, 5000, &error);
+            CHECK(s2 >= 0 && starts == 1);
+            if (s2 >= 0) {
+                // The first connection is left as a dead one is: open, its
+                // renderer silent. The second, resuming, replaces it.
+                auto b = std::make_unique<Relay>();
+                b->run(s2, "", "window-1");
+                CHECK(b->r.client->settle());
+                CHECK(b->r.client->welcomeJson().isNull());   // no file asked: nothing added
+                CHECK(waitUntil([&] { return a->done.load(); }, 5000));   // dropped by the host
+                CHECK(waitUntil([&] { return rig.server->renderers() == 1; }, 5000));
+                const Json st = b->r.client->sessionState();
+                CHECK(st["documents"].size() == 1 && (std::uint64_t)st["documents"][0]["doc"].asInt() == d);
+                CHECK(st["documents"][0]["dirty"].asBool());
+                CHECK(st["terminals"].size() == 1 && (std::uint64_t)st["terminals"][0]["term"].asInt() == t);
+                CHECK(st["terminals"][0]["pid"].asInt() == shell && !gone(shell));
+                // The document under its id: the host's text, then undo.
+                b->r.mirror.doc = d;
+                b->r.client->open(d, rig.proj + "/notes.txt", "", &b->r.mirror);
+                CHECK(b->r.client->settle());
+                CHECK(b->r.mirror.text == u"one\ntwo\n");
+                CHECK(b->r.client->undoInfo(d).canUndo);
+                CHECK(b->r.client->undo(d, false) == Shared::Outcome::Done);
+                CHECK(b->r.client->settle());
+                CHECK(b->r.mirror.text == u"one\n");
+                // The terminal: its screen replayed, and the same shell types on.
+                b->r.client->attachTerminal(t, &b->r);
+                CHECK(b->r.wait([&] { return b->r.screen.text().find("before-42") != std::string::npos; }));
+                b->r.client->terminalInput(t, "echo after-$((7*8)) $$\n");
+                CHECK(b->r.wait([&] {
+                    return b->r.screen.text().find("after-56 " + std::to_string(shell)) != std::string::npos;
+                }));
+                // A burst of output past the credit a silent viewer would hold.
+                b->r.client->terminalInput(t, "i=0; while [ $i -lt 3000 ]; do echo line-$i-of-output; i=$((i+1)); done; echo burst-done\n");
+                CHECK(b->r.wait([&] { return b->r.screen.text().find("burst-done") != std::string::npos; }, 15000));
+                b->r.client->closeTerminal(t);
+                CHECK(waitUntil([&] { return gone(shell); }, 5000));
+                // The renderer going ends the relay; the host stays.
+                b->r.closeInput();
+                CHECK(waitUntil([&] { return b->done.load(); }, 5000));
+                CHECK(waitUntil([&] { return rig.server->renderers() == 0; }, 5000));
+                CHECK(rig.result == -1);
+            }
+            a.reset();
+        }
+        rig.stop();
+        // No socket folder of the user's: nothing found, and a host that
+        // cannot be started says why.
+        CHECK(Shared::connectOrStartHost(rig.proj, {rig.dir},
+                                         [](std::string* why) {
+                                             *why = "no way";
+                                             return 0;
+                                         },
+                                         1000, &error) < 0);
+        CHECK(error == "no way");
     }
 }

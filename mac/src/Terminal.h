@@ -94,6 +94,16 @@ extern NSNotificationName const MCTerminalClaudeDidStartNotification;
 // Its link's host went and `link` was found or started for its folder
 // since: a new shell there (the old one ended with the old host).
 - (void)rehostOn:(MCSessionLinkRef *)link;
+// A window over SSH (stage 8): the terminal the host had when the
+// connection dropped (0 when none), which runs on there; and, once the
+// window reaches that host again, the view taking it up again (`place`
+// names it, its size and shell), the host's screen, scrollback included,
+// drawn afresh and its output live again.
+@property(nonatomic, readonly) unsigned long long lostSessionTerminal;
+- (void)reattachOn:(MCSessionLinkRef *)link place:(MCSessionTermPlace *)place;
+// A window over SSH closes: its shell ends on the host, which would
+// otherwise keep it for no window.
+- (void)closeOnSessionHost;
 // A program other than the shell holds the terminal (a REPL it started).
 @property(nonatomic, readonly) BOOL programHasTerminal;
 // That program asked for bracketed paste (Python 3.13's REPL does).

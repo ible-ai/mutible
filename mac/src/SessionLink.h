@@ -42,8 +42,13 @@
 //     to over ssh's pipes; its window's files are read (readText) and saved
 //     there, its terminals run there, its tree, Quick Open and Find in
 //     Folder read there (the window's MCRemoteWorkspace: the disk's notices
-//     through addDiskListener, the heavier reads through stream), and
-//     closing the window ends it.
+//     through addDiskListener, the heavier reads through stream). The host
+//     there outlives the connection (the folder's lasting host, which
+//     `--stdio` relays to): when the connection drops, the window connects
+//     again by itself (reconnectRemote, off the main thread, its Hello
+//     naming the old connection by the link's resume token) and takes up
+//     its documents and terminals under the same ids. Closing the window
+//     closes them there.
 // Each document and terminal keeps the link it was opened on. A window
 // closing detaches: its documents, terminals and its record (its tabs)
 // stay on the host, and a window opening on the folder takes the latest
@@ -197,6 +202,12 @@ public:
     int addLostListener(std::function<void()> f);
     void removeLostListener(int token);
 
+    // A window over SSH coming back (MCSessionWindow resumeOn:): its id,
+    // from the lost link's range, is an open window's on this one.
+    void adoptWindow(std::uint64_t window) {
+        if (window) live_.insert(window);
+    }
+
     // ---- windows (Client::windowTabs): an open window's id on the host,
     // its record sent when it differs from what was sent last, and on
     // closing either kept (marked "detached", the latest for the folder's
@@ -223,14 +234,27 @@ private:
     friend std::shared_ptr<Link> forFolder(const std::string& root);
     friend std::shared_ptr<Link> processLink();
     friend std::shared_ptr<Link> forRemote(const std::string& address, std::string* why);
+    friend void reconnectRemote(std::shared_ptr<Link> lost,
+                                std::function<void(std::shared_ptr<Link>, const std::string&)> done);
     Link() = default;
     Held free(bool all, const std::string& root);
     bool startSocket(std::string* why);
-    bool startRemote(std::weak_ptr<Link> self, std::string* why);
+    // ssh started and the client attached; with `wait`, its Welcome waited
+    // for and taken (takeWelcome), else that comes in dispatch() and
+    // finishConnecting says how it went.
+    bool startRemote(std::weak_ptr<Link> self, std::string* why, bool wait = true);
+    // The remote host's Welcome taken: false, with why, when it is too old
+    // for a window over SSH.
+    bool takeWelcome(std::string* why);
     // The client made and spoken through `link`, its messages dispatched on
     // the main queue through `self`; false (nothing kept) when the host's
-    // Welcome does not come within `timeoutMs`.
+    // Welcome does not come within `timeoutMs` (0: not waited for).
     bool attachClient(std::unique_ptr<Shared::HostLink> link, std::weak_ptr<Link> self, int timeoutMs);
+    // reconnectRemote's end: once, on the main queue.
+    void finishConnecting(bool ok, std::string why);
+    bool connecting_ = false;
+    std::function<void(bool ok, const std::string& why)> connected_;
+    std::string resume_;   // a remote link's, the same on every link made again for it
 
     Kind kind_ = Kind::InProcess;
     std::string folder_, socketPath_;
@@ -266,6 +290,14 @@ std::shared_ptr<Link> processLink();
 // own last line), when it cannot be had. Waits for the host's Welcome (at
 // most 30 s: ssh's connection).
 std::shared_ptr<Link> forRemote(const std::string& address, std::string* why);
+// A window over SSH whose connection dropped (stage 8): its address
+// connected to again without waiting on the main thread, since each try is
+// ssh connecting (up to 30 s). `done` is called once on the main queue,
+// with the new link (its Hello naming the lost one's resume token, so the
+// host lets go of the old connection at once) or null and why in the
+// window's words; with the live link for that address straight away when
+// another window has made one meanwhile.
+void reconnectRemote(std::shared_ptr<Link> lost, std::function<void(std::shared_ptr<Link>, const std::string&)> done);
 // The live folder link whose folder holds `path`, else the process's: for a
 // document or terminal made outside a window's own calls.
 std::shared_ptr<Link> linkForPath(const std::string& path);
@@ -361,6 +393,13 @@ struct MCHostSave {
 // host's saved text and the difference an edit outside the history, so the
 // host counts it unsaved (stage 6, step 2, as GTK's Document::rehost).
 - (void)rehostOn:(MCSessionLinkRef *)link saved:(NSString *)saved;
+// Its link's connection dropped and `link` reaches the same host again,
+// which still holds the document (a window over SSH, stage 8): opened
+// there again under its id, the host's text, unsaved state and undo
+// history as they were, and what the tab has that the host has not (typed
+// while the connection was down, or sent as it dropped) one more undoable
+// step. NO when the host did not answer (the caller rehosts it then).
+- (BOOL)reattachOn:(MCSessionLinkRef *)link;
 // The host's saved text made `saved` when the tab's text differs from it:
 // the host's copy is reset to it (its history gone) and the difference goes
 // as an edit outside the history, so the host counts the buffer unsaved and

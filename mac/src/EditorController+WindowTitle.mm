@@ -128,7 +128,8 @@ static NSString *MCFormatDuration(double seconds) {
     if (remote) {
         in.home.clear();   // this Mac's home names nothing there
         in.remote = Utf8String(self.sessionRemoteLabel);
-        if (self.sessionHostLost) in.remote += " (disconnected)";
+        if (self.sessionReconnecting) in.remote += " (reconnecting)";
+        else if (self.sessionHostLost) in.remote += " (disconnected)";
     }
     const BOOL document = in.focus == WindowTitle::Focus::Document;
     if (in.focus == WindowTitle::Focus::Terminal)

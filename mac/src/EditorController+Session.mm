@@ -9,15 +9,20 @@
 // link and record (MCSessionWindow, an associated object), a window closing
 // detaching from its host and one opening taking what a closed one left,
 // the close question's Keep Unsaved on a headless host, and Reconnect when
-// that host goes.
+// that host goes. Over SSH (stage 8) the remote host outlives the
+// connection: a drop starts tries at connecting again (the core's
+// reconnectDelayMs), each off the main thread, and the window takes up its
+// documents and terminals there under their ids (moveToSessionLink:).
 #import "EditorController+Private.h"
 #import "SessionBrowser.h"
 #import "SessionLink.h"
 #import "SessionWindow.h"
 #import "SourceStorage.h"
 #include <objc/runtime.h>
+#include <os/log.h>
 #include <sys/stat.h>
 
+#include <map>
 #include <set>
 #include <string>
 
@@ -349,8 +354,10 @@ NSUInteger MCDirtyFromHostMarks = 0;
 - (void)attachSessionHeld {
     MCSessionWindow *w = [self sessionWindow];
     if (!w || w.link.link->lost()) return;
-    // `mutible host --stdio` starts afresh with each connection: nothing
-    // held, and nothing of it is on this Mac's disk to compare with.
+    // A window over SSH takes up nothing a closed window left (closing one
+    // closes what it had there: closeOnRemoteHost), and nothing of it is on
+    // this Mac's disk to compare with. Its own documents and terminals are
+    // taken up again after a drop by moveToSessionLink:, under their ids.
     if (w.link.link->kind() == MCSession::Link::Kind::Remote) return;
     const MCSession::Held h = [w takeHeld];
     for (const MCSession::HeldDoc &d : h.docs) {
@@ -491,6 +498,12 @@ NSUInteger MCDirtyFromHostMarks = 0;
 - (void)detachFromSessionHost {
     MCSessionWindow *w = [self existingSessionWindow];
     if (!w) return;
+    w.reconnecting = NO;   // a try still waiting does nothing now
+    w.reconnectRound++;
+    if (w.link.link->kind() == MCSession::Link::Kind::Remote) {
+        [self closeOnRemoteHost];
+        return;
+    }
     std::set<MCSession::Link *> links = {w.link.link.get()};
     NSSet<MCTab *> *drop = [w.dropOnClose copy];
     BOOL keep = NO;
@@ -517,10 +530,22 @@ NSUInteger MCDirtyFromHostMarks = 0;
     for (MCSession::Link *l : links)
         if (!l->lost()) l->client().settle(5000);
     [w.reconnectButton removeFromSuperview];
-    // A window over SSH ends its connection with it (stage 8): `mutible
-    // host --stdio` keeps nothing for a next window, and ends as its input
-    // closes, its shells with it.
-    if (w.link.link->kind() == MCSession::Link::Kind::Remote) w.link.link->detach();
+}
+
+// A window over SSH closing (stage 8): its terminals end and its documents
+// close on the remote host, which outlives connections but keeps nothing
+// for a window that is gone (no remote window takes up what a closed one
+// left), so the host, with nothing left in it, ends after its idle time.
+// Then the connection ends: the relay there, and ssh here.
+- (void)closeOnRemoteHost {
+    MCSessionWindow *w = [self existingSessionWindow];
+    [w detachKeeping:NO leavingOut:nil];   // the record closed on the host
+    for (TerminalView *t in self.terminalPanel.terminals) [t closeOnSessionHost];
+    for (MCTab *t in [self tabs]) [t.session close];
+    [w.dropOnClose removeAllObjects];
+    if (!w.link.link->lost()) w.link.link->client().settle(5000);
+    [w.reconnectButton removeFromSuperview];
+    w.link.link->detach();
 }
 
 // ---------------------------------------------------- the host gone, and back
@@ -529,21 +554,82 @@ NSUInteger MCDirtyFromHostMarks = 0;
     MCSessionWindow *w = [self existingSessionWindow];
     if (!w || _closing) return;
     if (w.link.link->kind() == MCSession::Link::Kind::Remote) {
-        // Over SSH: the connection dropped. The text stays in the window;
-        // Reconnect opens it on the other machine again.
+        // Over SSH: the connection dropped, and the host there outlives it.
+        // The text stays in the window, which connects again by itself.
         const std::string &why = w.link.link->failure();
-        [self flashStatus:[NSString stringWithFormat:@"Disconnected from %s%s%s Your text is kept here; Reconnect "
-                                                     @"opens it there again",
+        [self flashStatus:[NSString stringWithFormat:@"The connection to %s dropped%s%s Reconnecting; your text is "
+                                                     @"kept here meanwhile",
                                                      w.link.link->label().c_str(), why.empty() ? "." : ": ",
                                                      why.c_str()]];
-        [self showReconnectButton:YES];
+        w.reconnecting = YES;
+        w.reconnectAttempt = 0;
+        w.reconnectRound++;
+        [self showReconnectButton:NO];
         [self refreshWindowTitle];
+        [self scheduleRemoteReconnect];
         return;
     }
     [self flashStatus:[NSString stringWithFormat:@"The session's host for %s went away: undo is off in its "
                                                  @"files and its terminals ended",
                                                  w.link.link->folder().c_str()]];
     [self showReconnectButton:YES];
+}
+
+- (BOOL)sessionReconnecting {
+    MCSessionWindow *w = [self existingSessionWindow];
+    return w.reconnecting && w.link.link && w.link.link->lost();
+}
+
+// The next try at connecting again, after the core's wait for it
+// (Shared::reconnectDelayMs); none left, the window says so and offers
+// Reconnect.
+- (void)scheduleRemoteReconnect {
+    MCSessionWindow *w = [self existingSessionWindow];
+    if (!w || !w.reconnecting || _closing) return;
+    const long long delay = Shared::reconnectDelayMs(w.reconnectAttempt);
+    if (delay < 0) {
+        w.reconnecting = NO;
+        const std::string &why = w.link.link->failure();
+        [self flashStatus:[NSString stringWithFormat:@"Could not reconnect to %s%s%s Your text is kept here; "
+                                                     @"Reconnect tries again",
+                                                     w.link.link->label().c_str(), why.empty() ? "." : ": ",
+                                                     why.c_str()]];
+        [self showReconnectButton:YES];
+        [self refreshWindowTitle];
+        return;
+    }
+    const NSUInteger round = w.reconnectRound;
+    __weak EditorController *weakSelf = self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, delay * NSEC_PER_MSEC), dispatch_get_main_queue(), ^{
+        [weakSelf tryRemoteReconnect:round];
+    });
+}
+
+// One try: ssh run again, off the main thread (MCSession::reconnectRemote);
+// connected, every window on the lost link takes up its host again.
+- (void)tryRemoteReconnect:(NSUInteger)round {
+    MCSessionWindow *w = [self existingSessionWindow];
+    if (!w || !w.reconnecting || w.reconnectRound != round || _closing) return;
+    if (!w.link.link->lost()) {   // another window's try moved this one
+        w.reconnecting = NO;
+        return;
+    }
+    w.reconnectAttempt++;
+    const std::string key = w.link.link->key();
+    __weak EditorController *weakSelf = self;
+    MCSession::reconnectRemote(w.link.link, [weakSelf, round, key](std::shared_ptr<MCSession::Link> link,
+                                                                   const std::string &why) {
+        EditorController *s = weakSelf;
+        MCSessionWindow *now = [s existingSessionWindow];
+        if (link) {
+            // Whichever window's try it was, every window on the lost link moves.
+            [EditorController moveWindowsToLink:[[MCSessionLinkRef alloc] initWithLink:link] folder:key];
+            return;
+        }
+        if (!s || !now || !now.reconnecting || now.reconnectRound != round) return;
+        os_log(OS_LOG_DEFAULT, "mutible: reconnecting over ssh failed: %{public}s", why.c_str());
+        [s scheduleRemoteReconnect];
+    });
 }
 
 - (void)showReconnectButton:(BOOL)show {
@@ -578,8 +664,11 @@ NSUInteger MCDirtyFromHostMarks = 0;
         return;
     }
     if (w.link.link->kind() == MCSession::Link::Kind::Remote) {
-        // Over SSH: the same address again. A host that cannot be had says
-        // why and the window waits, its text kept, for another try.
+        // Over SSH: the same address again (the tries by itself over). A
+        // host that cannot be had says why and the window waits, its text
+        // kept, for another try.
+        w.reconnecting = NO;
+        w.reconnectRound++;
         std::string why;
         std::shared_ptr<MCSession::Link> link = MCSession::forRemote(w.link.link->address(), &why);
         if (!link) {
@@ -629,20 +718,61 @@ NSUInteger MCDirtyFromHostMarks = 0;
     // `folder` is the lost link's key(): its folder, and for a host over
     // SSH its machine too.
     if (!w.link.link->lost() || w.link.link->key() != folder) return;
-    [w moveTo:link folder:w.folder];
+    // Over SSH the host outlives the connection (stage 8): what it still
+    // holds of this window (its record, documents and terminals, by their
+    // ids) is taken up again, so undo and running programs carry on. What
+    // it does not hold (a host that ended meanwhile) opens anew, as below.
+    std::set<uint64_t> heldDocs;
+    std::map<uint64_t, Json> heldTerms;
+    BOOL heldWindow = NO;
+    if (link.link->kind() == MCSession::Link::Kind::Remote && w.link.link->kind() == MCSession::Link::Kind::Remote) {
+        const Json st = link.link->client().sessionState();
+        for (const Json &d : st["documents"].elements()) heldDocs.insert((uint64_t)d["doc"].asInt());
+        for (const Json &t : st["terminals"].elements()) heldTerms[(uint64_t)t["term"].asInt()] = t;
+        for (const Json &win : st["windows"].elements())
+            if ((uint64_t)win["window"].asInt() == w.windowId) heldWindow = YES;
+    }
+    w.reconnecting = NO;
+    w.reconnectRound++;
+    if (heldWindow) [w resumeOn:link];
+    else [w moveTo:link folder:w.folder];
     [self.sessionBrowser stop];   // its host went: the next Show serves the new one
+    NSUInteger resumed = 0;
     for (MCTab *t in [self tabs]) {
         MCSessionDoc *d = t.session;
         if (!d || !d.link.link->lost() || d.link.link->key() != folder) continue;
+        if (heldDocs.count(d.docId) && [d reattachOn:link]) {
+            resumed++;
+            continue;
+        }
         [d rehostOn:link saved:[self hostSavedTextOf:t]];
     }
-    for (TerminalView *t in self.terminalPanel.terminals)
-        if (t.sessionLink && t.sessionLink.link->lost() && t.sessionLink.link->key() == folder) [t rehostOn:link];
+    for (TerminalView *t in self.terminalPanel.terminals) {
+        if (!t.sessionLink || !t.sessionLink.link->lost() || t.sessionLink.link->key() != folder) continue;
+        auto held = heldTerms.find(t.lostSessionTerminal);
+        if (t.lostSessionTerminal && held != heldTerms.end()) {
+            MCSessionTermPlace *p = [MCSessionTermPlace new];
+            p.link = link;
+            p.heldTerm = held->first;
+            p.heldPid = (int)held->second["pid"].asInt();
+            p.heldCols = (int)held->second["cols"].asInt(80);
+            p.heldRows = (int)held->second["rows"].asInt(24);
+            p.heldShell = Shared::termShellFrom(held->second["shell"]);
+            [t reattachOn:link place:p];
+            resumed++;
+            continue;
+        }
+        [t rehostOn:link];
+    }
     [self remoteWorkspaceMovedToLink];   // over SSH: the tree listed and watched on the new host
     [self showReconnectButton:NO];
     [w report];
     [self refreshWindowTitle];
-    if (link.link->kind() == MCSession::Link::Kind::Remote)
+    if (link.link->kind() == MCSession::Link::Kind::Remote && resumed)
+        [self flashStatus:[NSString stringWithFormat:@"Connected to %s again: your files, undo and terminals are "
+                                                     @"as they were",
+                                                     link.link->label().c_str()]];
+    else if (link.link->kind() == MCSession::Link::Kind::Remote)
         [self flashStatus:[NSString stringWithFormat:@"Connected to %s again: your files are open there again",
                                                      link.link->label().c_str()]];
     else if (link.link->kind() == MCSession::Link::Kind::Socket)

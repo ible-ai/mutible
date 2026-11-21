@@ -58,6 +58,21 @@
     });
 }
 
+- (void)resumeOn:(MCSessionLinkRef *)link {
+    if (!link.link || link.link == _l) return;
+    if (_l) _l->removeLostListener(_lostToken);
+    const uint64_t window = _windowId;
+    _link = link;
+    _l = link.link;
+    _l->adoptWindow(window);   // the host holds the record under it still
+    _detached = NO;
+    __weak MCSessionWindow *weakSelf = self;
+    _lostToken = _l->addLostListener([weakSelf] {
+        MCSessionWindow *w = weakSelf;
+        if (w && w.onLost) w.onLost();
+    });
+}
+
 - (void)moveTo:(MCSessionLinkRef *)link folder:(NSString *)folder {
     _heldTerms.clear();
     _heldDock = Shared::TermDock();

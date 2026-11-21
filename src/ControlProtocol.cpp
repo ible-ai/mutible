@@ -508,11 +508,19 @@ const Help kHelp[] = {
      "    with --edit as well, the page may type into the documents and\n"
      "    terminals and undo, which is control of this machine.\n"
      "mutible host --stdio PATH\n"
-     "    The same for one renderer on standard input and output instead of a\n"
-     "    socket, ending when its input closes: what a Mac window opened as\n"
-     "    `mutible ssh://host/path` runs here through ssh. PATH is a folder,\n"
-     "    or a file whose folder it serves; a leading ~ is this machine's home.\n"
-     "    Terminals run in this machine's login shell and environment.\n"},
+     "    What a Mac window opened as `mutible ssh://host/path` runs here\n"
+     "    through ssh: it finds the folder's host, or starts one in the\n"
+     "    background, and passes the window's messages between its standard\n"
+     "    input and output and that host until either ends. The host outlives\n"
+     "    the connection, so a window that reconnects finds its files, undo\n"
+     "    and terminals as they were; it ends once it has had no window for\n"
+     "    MUTIBLE_HOST_IDLE_MINUTES (240 by default) and nothing in it is\n"
+     "    unsaved or running. PATH is a folder, or a file whose folder it\n"
+     "    serves; a leading ~ is this machine's home. Terminals run in this\n"
+     "    machine's login shell and environment.\n"
+     "mutible host --folder DIR --lasting\n"
+     "    The host --stdio starts: its socket in a folder that outlives the\n"
+     "    login session, a hangup ignored, and its idle time as above.\n"},
     {"attach",
      "mutible attach --folder DIR --dump\n"
      "mutible attach --folder DIR --web PORT [--edit]\n"
@@ -666,6 +674,10 @@ CliCommand parseCommandLine(const std::vector<std::string>& argvIn, const std::s
                 if (c.error.empty() && (m < 0 || !end || *end))
                     c.error = "--idle-minutes needs a number of minutes";
                 c.args.set("idle_minutes", m);
+            } else if (sub == "host" && w == "--lasting") {
+                // Started by `--stdio` for a window over SSH (stage 8): its
+                // socket where it outlives the login, and no hangup.
+                c.args.set("lasting", true);
             } else if (sub == "attach" && w == "--dump") {
                 c.args.set("dump", true);
             } else if (w == "--edit") {
@@ -683,6 +695,8 @@ CliCommand parseCommandLine(const std::vector<std::string>& argvIn, const std::s
         }
         if (c.error.empty() && c.args.has("stdio") && (c.args.has("folder") || c.args.has("web")))
             c.error = "--stdio goes with neither --folder nor --web";
+        if (c.error.empty() && c.args.has("lasting") && !c.args.has("folder"))
+            c.error = "--lasting goes with --folder";
         if (c.error.empty() && !c.args.has("folder") && !c.args.has("stdio"))
             c.error = sub == "host" ? "host needs --folder or --stdio" : sub + " needs --folder";
         if (c.error.empty() && sub == "attach" && c.args.has("dump") == c.args.has("web"))
