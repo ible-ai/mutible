@@ -25,6 +25,9 @@ ClientId Host::connect() { return ++nextClient_; }
 Host::~Host() = default;
 
 void Host::disconnect(ClientId c) {
+    // One a resuming renderer replaced was let go of then (onHello): the
+    // server closing its connection now has nothing left to undo.
+    if (dropped_.erase(c)) return;
     renderers_.erase(c);
     if (workers_) workers_->cancelAll(c);   // its searches answer no one now
     if (watches_.erase(c)) watchGen_++;   // its trees' folders are no one's now
@@ -56,6 +59,7 @@ void Host::dropEmptyPageDocs() {
 }
 
 void Host::send(ClientId to, Message&& m) {
+    if (dropped_.count(to)) return;   // replaced (onHello): its connection is stale
     if (sink_) sink_(to, std::move(m));
 }
 
@@ -113,6 +117,7 @@ bool Host::refusedFromViewer(ClientId c, const Message& m) const {
 }
 
 void Host::handle(ClientId from, Message&& m) {
+    if (dropped_.count(from)) return;   // replaced by a renderer resuming (onHello)
     if (refusedFromViewer(from, m)) {
         error(from, m.doc, std::string("a renderer that only reads cannot send ") +
                                kindName(m.kind));
@@ -329,7 +334,21 @@ bool Host::waitReads(int timeoutMs) {
 }
 
 void Host::onHello(ClientId c, Message& m) {
+    // A renderer coming back after a drop: the connection it had is stale
+    // whether or not the server has noticed, so it goes now (setDrop).
+    const std::string resume = m.json.isObject() ? m.json["resume"].asString() : std::string();
+    if (!resume.empty()) {
+        std::vector<ClientId> stale;
+        for (const auto& [id, other] : renderers_)
+            if (id != c && other.resume == resume) stale.push_back(id);
+        for (ClientId old : stale) {
+            disconnect(old);
+            dropped_.insert(old);
+            if (drop_) drop_(old);
+        }
+    }
     Renderer& r = renderers_[c];
+    r.resume = resume;
     r.unit = m.unit;
     r.name = m.name;
     r.hello = true;
@@ -2259,6 +2278,14 @@ void SessionHost::setAskedFile(std::string file, bool isNew) {
     {
         std::lock_guard<std::mutex> lk(mu_);
         queue_.push_back(Item{0, Message(), [this, f = std::move(file), isNew] { host_.setAskedFile(f, isNew); }});
+    }
+    wake();
+}
+
+void SessionHost::setDrop(std::function<void(ClientId)> drop) {
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(Item{0, Message(), [this, d = std::move(drop)]() mutable { host_.setDrop(std::move(d)); }});
     }
     wake();
 }

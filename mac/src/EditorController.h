@@ -116,6 +116,10 @@
 // Whether the window's host went (a headless one killed, a connection over
 // SSH dropped) and Reconnect has not found it again.
 @property(nonatomic, readonly) BOOL sessionHostLost;
+// A window over SSH whose connection dropped is connecting again by itself
+// (stage 8): its title says "(reconnecting)" meanwhile, and Reconnect
+// shows once the tries have given up.
+@property(nonatomic, readonly) BOOL sessionReconnecting;
 @end
 
 // EditorController+Remote.mm: a window over SSH's folder through its host.

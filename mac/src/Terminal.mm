@@ -650,6 +650,7 @@ struct MCHostTermListener : Shared::Client::TermListener {
     MCSessionLinkRef *_linkRef;
     int _lostToken;
     BOOL _hostGone;              // its host went: no shell starts here until rehostOn:
+    Shared::TermId _lostTerm;    // the host's terminal when its connection dropped (reattachOn:)
     MCSessionTermPlace *_held;   // a held terminal to take over, until it is
     NSUInteger _replayUnacked;   // replay bytes in the backlog: never acknowledged
     Shared::TermId _hostTerm;    // the shell's terminal on the host, 0 when none
@@ -812,6 +813,7 @@ struct MCHostTermListener : Shared::Client::TermListener {
 - (void)hostWentAway {
     _hostGone = YES;
     const BOOL had = _hostTerm != 0;
+    if (had) _lostTerm = _hostTerm;
     _generation++;
     _hostTerm = 0;
     _hostShell = Shared::TermShell();
@@ -822,7 +824,41 @@ struct MCHostTermListener : Shared::Client::TermListener {
     _backlogStart = 0;
     _replayUnacked = 0;
     _ptySizes.clear();
-    if (had && !_closed) [self note:@"[the session's host went away, and this terminal's shell with it]" color:0xF48771];
+    if (had && !_closed && _remote)
+        // Over SSH the host outlives the connection: the shell runs on there.
+        [self note:@"[the connection dropped: the shell runs on there, and shows here again when mutible "
+                   @"reconnects]"
+             color:0xF48771];
+    else if (had && !_closed)
+        [self note:@"[the session's host went away, and this terminal's shell with it]" color:0xF48771];
+}
+
+- (unsigned long long)lostSessionTerminal { return _lostTerm; }
+
+- (void)reattachOn:(MCSessionLinkRef *)link place:(MCSessionTermPlace *)place {
+    if (!_onHost || !link || link.link == _link || !place.heldTerm) return;
+    _lostTerm = 0;
+    _held = nil;
+    [self useLink:link];
+    if (_closed) return;
+    place.link = link;
+    _held = place;
+    [self attachHeldShell];   // the host's replay on a fresh screen, then live output
+}
+
+- (void)closeOnSessionHost {
+    _held = nil;
+    _lostTerm = 0;
+    if (!_hostTerm) return;
+    [self flushHostInput];
+    if (!_link->lost()) [self hostClient].closeTerminal(_hostTerm);
+    _generation++;
+    _hostTerm = 0;
+    _shellPid = 0;
+    _hostShell = Shared::TermShell();
+    _backlog = nil;
+    _backlogStart = 0;
+    _replayUnacked = 0;
 }
 
 - (void)detachFromSessionHost {
@@ -843,6 +879,7 @@ struct MCHostTermListener : Shared::Client::TermListener {
     if (!_onHost || !link || link.link == _link) return;
     if (_hostTerm && !_link->lost()) [self hostClient].closeTerminal(_hostTerm);
     _hostTerm = 0;
+    _lostTerm = 0;
     _shellPid = 0;
     _held = nil;
     [self useLink:link];

@@ -22,6 +22,11 @@ void Client::connect(Send send) {
     if (hearsDirty_) h.flag |= 8;
     if (keepsBackups_ && !readOnly_ && !guest_ && savesThroughHost_) h.flag |= 16;
     if (hearsDisk_) h.flag |= 32;
+    if (!resume_.empty()) {
+        Json j = Json::object();
+        j.set("resume", Json(resume_));
+        h.json = std::move(j);
+    }
     send_(std::move(h));
 }
 

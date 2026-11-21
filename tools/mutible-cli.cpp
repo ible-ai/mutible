@@ -465,13 +465,16 @@ std::mutex gStopMu;
 Shared::HostServer *gHost = nullptr;
 Shared::Web::Server *gWeb = nullptr;
 
-void takeStopSignals() {
+// A lasting host (`--lasting`, stage 8) ignores SIGHUP instead: the login
+// that started it ending is no reason to end.
+void takeStopSignals(bool hangup = true) {
     signal(SIGPIPE, SIG_IGN);
+    if (!hangup) signal(SIGHUP, SIG_IGN);
     sigset_t stops;
     sigemptyset(&stops);
     sigaddset(&stops, SIGINT);
     sigaddset(&stops, SIGTERM);
-    sigaddset(&stops, SIGHUP);
+    if (hangup) sigaddset(&stops, SIGHUP);
     pthread_sigmask(SIG_BLOCK, &stops, nullptr);
     std::thread([stops] {
         int sig = 0;
@@ -512,10 +515,43 @@ bool startWeb(Shared::Web::Server &web, const std::string &socket, const std::st
     return true;
 }
 
+// The socket folder of a lasting host (`mutible host --lasting`, which
+// `--stdio` starts for a window over SSH): ControlPaths.h's rule without
+// XDG_RUNTIME_DIR on Linux, since systemd removes that folder when the
+// user's last session ends, which on a machine reached only by ssh is the
+// connection that started the host. /tmp/mutible-<uid> instead (or
+// $TMPDIR's), still 0700 and the user's own. The Mac's folder lasts.
+std::string lastingSocketDir() {
+#ifdef __APPLE__
+    return socketDirs()[0];
+#else
+    return socketFolder(Rename::getenvOrOld("MUTIBLE_CONTROL_DIR"), nullptr, getenv("TMPDIR"),
+                        (unsigned)getuid());
+#endif
+}
+
+// This program's own path, to start a lasting host with: as it was run on
+// the Mac (a link's name kept), the kernel's on Linux.
+std::string selfPath() {
+    char buf[PATH_MAX];
+#ifdef __APPLE__
+    uint32_t size = sizeof buf;
+    if (_NSGetExecutablePath(buf, &size) != 0) return "";
+    return buf;
+#else
+    const ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
+    if (n <= 0) return "";
+    buf[n] = 0;
+    return buf;
+#endif
+}
+
 // `mutible host --folder DIR [--web PORT]`: the session's host for one
 // folder, with no window (SessionServer.h), in the foreground until its
 // lifetime ends or a signal stops it; with --web, also its view for a
-// browser, a renderer of it attached while a browser looks.
+// browser, a renderer of it attached while a browser looks. With
+// --lasting (started by `--stdio`), its socket in lastingSocketDir, SIGHUP
+// ignored, and MUTIBLE_HOST_IDLE_MINUTES (else four hours) as its idle time.
 int runHostStdio(const Json &args);
 
 int runHost(const Json &args) {
@@ -526,9 +562,11 @@ int runHost(const Json &args) {
         std::fprintf(stderr, "mutible: %s is not a folder\n", asked.c_str());
         return kExitFailed;
     }
+    const bool lasting = args["lasting"].asBool();
     Shared::HostOptions o;
     o.folder = folder;
-    o.socketDir = socketDirs()[0];
+    o.socketDir = lasting ? lastingSocketDir() : socketDirs()[0];
+    if (lasting) o.idleMs = Shared::lastingIdleMs(Rename::getenvOrOld("MUTIBLE_HOST_IDLE_MINUTES"));
     if (args.has("idle_minutes")) o.idleMs = (long long)(args["idle_minutes"].asNumber() * 60000.0);
     // The apps' backup store: what no window shows, unsaved, is kept there
     // under this process's name (SessionServer.h, "Backups").
@@ -541,7 +579,10 @@ int runHost(const Json &args) {
     // The disk watched (DiskWatch.h): a page's tree and Source Control
     // follow it, and a clean document no window shows follows its file.
     o.watchDisk = true;
-    takeStopSignals();
+    // The terminals a window on another machine asks for (stage 8): this
+    // machine's login shell in this process's environment.
+    for (char **e = environ; e && *e; e++) o.shellEnv.push_back(*e);
+    takeStopSignals(!lasting);
     Shared::HostServer server;
     std::string error;
     switch (server.start(o, &error)) {
@@ -585,15 +626,17 @@ int runHost(const Json &args) {
     return kExitOK;
 }
 
-// `mutible host --stdio PATH`: the session's host for one renderer on this
-// process's standard input and output (SessionServer.h, startStdio), which
-// is what a Mac window over SSH runs here (stage 8). PATH is a folder, a
-// file whose folder it serves, or a new file's name in a folder that is
-// there (Shared::stdioTarget). It watches the disk, so the window's tree
-// follows it. Ends when its input closes. Nothing but the
-// protocol goes to standard output: what a library or a child might print
-// there goes to standard error instead (fd 1 is moved off the protocol's
-// pipe), and children read /dev/null.
+// `mutible host --stdio PATH`: what a Mac window over SSH runs here (stage
+// 8). PATH is a folder, a file whose folder it serves, or a new file's name
+// in a folder that is there (Shared::stdioTarget). It finds the folder's
+// host, starting `mutible host --folder DIR --lasting` detached when there
+// is none (SessionServer.h, "A host that outlives the connection"), and
+// relays between its standard input and output and that host until either
+// ends; the host stays when the connection drops. Should no host be had
+// (no socket folder), it serves the window itself as before, ending with
+// its input (startStdio). Nothing but the protocol goes to standard
+// output: fd 1 is moved off the protocol's pipe, so what a library might
+// print goes to standard error instead.
 int runHostStdio(const Json &args) {
     const std::string asked = args["stdio"].asString();
     // A folder, a file, or a file not there yet in a folder that is (the
@@ -614,6 +657,33 @@ int runHostStdio(const Json &args) {
     dup2(null, 0);
     dup2(2, 1);
     ::close(null);
+    fcntl(in, F_SETFD, FD_CLOEXEC);
+    fcntl(out, F_SETFD, FD_CLOEXEC);
+    signal(SIGPIPE, SIG_IGN);
+    // The folder's lasting host, found or started, and relayed to.
+    {
+        const std::string lastingDir = lastingSocketDir();
+        const std::string self = selfPath();
+        std::string error;
+        int sock = -1;
+        if (!self.empty() && Shared::makeSocketFolder(lastingDir, &error)) {
+            const std::string name = Shared::hostSocketName(folder);
+            const std::string log = lastingDir + "/" + name.substr(0, name.size() - 5) + ".log";
+            sock = Shared::connectOrStartHost(
+                folder, Shared::withLastingFolder(socketDirs(), lastingDir),
+                [&](std::string *why) {
+                    return Shared::startDetached({self, "host", "--folder", folder, "--lasting"}, log, why);
+                },
+                10000, &error);
+        }
+        if (sock >= 0) {
+            Shared::relayStdio(in, out, sock, target.file, target.isNew);
+            ::close(sock);
+            return kExitOK;
+        }
+        std::fprintf(stderr, "mutible: no lasting host for %s (%s); this connection's host ends with it\n",
+                     folder.c_str(), self.empty() ? "this program's path is not known" : error.c_str());
+    }
     Shared::HostOptions o;
     o.folder = folder;
     // A file: named in the Welcome, spelled under the folder as resolved.

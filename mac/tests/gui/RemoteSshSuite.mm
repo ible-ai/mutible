@@ -33,14 +33,23 @@
 //     each a window of its own on the file's folder, closed with its host;
 //     the first window shows notes.txt again.
 //   - A terminal: its shell is the host's child (`ps` of its parent says
-//     mutible-cli) in the host's environment (the stand-in's variable).
-//   - The connection drops (the stand-in's process group killed): the
-//     window says it is disconnected (its title, Reconnect), the text stays
-//     and takes more typing. Reconnect runs ssh again: the file is open on
-//     the new host with everything typed, saved there with Cmd+S, and the
-//     terminal has a new shell there that runs a command, and the tree
-//     follows the new host's notices.
-//   - The window closes, and the host it ran ends with it.
+//     mutible) in the host's environment (the stand-in's variable). The
+//     host is the folder's lasting one, which `--stdio` started detached
+//     and relays to (its pid is not the stand-in's).
+//   - The connection drops (the stand-in's process group killed: the relay
+//     only), with the stand-in refusing to connect for a while: the window
+//     says it is reconnecting (its title, no Reconnect button), the text
+//     stays and takes more typing, and its tries fail. Once the stand-in
+//     connects again, the window takes up the same host by itself: the
+//     terminal under its id, its earlier output replayed and the program
+//     it ran still running (then Ctrl+C, and the same shell's pid); the
+//     document with everything typed, unsaved, the host's text the tab's,
+//     and undo going back past the drop into what the host recorded
+//     before it, then redo; Cmd+S saves it there; the tree follows the
+//     host's notices.
+//   - The window closes: its relay ends, and the lasting host, its
+//     terminal and document closed with the window, ends after its idle
+//     time (MUTIBLE_HOST_IDLE_MINUTES, a few seconds here).
 #import "Harness.h"
 #import "EditorController.h"
 #import "EditorController+Private.h"
@@ -52,6 +61,7 @@
 #import "SessionLink.h"
 #import "SessionWindow.h"
 #import "Terminal.h"
+#import "TerminalGridView.h"
 
 #include <signal.h>
 #include <stdlib.h>
@@ -63,10 +73,14 @@
 
 namespace {
 
-NSString *gFolder, *gFile, *gSsh, *gArgs, *gPidFile;
+NSString *gFolder, *gFile, *gSsh, *gArgs, *gPidFile, *gBlock, *gTries;
 EditorController *gC, *gFreshWindow;
 TerminalView *gTerm;
 pid_t gHostA, gHostB, gHostFresh;
+pid_t gLasting;              // the folder's lasting host, the terminal's shell's parent
+NSString *gShellPid;         // that shell's pid, as it said it
+unsigned long long gTermId;  // the terminal's id on the host
+NSUInteger gTriesBefore;
 NSUInteger gWindowsBefore;   // the windows before an address the open one holds
 
 NSString *RealPath(NSString *path) {
@@ -123,6 +137,33 @@ NSTextView *PaletteEditor(EditorController *c) { return (NSTextView *)MCCommandP
 void TypeAtEnd(EditorController *c, NSString *s) {
     NSTextView *tv = [c valueForKey:@"textView"];
     MCGuiUndoGroup(tv.undoManager, ^{ [tv insertText:s replacementRange:NSMakeRange(tv.string.length, 0)]; });
+}
+
+// How many times the stand-in refused to connect (gBlock there).
+NSUInteger RefusedTries() {
+    NSString *t = Read(gTries);
+    return t.length ? [t componentsSeparatedByString:@"\n"].count - 1 : 0;
+}
+
+// What follows the last `prefix` on the terminal's screen that a digit
+// follows (output, not the command line that printed it), up to the next
+// space or line's end; "" when there is none.
+NSString *ScreenWord(NSString *prefix) {
+    NSString *text = [gTerm recentText:60];
+    NSRange within = NSMakeRange(0, text.length);
+    for (;;) {
+        NSRange r = [text rangeOfString:prefix options:NSBackwardsSearch range:within];
+        if (r.location == NSNotFound) return @"";
+        const NSUInteger at = NSMaxRange(r);
+        if (at < text.length && [NSCharacterSet.decimalDigitCharacterSet characterIsMember:[text characterAtIndex:at]]) {
+            NSScanner *sc = [NSScanner scannerWithString:[text substringFromIndex:at]];
+            sc.charactersToBeSkipped = nil;
+            NSString *word = nil;
+            [sc scanUpToCharactersFromSet:NSCharacterSet.whitespaceAndNewlineCharacterSet intoString:&word];
+            return word ?: @"";
+        }
+        within = NSMakeRange(0, r.location);
+    }
 }
 
 // The stand-in's pid, as it wrote it (the process group ssh's spawn made).
@@ -183,6 +224,8 @@ MC_GUI_SUITE(remote_ssh) {
         [fm createSymbolicLinkAtPath:[bin stringByAppendingPathComponent:@"mutible"] withDestinationPath:cli error:nil];
         gArgs = [scratch stringByAppendingPathComponent:@"ssh-args.txt"];
         gPidFile = [scratch stringByAppendingPathComponent:@"ssh-pid.txt"];
+        gBlock = [scratch stringByAppendingPathComponent:@"ssh-refuse"];
+        gTries = [scratch stringByAppendingPathComponent:@"ssh-refused.txt"];
         gSsh = [scratch stringByAppendingPathComponent:@"ssh-stand-in"];
         NSString *script = [NSString stringWithFormat:
             @"#!/bin/sh\n"
@@ -190,6 +233,13 @@ MC_GUI_SUITE(remote_ssh) {
             @"# its options skipped to the --, then the host, then the remote\n"
             @"# command run as ssh's remote shell runs it.\n"
             @"printf '%%s\\n' \"$@\" > '%@'\n"
+            @"# While the suite's file is there, it fails as ssh does when the\n"
+            @"# machine refuses the connection.\n"
+            @"if [ -e '%@' ]; then\n"
+            @"  echo refused >> '%@'\n"
+            @"  echo 'ssh: connect to host standin port 22: Connection refused' >&2\n"
+            @"  exit 255\n"
+            @"fi\n"
             @"while [ $# -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
             @"shift\n"
             @"shift\n"
@@ -199,10 +249,14 @@ MC_GUI_SUITE(remote_ssh) {
             @"PATH='%@':$PATH\n"
             @"export PATH\n"
             @"exec /bin/sh -c \"$*\"\n",
-            gArgs, gPidFile, bin];
+            gArgs, gBlock, gTries, gPidFile, bin];
         MCGuiWriteFile(gSsh, script);
         chmod(gSsh.fileSystemRepresentation, 0755);
         MCSetEnv("MUTIBLE_SSH", gSsh.fileSystemRepresentation);
+        // The lasting hosts this suite starts end a few seconds after their
+        // last window, not four hours (each is busy, and stays, while a
+        // document is unsaved or a program runs).
+        MCSetEnv("MUTIBLE_HOST_IDLE_MINUTES", "0.05");
     });
     MCGuiStep(@"ssh://standin/<folder>/notes.txt opens a window on the remote host", ^{
         NSURL *url = [NSURL URLWithString:[@"ssh://standin" stringByAppendingString:gFile]];
@@ -497,58 +551,113 @@ MC_GUI_SUITE(remote_ssh) {
     RunUntil(@"the terminal runs in the host's shell and environment",
              @"echo \"remote-$SSH_STANDIN-$((6*7))\" \"parent-$(basename \"$(ps -o comm= -p $PPID)\")\"",
              @"remote-yes-42 parent-mutible");
-    MCGuiStep(@"the connection drops", ^{
+    // The host is the folder's lasting one: the shell's parent, not the
+    // stand-in (the relay).
+    RunUntil(@"the terminal's shell and host", @"echo \"shell-$$ host-$PPID end-$((3*5))\"", @" end-15");
+    MCGuiStep(@"the lasting host serves it, not the relay", ^{
+        gShellPid = ScreenWord(@"shell-");
+        gLasting = (pid_t)ScreenWord(@"host-").intValue;
+        gTermId = gTerm.sessionTerminal;
+        MCGuiNote(@"shell %@, host %d, relay %d", gShellPid, (int)gLasting, (int)gHostA);
+        GCHECK(gShellPid.intValue > 0 && gLasting > 0 && gLasting != gHostA);
+        GCHECK(gTermId != 0);
+    });
+    // Earlier output, and a program left running across the drop.
+    RunUntil(@"output before the drop", @"echo \"before-drop-$((6*7))\"", @"before-drop-42");
+    MCGuiStep(@"a program runs; typed text is unsaved; the connection drops", ^{
         if (!gC) return;
-        MCGuiNote(@"terminal: %@", [gTerm recentText:10]);
+        [gTerm runCommand:@"sleep 600"];
+        TypeAtEnd(gC, @"before drop\n");
+        MCTab *t = TabFor(gC, gFile);
+        GCHECK(t.dirty);
         GCHECK(!gC.sessionHostLost);
+    });
+    MCGuiWait(@"the host says sleep runs and the text is unsaved", 15, ^BOOL {
+        return gTerm.programHasTerminal && [MCSessionCheckTabs(@[ TabFor(gC, gFile) ]) isEqualToString:@""];
+    });
+    MCGuiStep(@"the relay killed, the stand-in refusing for now", ^{
+        MCGuiWriteFile(gBlock, @"");
+        gTriesBefore = RefusedTries();
         // The stand-in is the leader of its own process group (the spawn's
-        // session): the host and anything it started go with it.
+        // session): the relay goes with it, the lasting host (a session of
+        // its own) does not.
         if (gHostA > 0) kill(-gHostA, SIGKILL);
     });
-    MCGuiWait(@"the window says it is disconnected", 15, ^BOOL {
-        return gC.sessionHostLost && [gC.window.title containsString:@"(disconnected)"];
+    MCGuiWait(@"the window says it is reconnecting", 15, ^BOOL {
+        return gC.sessionHostLost && gC.sessionReconnecting && [gC.window.title containsString:@"(reconnecting)"];
     });
-    MCGuiStep(@"the text stays, and takes more typing", ^{
+    MCGuiStep(@"the text stays and takes more typing; no Reconnect button while it tries", ^{
+        GCHECK(!Gone(gLasting));   // the host outlived the connection
         MCTab *t = TabFor(gC, gFile);
-        GCHECK_EQ_STR(t.currentText, @"first line\ntyped over ssh\n");
+        GCHECK_EQ_STR(t.currentText, @"first line\ntyped over ssh\nbefore drop\n");
         GCHECK(!t.session.hostSavesFile);
         TypeAtEnd(gC, @"while away\n");
         GCHECK(t.dirty);
-        GCHECK_EQ_STR(t.currentText, @"first line\ntyped over ssh\nwhile away\n");
-        // Its button in the status bar.
+        GCHECK_EQ_STR(t.currentText, @"first line\ntyped over ssh\nbefore drop\nwhile away\n");
         BOOL button = NO;
         for (NSView *v in [[gC valueForKey:@"statusBar"] subviews])
             if ([v isKindOfClass:NSButton.class] && [((NSButton *)v).title isEqualToString:@"Reconnect"] && !v.hidden)
                 button = YES;
-        GCHECK(button);
-        [gC reconnectSessionHost:nil];
+        GCHECK(!button);
     });
-    MCGuiWait(@"connected again", 20, ^BOOL { return !gC.sessionHostLost && TabFor(gC, gFile).session.hostSavesFile; });
-    MCGuiStep(@"the file is open on the new host with everything typed; Cmd+S saves it there", ^{
+    MCGuiWait(@"its tries refused (the backoff's first waits)", 20, ^BOOL { return RefusedTries() >= gTriesBefore + 2; });
+    MCGuiStep(@"the stand-in connects again", ^{
+        GCHECK(gC.sessionHostLost && gC.sessionReconnecting);
+        [NSFileManager.defaultManager removeItemAtPath:gBlock error:nil];
+    });
+    MCGuiWait(@"the window takes up the host by itself", 30, ^BOOL {
+        return !gC.sessionHostLost && TabFor(gC, gFile).session.hostSavesFile;
+    });
+    MCGuiStep(@"a new relay to the same host: the same terminal, its output, its program", ^{
         gHostB = StandInPid();
         GCHECK(gHostB > 0 && gHostB != gHostA);
         GCHECK(Gone(gHostA));
-        GCHECK(![gC.window.title containsString:@"(disconnected)"]);
+        GCHECK(!Gone(gLasting));
+        GCHECK(!gC.sessionReconnecting);
+        GCHECK(![gC.window.title containsString:@"(reconnecting)"] && ![gC.window.title containsString:@"(disconnected)"]);
+        gTerm = [gC valueForKey:@"terminal"];
+        GCHECK(gTerm.sessionTerminal == gTermId);   // the host's own terminal, taken up again
+        GCHECK([[gTerm recentText:60] containsString:@"before-drop-42"]);
+    });
+    MCGuiWait(@"sleep still runs there", 10, ^BOOL { return gTerm.programHasTerminal; });
+    MCGuiStep(@"Ctrl+C ends it", ^{
+        const char etx = 0x03;
+        TerminalGridView *grid = [gTerm valueForKey:@"grid"];
+        grid.onInput([NSData dataWithBytes:&etx length:1]);
+    });
+    MCGuiWait(@"the shell has the terminal again", 10, ^BOOL { return !gTerm.programHasTerminal; });
+    RunUntil(@"the same shell types on", @"echo \"again-$$-$((7*8))\"", @"-56");
+    MCGuiStep(@"the same shell's pid; the document as it was, with what was typed meanwhile", ^{
+        GCHECK_EQ_STR(ScreenWord(@"again-"), ([NSString stringWithFormat:@"%@-56", gShellPid]));
         MCTab *t = TabFor(gC, gFile);
         GCHECK(t.dirty);
+        GCHECK_EQ_STR(t.currentText, @"first line\ntyped over ssh\nbefore drop\nwhile away\n");
         GCHECK_EQ_STR(MCSessionCheckTabs(@[ t ]), @"");
+        GCHECK([gC showFile:gFile]);
+    });
+    MCGuiStep(@"undo goes back past the drop, into what the host had before it", ^{
+        NSTextView *tv = [gC valueForKey:@"textView"];
+        [tv.undoManager undo];   // what was typed while away (its own step)
+        GCHECK_EQ_STR(TabFor(gC, gFile).currentText, @"first line\ntyped over ssh\nbefore drop\n");
+        [tv.undoManager undo];   // typed before the drop, the host's step
+        // (which may have joined the typing before it: the caret stayed put)
+        NSString *back = TabFor(gC, gFile).currentText;
+        MCGuiNote(@"after two undos: %@", back);
+        GCHECK([back hasPrefix:@"first line\n"] && ![back containsString:@"before drop"]);
+        [tv.undoManager redo];
+        [tv.undoManager redo];
+        GCHECK_EQ_STR(TabFor(gC, gFile).currentText, @"first line\ntyped over ssh\nbefore drop\nwhile away\n");
+        GCHECK_EQ_STR(MCSessionCheckTabs(@[ TabFor(gC, gFile) ]), @"");
         [gC saveCurrentFile:nil];
     });
-    MCGuiWait(@"saved by the new host", 10, ^BOOL {
-        return [Read(gFile) isEqualToString:@"first line\ntyped over ssh\nwhile away\n"] && !TabFor(gC, gFile).dirty;
+    MCGuiWait(@"saved by the host", 10, ^BOOL {
+        return [Read(gFile) isEqualToString:@"first line\ntyped over ssh\nbefore drop\nwhile away\n"] &&
+               !TabFor(gC, gFile).dirty;
     });
-    MCGuiStep(@"the terminal's new shell, there", ^{
-        gTerm = [gC valueForKey:@"terminal"];
-        GCHECK(gTerm.sessionTerminal != 0);
-    });
-    // Typed again every 3 s until it shows: nothing says when the new
-    // shell's line editor is ready, and one starting may drop what came
-    // before it.
-    RunUntil(@"it runs a command on the new host", @"echo \"again-$SSH_STANDIN-$((7*8))\"", @"again-yes-56");
-    MCGuiStep(@"a file made after Reconnect", ^{
+    MCGuiStep(@"a file made after the drop", ^{
         MCGuiWriteFile([gFolder stringByAppendingPathComponent:@"after-reconnect.txt"], @"again\n");
     });
-    MCGuiWait(@"comes into the tree by the new host's notices", 15, ^BOOL {
+    MCGuiWait(@"comes into the tree by the host's notices", 15, ^BOOL {
         return TreeRow(gC, [gFolder stringByAppendingPathComponent:@"after-reconnect.txt"]) != nil;
     });
     MCGuiStep(@"the window closes", ^{
@@ -559,9 +668,14 @@ MC_GUI_SUITE(remote_ssh) {
         gC = nil;
     });
     MCGuiWait(@"gone", 10, ^BOOL { return RemoteWindow() == nil; });
-    MCGuiWait(@"the host it ran ends with it", 15, ^BOOL { return Gone(gHostB); });
+    MCGuiWait(@"its relay ends with it", 15, ^BOOL { return Gone(gHostB); });
+    MCGuiWait(@"the lasting host ends after its idle time, nothing left in it", 30, ^BOOL { return Gone(gLasting); });
     MCGuiStep(@"nothing left", ^{
-        if (gHostB > 0 && !Gone(gHostB)) kill(-gHostB, SIGKILL);   // the suite's own, by its recorded pid
+        // The suite's own, by their recorded pids.
+        if (gHostB > 0 && !Gone(gHostB)) kill(-gHostB, SIGKILL);
+        if (gLasting > 0 && !Gone(gLasting)) kill(gLasting, SIGKILL);
+        [NSFileManager.defaultManager removeItemAtPath:gBlock error:nil];
         MCSetEnv("MUTIBLE_SSH", nullptr);
+        MCSetEnv("MUTIBLE_HOST_IDLE_MINUTES", nullptr);
     });
 }

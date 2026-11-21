@@ -128,7 +128,9 @@ enum class Kind {
                  // at a kind it does not know); flag 16, with 4: the app saves its
                  // documents through the host (DocSave), so a guest's save of one
                  // its window shows is not refused; flag 32: it hears the disk
-                 // (FsChanged, DocDisk)
+                 // (FsChanged, DocDisk); json {"resume": token}: a window over SSH
+                 // coming back after a drop, whose old connection, by the same
+                 // token, the host lets go of at once (Host::setDrop)
     DocOpen,     // doc, name (its path), text8 (UTF-8): the host's copy starts as it, saved.
                  // From a renderer that only reads, a view of the document as it is: it
                  // never makes one, and keeps none open (DocGone when there is none, or
