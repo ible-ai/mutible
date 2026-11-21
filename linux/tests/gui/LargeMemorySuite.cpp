@@ -61,8 +61,20 @@ MC_GUI_SUITE(large_memory) {
         return d && d->path() == path() && !d->loading() && ed()->isSource();
     });
     MCGuiWait("laid out", 120, [] { return MCGuiTextLaidOut(ed()->textView()); });
-    MCGuiStep("the find bar searches for a word on the last line", [] {
+    // The session host takes its copy on its own thread about half a second
+    // after the view has the text: the footprint is read once the Pss holds
+    // still (in 4 MB steps, so a page here or there does not keep it moving).
+    MCGuiWaitQuiet("the Pss settles after the open", 1.0, 30, [] { return (long)(pssMb() / 4); });
+    MCGuiStep("opening it cost a few times the file", [] {
         gOpen = pssMb();
+        MCGuiNote("Pss MB: before %.0f, open %.0f (%.1f times the file)", gBefore, gOpen,
+                  (gOpen - gBefore) / kFileMb);
+        // 13.4 times before the host kept one UTF-16 copy (#325); 5.8 since:
+        // the GtkTextBuffer (about 2.4), the host's copy (about 2.2), the
+        // view's saved text (1). The bound catches the copies coming back.
+        GCHECK(gOpen - gBefore < 7.5 * kFileMb);
+    });
+    MCGuiStep("the find bar searches for a word on the last line", [] {
         bar()->showFind();
         gtk_editable_set_text(GTK_EDITABLE(bar()->findField()), "needlexyz");
     });
