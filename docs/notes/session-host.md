@@ -4277,3 +4277,33 @@ and each already handled a loading tab for large files.
   the longest gap far under the old blocking read's stall (numbers in the
   commit), the text equals the file, a tab closed while loading is safe, and
   a file that is not text says so as before.
+
+#### The GTK window over SSH, an address an open window's folder holds (2026-11-21, fifth slice)
+
+The Mac's #327 (90ddcf40) on GTK. `openRemoteAddress` (main.cpp), before it
+connects anything, asks each open remote window that is not dead or lost
+whether its folder holds the address: the address's machine key
+(`Shared::sshMachineKey`, now `Link::machine()`) must be the link's, then the
+window's host answers `Link::locate` (FsRead "locate", `Shared::locateInFolder`;
+a blocking `settle`, 5 s at most, as the Mac's). A file inside goes to the
+innermost such window (longest folder): opened through its host
+(`openFileCb`), a file not there yet in an existing folder as an empty
+untitled tab (`addUntitled`, as New File), the window's own folder brings it
+forward. A folder below a window's, another machine, a file outside, a host
+too old to answer, or a lost link falls through to `connectRemote` as before
+(a new window on the file's folder, or the window already on that link). The
+path in the tab is as the host resolved it (a link, "..", `~`), spelled under
+the window's folder.
+
+- **Trap.** The locate is a wait on the host inside the command line's
+  handler, so it runs before `g_application_hold` and returns without
+  connecting; a window whose host does not answer costs its 5 s before the
+  next window is asked.
+- **Checked** (`remote_ssh`, 133 checks): util.c's address opens as a tab of
+  the open window, no new window and no new ssh run; main.c through a link
+  to the folder and by ".." lands on its tab under the folder's own name; the
+  folder's address and the link's bring the window forward and open nothing;
+  src/fresh.txt, not there yet, an empty untitled tab saved by the host;
+  `ssh://other/...` and a file outside the folder each a window of their own,
+  closed with their host. The new file's tab counts as dirty on GTK (as New
+  File's), unlike the Mac's.

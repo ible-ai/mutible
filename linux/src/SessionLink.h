@@ -117,6 +117,20 @@ public:
     const std::string& label() const { return label_; }
     const std::string& askedFile() const { return askedFile_; }
     const std::string& failure() const { return failure_; }
+    // Which machine and account (Shared::sshMachineKey), the same for every
+    // folder there.
+    const std::string& machine() const { return machine_; }
+    // Where an ssh:// address's path (`asked`, "~", "~/x" or "/x", as the
+    // target names it) is on this link's host, resolved there (FsRead
+    // "locate", SessionFiles.h): inside this folder or not, and when inside
+    // its path spelled under folder(), whether it is a folder, and whether
+    // it is a file not there yet. False when the host did not say (gone, too
+    // old for the read, no answer within `timeoutMs`). Waits on the host.
+    struct Located {
+        bool inside = false, dir = false, isNew = false;
+        std::string path;
+    };
+    bool locate(const std::string& asked, Located* out, int timeoutMs = 5000);
     // The token of the window over SSH this link belongs to, the same on
     // every connection it makes again (Client::setResume), "" for no
     // remote link.
