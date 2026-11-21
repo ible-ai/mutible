@@ -64,6 +64,11 @@ MC_GUI_SUITE(window_title) {
         GCHECK_EQ_STR(Keys::label("workbench.action.previousEditor", "+"), "Ctrl+Page Up");
     });
     MCGuiWait("no tab", 10, [] { return ed()->tabCount() == 0; });
+    // The title follows the pane with the keyboard, and a suite before may
+    // have left it in a terminal, whose title then leads (terminal_tabs did):
+    // the tree, a document pane, takes it first.
+    MCGuiStep("the tree takes the keyboard", [] { MCGuiApp().tree->focus(); });
+    MCGuiWait("the tree has it", 5, treeHasKeyboard);
     MCGuiStep("with no file, the title is the folder's name", [] { GCHECK_EQ_STR(title(), folderName() + " — mutible"); });
 
     openAndClick([] { return F("title/inner.txt"); });
