@@ -67,6 +67,12 @@
 namespace {
 
 std::string gFolder, gFile, gSsh, gArgs, gPidFile, gBin, gBlock;
+std::string gBig;
+size_t gBigSize = 0;
+double gBlockingMs = 0, gMaxGapMs = 0;
+gint64 gLastTick = 0;
+int gTicks = 0, gTabsBefore = 0;
+guint gTickId = 0;
 int gShell = 0, gLasting = 0;   // the terminal's shell, and the lasting host that holds it
 uint64_t gDocId = 0;
 std::string gSocketOfLasting, gLastingFolderPath;
@@ -478,6 +484,102 @@ MC_GUI_SUITE(remote_ssh) {
         remoteWindow().editor->openFile(gFile);   // notes.txt for what follows
     });
     MCGuiWait("notes.txt shown again", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
+
+    // ---- opening a file does not block the window (third slice): the tab
+    // shows "Opening..." at once, the pieces are asked on the main loop, the
+    // worker decodes them, and a tick on the main loop never waits long.
+    MCGuiStep("a big file on the host; what the old, blocking read cost the main thread", [] {
+        gBig = gFolder + "/big.txt";
+        std::string chunk;
+        for (int i = 0; i < 100000; i++) chunk += "line " + std::to_string(i) + " of the big remote file, with some words\n";
+        std::string all;
+        for (int i = 0; i < 2; i++) all += chunk;   // about 10 MB
+        std::ofstream(gBig, std::ios::binary) << all;
+        gBigSize = all.size();
+        SessionLink::Link* l = remoteWindow().editor->sessionLink();
+        const gint64 t0 = g_get_monotonic_time();
+        const SessionLink::Link::RemoteText r = l->readText(gBig);   // what loadInto did before
+        gBlockingMs = (g_get_monotonic_time() - t0) / 1000.0;
+        GCHECK(r.ok && r.text.size() == gBigSize);
+        MCGuiNote("the old blocking read of %zu bytes held the main thread %.1f ms", gBigSize, gBlockingMs);
+    });
+    MCGuiStep("opened: the tab is there at once, loading, and the call returned quickly", [] {
+        gLastTick = g_get_monotonic_time();
+        gMaxGapMs = 0;
+        gTicks = 0;
+        gTickId = g_timeout_add(2, +[](gpointer) -> gboolean {
+            const gint64 now = g_get_monotonic_time();
+            gMaxGapMs = std::max(gMaxGapMs, (now - gLastTick) / 1000.0);
+            gLastTick = now;
+            gTicks++;
+            return G_SOURCE_CONTINUE;
+        }, nullptr);
+        const gint64 t0 = g_get_monotonic_time();
+        remoteWindow().editor->openFile(gBig);
+        const double ms = (g_get_monotonic_time() - t0) / 1000.0;
+        MCGuiNote("openFile returned after %.1f ms", ms);
+        GCHECK(ms < 100);
+        Document* d = tabOf(gBig);
+        GCHECK(d != nullptr && d->loading());
+        if (d) GCHECK(!d->canSave());   // nothing to type into or save while it is read
+        GCHECK_EQ_STR(remoteWindow().editor->currentPath(), gBig);
+        if (d) GCHECK(textOf(d).empty());   // the text is not there yet
+    });
+    MCGuiWait("the text is in", 60, [] {
+        Document* d = tabOf(gBig);
+        return d && !d->loading() && d->kind() == Document::Kind::Text &&
+               (size_t)gtk_text_buffer_get_char_count(d->buffer()) == gBigSize;
+    });
+    MCGuiStep("the main loop kept running through the read; the text is the file's", [] {
+        g_source_remove(gTickId);
+        MCGuiNote("main loop: %d ticks, the longest gap %.1f ms (the blocking read: %.1f ms)", gTicks, gMaxGapMs,
+                  gBlockingMs);
+        GCHECK(gTicks > 20);
+        GCHECK(gMaxGapMs < gBlockingMs);
+        GCHECK(gMaxGapMs < 400);
+        Document* d = tabOf(gBig);
+        GCHECK(d && !d->dirty() && d->remote());
+        if (d) {
+            GCHECK(d->canSave());
+            GCHECK(!d->diskStamp().exists);
+            GCHECK_EQ_STR(textOf(d).substr(0, 40), "line 0 of the big remote file, with some");
+        }
+    });
+    MCGuiStep("a tab closed while its file is read", [] {
+        Editor* e = remoteWindow().editor;
+        const int tabs = e->tabCount();
+        gTabsBefore = tabs;
+        e->closeTab(tabOf(gBig));
+        GCHECK(tabOf(gBig) == nullptr);
+        GCHECK(e->tabCount() == tabs - 1);
+        e->openFile(gBig);
+        Document* d = tabOf(gBig);
+        GCHECK(d && d->loading());
+        e->closeTab(d);   // the read is still going: its answer is ignored
+        GCHECK(tabOf(gBig) == nullptr);
+        GCHECK(e->tabCount() == tabs - 1);
+    });
+    MCGuiPause(0.5);   // time is the condition: the abandoned read's answers must arrive and be ignored
+    MCGuiStep("the window still works after the abandoned read; a file that cannot be read says so", [] {
+        Editor* e = remoteWindow().editor;
+        GCHECK(e->tabCount() == gTabsBefore - 1);
+        e->openFile(gFile);
+        GCHECK(tabOf(gFile) != nullptr);
+        std::ofstream(gFolder + "/binary.dat", std::ios::binary) << std::string("\x00\x01\x02\xff\xfe", 5);
+        e->openFile(gFolder + "/binary.dat");
+    });
+    MCGuiWait("a message in the tab, as before", 20, [] {
+        Document* d = tabOf(gFolder + "/binary.dat");
+        return d && !d->loading() && d->kind() == Document::Kind::Message;
+    });
+    MCGuiStep("the message's words; the big file and the binary one closed", [] {
+        Editor* e = remoteWindow().editor;
+        Document* d = tabOf(gFolder + "/binary.dat");
+        GCHECK(d && textOf(d).find("Could not open") != std::string::npos);
+        if (d) e->closeTab(d);
+        e->openFile(gFile);
+    });
+    MCGuiWait("notes.txt shown again after the big file", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
 
     // ---- a terminal in the host's shell
     MCGuiStep("a terminal", [] {

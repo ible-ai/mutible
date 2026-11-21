@@ -426,6 +426,12 @@ namespace {
 // the document lets go of the load).
 struct LoadJob {
     std::atomic<bool> cancelled{false};
+    // A file on another machine: its bytes come from the host, on the main
+    // loop, and the worker only decodes and measures them. `stop` is what
+    // the pieces' reads watch.
+    bool remote = false;
+    std::shared_ptr<std::atomic<bool>> stop = std::make_shared<std::atomic<bool>>(false);
+    std::string bytes;
     Document* doc = nullptr;
     std::string path, ext;   // ext: the grammar to lex with, "" for none
     bool optimizations = true;
@@ -465,7 +471,10 @@ void Document::whenLoaded(std::function<void()> f) {
 
 void Document::cancelLoading() {
     if (!load_) return;
-    if (load_->job) load_->job->cancelled = true;
+    if (load_->job) {
+        load_->job->cancelled = true;
+        *load_->job->stop = true;   // a remote read in flight is ignored
+    }
     if (load_->idle) g_source_remove(load_->idle);
     if (load_->placeholder) g_object_unref(load_->placeholder);
     filling_ = false;
@@ -487,7 +496,7 @@ void Document::beginLoading(const std::string& path) {
     load_->placeholder = gtk_text_buffer_new(tags_->table);
     struct stat st;
     std::string size;
-    if (stat(path.c_str(), &st) == 0) {
+    if (!remote() && stat(path.c_str(), &st) == 0) {
         char* s = g_format_size((guint64)st.st_size);
         size = std::string(" (") + s + ")";
         g_free(s);
@@ -505,16 +514,27 @@ void Document::beginLoading(const std::string& path) {
     if (!ext_.empty() && SyntaxHighlighter::supports(ext_) && !isSettingsFile()) job->ext = ext_;
     load_->job = job;
     // Read, check, measure and lex off the main thread; the result goes back
-    // to it through the default main context.
-    std::thread([job] {
-        struct stat st;
-        if (stat(job->path.c_str(), &st) == 0) {   // before the read, as the Mac's stamp
-            job->stamp.exists = true;
-            job->stamp.mtime = (double)st.st_mtim.tv_sec + st.st_mtim.tv_nsec / 1e9;
-            job->stamp.inode = (uint64_t)st.st_ino;
-            job->stamp.size = (int64_t)st.st_size;
+    // to it through the default main context. A remote file's bytes are
+    // asked of the host on the main loop first (nothing blocks), and the
+    // worker takes them from there.
+    auto work = [job] {
+        if (job->remote) {
+            job->encoding.encoding = FolderSearch::TextEncoding::Utf8;
+            if (FolderSearch::decodeFileText(&job->bytes, &job->encoding.encoding, &job->encoding.bom) &&
+                g_utf8_validate(job->bytes.data(), (gssize)job->bytes.size(), nullptr)) {
+                job->content = std::move(job->bytes);
+                job->result = Document::Read::Ok;
+            }
+        } else {
+            struct stat st;
+            if (stat(job->path.c_str(), &st) == 0) {   // before the read, as the Mac's stamp
+                job->stamp.exists = true;
+                job->stamp.mtime = (double)st.st_mtim.tv_sec + st.st_mtim.tv_nsec / 1e9;
+                job->stamp.inode = (uint64_t)st.st_ino;
+                job->stamp.size = (int64_t)st.st_size;
+            }
+            job->result = Document::readText(job->path, job->content, &job->encoding);
         }
-        job->result = Document::readText(job->path, job->content, &job->encoding);
         if (job->result == Document::Read::Ok && !job->cancelled) {
             const std::string& c = job->content;
             for (unsigned char ch : c)
@@ -531,7 +551,28 @@ void Document::beginLoading(const std::string& path) {
         auto* hold = new std::shared_ptr<LoadJob>(job);
         g_idle_add_full(G_PRIORITY_DEFAULT, &Document::onLoadRead, hold,
                         [](gpointer p) { delete static_cast<std::shared_ptr<LoadJob>*>(p); });
-    }).detach();
+    };
+    if (!remote()) {
+        std::thread(work).detach();
+        return;
+    }
+    job->remote = true;
+    auto answer = [job](Document::Read r) {   // a read that did not come: the tab says why
+        job->result = r;
+        auto* hold = new std::shared_ptr<LoadJob>(job);
+        g_idle_add_full(G_PRIORITY_DEFAULT, &Document::onLoadRead, hold,
+                        [](gpointer p) { delete static_cast<std::shared_ptr<LoadJob>*>(p); });
+    };
+    const bool asked = link_->readTextAsync(path, job->stop, [job, work, answer](SessionLink::Link::RemoteBytes&& r) {
+        if (job->cancelled) return;
+        if (r.ok) {
+            job->bytes = std::move(r.bytes);
+            std::thread(work).detach();
+        } else {
+            answer(r.tooLarge ? Document::Read::TooLarge : Document::Read::Failed);
+        }
+    });
+    if (!asked) answer(Document::Read::Failed);   // the link is lost, or the path is not in its folder
 }
 
 gboolean Document::onLoadRead(gpointer p) {
