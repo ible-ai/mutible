@@ -9363,3 +9363,31 @@ side's; two are fixed, one left alone on purpose.
   mid-load fails the read (reopen to retry). `Editor::latexInputTab` of a
   remote file is not offered. The control channel's file reads
   (`ControlCommands.cpp:402`) still read the local disk.
+
+### 156. The window over SSH, an address an open window's folder holds (stage 8; November 2026)
+
+- **What it is.** The Mac's #327 (90ddcf40) on GTK: `mutible ssh://host/...`
+  naming a file an open remote window's folder holds (same machine key,
+  decided by the host's own `locate` read, so `~`, `..` and links resolve
+  there) opens it in that window (the innermost); a file not there yet as an
+  empty untitled tab; the window's own folder brings it forward; anything
+  else (another machine, outside, a folder below, an old host) connects and
+  opens a window as before. Design: docs/notes/session-host.md, "an address
+  an open window's folder holds".
+- **Where.** `Link::machine()`, `Link::locate` (SessionLink), and the first
+  block of `openRemoteAddress` in main.cpp. No src/ change (the core's read
+  was the Mac's).
+- **Checked.** `remote_ssh` is 134 checks: util.c, main.c through a link and
+  by "..", the folder's and the link's address, fresh.txt saved by the host,
+  `ssh://other/...` and an outside file each a window of their own, closed
+  with their host, no new ssh run for the ones the open window holds.
+- **The flake of slice 2's Find in Folder.** The step "typed" clicked the
+  search panel's entry as soon as `remoteWindow().search` existed; the
+  GtkSearchEntry was still 0x0 (not laid out), "a widget on screen to point
+  at". The check now waits for `MCGuiOnScreen(queryEntry())` first. Before:
+  1 failure in 10 idle runs (the same 0x0 message), 0 in 6 under 2 busy
+  loops; after: 0 in 10 and 0 in 6. The product is unchanged (a panel's
+  entry is laid out a frame after it is shown).
+- **Not done.** A new file's tab is dirty on GTK (as New File's), not clean
+  as on the Mac; the locate waits on the host (5 s at most) in the command
+  line's handler; real ssh never run.

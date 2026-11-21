@@ -443,6 +443,13 @@ MC_GUI_SUITE(remote_ssh) {
         MCGuiKey("ctrl+shift+f");
     });
     MCGuiWait("the panel", 10, [] { return remoteWindow().search != nullptr; });
+    // The panel is a window of its own: its entry is on screen (mapped and
+    // laid out) a frame or so after the panel exists, and a click before
+    // that has nothing to point at.
+    MCGuiWait("the panel's entry on screen", 10, [] {
+        SearchPanel* p = remoteWindow().search;
+        return p && MCGuiOnScreen(p->queryEntry());
+    });
     MCGuiStep("typed", [] {
         SearchPanel* p = remoteWindow().search;
         MCGuiSetKeyWindow(GTK_WINDOW(p->window()));
@@ -484,6 +491,134 @@ MC_GUI_SUITE(remote_ssh) {
         remoteWindow().editor->openFile(gFile);   // notes.txt for what follows
     });
     MCGuiWait("notes.txt shown again", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
+
+    // ---- addresses an open window's folder holds (slice 3, the Mac's #327).
+    // As a local file goes to the window whose folder holds it, an ssh://
+    // address on the same machine opens in the window over SSH whose folder
+    // holds it, through that window's host: no second window, no ssh run, the
+    // path as the host resolved it (a link, "..").
+    MCGuiStep("ssh://standin/<folder>/src/util.c opens in the open window, through its host", [] {
+        Document* open = tabOf(gFolder + "/src/util.c");
+        if (open) remoteWindow().editor->closeTab(open);
+        GCHECK(tabOf(gFolder + "/src/util.c") == nullptr);
+        gWindowsBefore = MCGuiAppWindows().size();
+        gErrors.clear();
+        MCGuiCommandLine({"ssh://standin" + gFolder + "/src/util.c"}, gFolder, &gErrors);
+        GCHECK(gErrors.empty());
+        GCHECK(alertText().empty());
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        GCHECK(standInPid() == gHostA);   // no ssh run for it
+    });
+    MCGuiWait("util.c a tab of that window, read through the host", 20, [] {
+        return remoteWindow().editor->currentPath() == gFolder + "/src/util.c" &&
+               textOf(tabOf(gFolder + "/src/util.c")) == "int util() { return 1; }  /* needle two */\n";
+    });
+    MCGuiStep("the same file through a link to the folder, and by \"..\": the same window and tab", [] {
+        const std::string alias = rp(MCGuiScratch()) + "/remote-alias";
+        unlink(alias.c_str());
+        GCHECK(symlink(gFolder.c_str(), alias.c_str()) == 0);
+        remoteWindow().editor->openFile(gFile);
+        gErrors.clear();
+        MCGuiCommandLine({"ssh://standin" + alias + "/src/main.c"}, gFolder, &gErrors);
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        GCHECK(standInPid() == gHostA);
+        GCHECK(tabOf(alias + "/src/main.c") == nullptr);
+    });
+    MCGuiWait("main.c shown, spelled under the window's folder as the host resolved it", 20, [] {
+        return remoteWindow().editor->currentPath() == gFolder + "/src/main.c";
+    });
+    MCGuiStep("and by ..", [] {
+        remoteWindow().editor->openFile(gFile);
+        MCGuiCommandLine({"ssh://standin" + gFolder + "/src/../src/main.c"}, gFolder, &gErrors);
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        GCHECK(gErrors.empty());
+    });
+    MCGuiWait("main.c shown again", 20, [] {
+        return remoteWindow().editor->currentPath() == gFolder + "/src/main.c";
+    });
+    MCGuiStep("the folder's address, and the link's: no other window opens", [] {
+        remoteWindow().editor->openFile(gFile);
+        const std::string alias = rp(MCGuiScratch()) + "/remote-alias";
+        MCGuiCommandLine({"ssh://standin" + gFolder}, gFolder, &gErrors);
+        MCGuiCommandLine({"ssh://standin" + alias + "/"}, gFolder, &gErrors);
+        GCHECK(gErrors.empty());
+        GCHECK(alertText().empty());
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        GCHECK(standInPid() == gHostA);
+        GCHECK_EQ_STR(remoteWindow().editor->currentPath(), gFile);   // brought forward, nothing else opened
+    });
+    MCGuiStep("ssh://standin/<folder>/src/fresh.txt, not there yet: an empty untitled tab of that window", [] {
+        gErrors.clear();
+        MCGuiCommandLine({"ssh://standin" + gFolder + "/src/fresh.txt"}, gFolder, &gErrors);
+        GCHECK(gErrors.empty());
+        GCHECK(alertText().empty());
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        GCHECK(standInPid() == gHostA);
+        Document* d = tabOf(gFolder + "/src/fresh.txt");
+        GCHECK(d != nullptr);
+        if (d) MCGuiNote("fresh.txt dirty %d", (int)d->dirty());
+        GCHECK_EQ_STR(textOf(d), "");
+        GCHECK(access((gFolder + "/src/fresh.txt").c_str(), F_OK) != 0);
+        GCHECK_EQ_STR(remoteWindow().editor->currentPath(), gFolder + "/src/fresh.txt");
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+    });
+    MCGuiStep("typed, Ctrl+S", [] {
+        MCGuiType("fresh\n");
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("made by the host's save", 10, [] {
+        Document* d = tabOf(gFolder + "/src/fresh.txt");
+        return readFile(gFolder + "/src/fresh.txt") == "fresh\n" && d && !d->dirty();
+    });
+    // What no open window holds: another machine's address (the stand-in
+    // serves the same disk, so only the machine differs), and a file outside
+    // the folder. Each opens a window of its own, closed after with its host.
+    MCGuiStep("ssh://other/<folder>/src/util.c: another machine, a window of its own", [] {
+        gErrors.clear();
+        MCGuiCommandLine({"ssh://other" + gFolder + "/src/util.c"}, gFolder, &gErrors);
+    });
+    MCGuiWait("that window, on src, with util.c", 30, [] {
+        return MCGuiAppWindows().size() == gWindowsBefore + 1 && remoteWindow().rootDir == gFolder + "/src" &&
+               remoteWindow().editor->currentPath() == gFolder + "/src/util.c";
+    });
+    MCGuiStep("its label names the other machine; it is closed", [] {
+        GCHECK(gErrors.empty());
+        GCHECK_EQ_STR(remoteWindow().editor->sessionLink()->label(), "other:" + gFolder + "/src");
+        gHostB = standInPid();
+        GCHECK(gHostB > 0 && gHostB != gHostA);
+        MCGuiSetKeyWindow(nullptr);
+        gtk_window_close(remoteWindow().window);
+    });
+    MCGuiWait("that window gone, its host with it", 30, [] {
+        return MCGuiAppWindows().size() == gWindowsBefore && remoteWindow().rootDir == gFolder && gone(gHostB);
+    });
+    MCGuiStep("ssh://standin/<outside>/elsewhere.txt: outside the folder, a window of its own", [] {
+        const std::string outside = rp(MCGuiScratch()) + "/remote-outside";
+        g_mkdir_with_parents(outside.c_str(), 0700);
+        MCGuiWriteFile(outside + "/elsewhere.txt", "elsewhere\n");
+        gErrors.clear();
+        MCGuiCommandLine({"ssh://standin" + rp(outside) + "/elsewhere.txt"}, gFolder, &gErrors);
+    });
+    MCGuiWait("that window, on its folder, with the file", 30, [] {
+        return MCGuiAppWindows().size() == gWindowsBefore + 1 &&
+               remoteWindow().rootDir == rp(rp(MCGuiScratch()) + "/remote-outside") &&
+               remoteWindow().editor->currentPath() == rp(MCGuiScratch()) + "/remote-outside/elsewhere.txt";
+    });
+    MCGuiStep("it is closed", [] {
+        GCHECK(gErrors.empty());
+        gHostB = standInPid();
+        GCHECK(gHostB > 0 && gHostB != gHostA);
+        MCGuiSetKeyWindow(nullptr);
+        gtk_window_close(remoteWindow().window);
+    });
+    MCGuiWait("gone, its host with it; the first window shows again", 30, [] {
+        return MCGuiAppWindows().size() == gWindowsBefore && remoteWindow().rootDir == gFolder && gone(gHostB);
+    });
+    MCGuiStep("the first window's notes.txt once more", [] {
+        gHostB = 0;
+        remoteWindow().editor->openFile(gFile);
+    });
+    MCGuiWait("notes.txt shown", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
 
     // ---- opening a file does not block the window (third slice): the tab
     // shows "Opening..." at once, the pieces are asked on the main loop, the

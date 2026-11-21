@@ -6946,6 +6946,41 @@ static void alertCouldNotOpen(const std::string& address, const std::string& why
 
 static void openRemoteAddress(const std::string& address, bool hold,
                               const std::function<void(const std::string&)>& printerr) {
+    // As a local file goes to the window whose folder holds it: an open
+    // window over SSH on the same machine and account whose folder holds the
+    // address (the host's own resolving, "locate") takes it. The innermost
+    // folder wins; a file opens there (a missing one in an existing folder
+    // as an empty untitled tab), the folder itself brings the window
+    // forward, a folder below a window's falls through as a local one does.
+    {
+        App* held = nullptr;
+        std::string heldPath;
+        bool heldNew = false;
+        Shared::SshTarget target;
+        std::string parseError;
+        if (Shared::parseSshUrl(address, &target, &parseError)) {
+            const std::string machine = Shared::sshMachineKey(target);
+            for (App* a : g.windows) {
+                if (a->dead || !a->remote || !a->link || a->link->lost() || a->link->machine() != machine) continue;
+                SessionLink::Link::Located where;
+                if (!a->link->locate(target.path, &where) || !where.inside) continue;
+                const bool isRoot = where.path == a->link->folder();
+                if (where.dir && !isRoot) continue;
+                if (held && held->rootDir.size() >= a->rootDir.size()) continue;
+                held = a;
+                heldPath = where.dir ? std::string() : where.path;
+                heldNew = where.isNew;
+            }
+        }
+        if (held) {
+            gtk_window_present(GTK_WINDOW(held->window));
+            if (!heldPath.empty()) {
+                if (heldNew) held->editor->addUntitled(heldPath);
+                else openFileCb(heldPath, held);
+            }
+            return;
+        }
+    }
     // A window already on this link is brought forward; else a new one on
     // the folder the host named (a file's folder for a file, the file open).
     if (hold) g_application_hold(G_APPLICATION(g.gapp));

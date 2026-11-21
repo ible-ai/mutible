@@ -408,6 +408,30 @@ Link::RemoteText Link::readText(const std::string& path) {
     return out;
 }
 
+bool Link::locate(const std::string& asked, Located* out, int timeoutMs) {
+    *out = Located();
+    if (kind_ != Kind::Remote || lost() || folder_.empty() || asked.empty()) return false;
+    Json ask = Json::object();
+    ask.set("op", Json("locate"));
+    ask.set("path", Json(asked));
+    const std::uint64_t req = client_->requestRead(0, std::move(ask));
+    Json answer;
+    if (!req || !client_->settle(timeoutMs) || !client_->readAnswer(req, &answer)) {
+        if (req) client_->forgetRead(req);
+        return false;
+    }
+    // A host from before the read answers its error: nothing known.
+    if (!answer["error"].isNull() || answer["op"].asString() != "locate") return false;
+    out->inside = answer["inside"].asBool();
+    if (out->inside) {
+        const std::string rel = answer["rel"].asString();
+        out->path = rel.empty() ? folder_ : (folder_ == "/" ? "" : folder_) + "/" + rel;
+        out->dir = answer["dir"].asBool();
+        out->isNew = answer["new"].asBool();
+    }
+    return true;
+}
+
 Link::~Link() {
     // The transport first: its thread delivers to the client.
     if (socket_) socket_->close();   // detaches: the host keeps everything else
