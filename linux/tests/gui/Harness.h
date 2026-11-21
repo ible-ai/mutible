@@ -292,6 +292,10 @@ void MCGuiFocusElsewhere();
 // around the key as a finger would. A key that needs Shift on the layout
 // ("ctrl+>") gets it without being asked.
 void MCGuiKey(const std::string& chord);
+// A held key: the chord's modifiers and key down and kept down, the X server
+// repeating the key (X11 auto-repeat, after its delay), until MCGuiKeyRelease.
+void MCGuiKeyHold(const std::string& chord);
+void MCGuiKeyRelease(const std::string& chord);
 // Types text as key presses. Characters the layout lacks are put on spare
 // key codes first ("é", "→"); "\n" is Return and "\t" Tab.
 void MCGuiType(const std::string& utf8);

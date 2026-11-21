@@ -262,6 +262,10 @@ struct App {
     // kept, a few hundred bytes, so an answer arriving later from a dialog
     // that was up can see that and do nothing.
     bool dead = false;
+    // The key (lower case keyval) of a Close Tab chord still held down after
+    // it closed one thing, 0 when none (closeKeyPressed).
+    guint closeHeld = 0;
+    guint32 closeHeldTime = 0;   // the event time of its latest press
 };
 
 namespace {
@@ -4332,6 +4336,45 @@ static gboolean onHintsPlaced(GtkOverlay*, GtkWidget* child, GdkRectangle*, gpoi
     return FALSE;
 }
 
+// Close Tab's key held down closes one thing: GDK sends an auto-repeat as
+// another press with no release between, and the Mac's closeFocused: drops
+// isARepeat. The window's capture-phase controller lets the first press of a
+// chord bound to win.closetab through, remembers its key, and swallows the
+// presses that follow until the key is released (or the window loses the
+// keyboard, whose release it would never see). The chords are the action's
+// accelerators as set now, so a rebound key and a place that does not bind
+// it (the terminal, where Ctrl+W is the shell's) are as they are.
+static gboolean closeKeyPressed(GtkEventControllerKey* controller, guint keyval, guint,
+                                GdkModifierType state, gpointer userp) {
+    App* app = static_cast<App*>(userp);
+    const guint lower = gdk_keyval_to_lower(keyval);
+    char** accels = gtk_application_get_accels_for_action(g.gapp, "win.closetab");
+    char* name = gtk_accelerator_name(lower, (GdkModifierType)(state & gtk_accelerator_get_default_mod_mask()));
+    bool isClose = false;
+    for (char** a = accels; a && *a; a++)
+        if (strcmp(*a, name) == 0) isClose = true;
+    g_free(name);
+    g_strfreev(accels);
+    if (!isClose) return FALSE;
+    // A repeat follows the last press within the system's repeat interval; a
+    // release that never came (the focus was in what the close removed) must
+    // not leave the key dead, so a press after a pause is a new one.
+    const guint32 time = gtk_event_controller_get_current_event_time(GTK_EVENT_CONTROLLER(controller));
+    const bool repeat = app->closeHeld == lower && time - app->closeHeldTime < 1000;
+    app->closeHeld = lower;
+    app->closeHeldTime = time;
+    return repeat ? TRUE : FALSE;
+}
+
+static void closeKeyReleased(GtkEventControllerKey*, guint keyval, guint, GdkModifierType, gpointer userp) {
+    App* app = static_cast<App*>(userp);
+    if (app->closeHeld == gdk_keyval_to_lower(keyval)) app->closeHeld = 0;
+}
+
+static void closeKeyActive(GObject* window, GParamSpec*, gpointer userp) {
+    if (!gtk_window_is_active(GTK_WINDOW(window))) static_cast<App*>(userp)->closeHeld = 0;
+}
+
 // Every key press in the window goes by the hints' search box first, before
 // any view, and (seen on GTK 4.22, where this controller, added after the
 // window's own, runs first) before the application's accelerators: Alt+Z
@@ -4379,6 +4422,15 @@ static GtkWidget* buildHintsPanel(App* app) {
     gtk_event_controller_set_propagation_phase(keys, GTK_PHASE_CAPTURE);
     g_signal_connect(keys, "key-pressed", G_CALLBACK(onHintsKey), app);
     gtk_widget_add_controller(app->window, keys);
+
+    GtkEventController* closeKeys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(closeKeys, GTK_PHASE_CAPTURE);
+    g_signal_connect(closeKeys, "key-pressed", G_CALLBACK(closeKeyPressed), app);
+    g_signal_connect(closeKeys, "key-released", G_CALLBACK(closeKeyReleased), app);
+    // A question the first press raised takes the release (a window of its
+    // own), so the held key is forgotten whenever the window is not active.
+    g_signal_connect(app->window, "notify::is-active", G_CALLBACK(closeKeyActive), app);
+    gtk_widget_add_controller(app->window, closeKeys);
 
     app->hintsPanel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(app->hintsPanel, "minicode-hints");

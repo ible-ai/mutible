@@ -257,8 +257,15 @@ void MCGuiFocusKeyWindow() {
     gdk_x11_display_error_trap_pop_ignored(Gdk());
 }
 
-void MCGuiKey(const std::string& chord) {
-    MCGuiFocusKeyWindow();
+namespace {
+struct Chord {
+    std::vector<KeySym> held;
+    KeyPlace place;
+    bool ok = false;
+};
+
+Chord parseChord(const std::string& chord) {
+    Chord c;
     // Modifiers before the last "+", except that a chord may end in "+" itself.
     std::vector<std::string> mods;
     std::string key = chord;
@@ -268,27 +275,56 @@ void MCGuiKey(const std::string& chord) {
         mods.push_back(key.substr(0, plus));
         key.erase(0, plus + 1);
     }
-    std::vector<KeySym> held;
     for (std::string m : mods) {
-        for (char& c : m) c = (char)std::tolower((unsigned char)c);
-        if (m == "ctrl" || m == "control") held.push_back(XK_Control_L);
-        else if (m == "shift") held.push_back(XK_Shift_L);
-        else if (m == "alt" || m == "opt" || m == "option") held.push_back(XK_Alt_L);
-        else if (m == "super" || m == "cmd" || m == "meta") held.push_back(XK_Super_L);
+        for (char& ch : m) ch = (char)std::tolower((unsigned char)ch);
+        if (m == "ctrl" || m == "control") c.held.push_back(XK_Control_L);
+        else if (m == "shift") c.held.push_back(XK_Shift_L);
+        else if (m == "alt" || m == "opt" || m == "option") c.held.push_back(XK_Alt_L);
+        else if (m == "super" || m == "cmd" || m == "meta") c.held.push_back(XK_Super_L);
         else MCGuiCheck(false, "known modifier in \"" + chord + "\": " + m, __FILE__, __LINE__);
     }
     const KeySym sym = keysymForName(key);
-    KeyPlace place;
-    if (sym == NoSymbol || sym == GDK_KEY_VoidSymbol || !placeFor(sym, &place)) {
+    if (sym == NoSymbol || sym == GDK_KEY_VoidSymbol || !placeFor(sym, &c.place)) {
         MCGuiCheck(false, "known key in \"" + chord + "\": " + key, __FILE__, __LINE__);
-        return;
+        return c;
     }
-    if (place.shift && std::find(held.begin(), held.end(), (KeySym)XK_Shift_L) == held.end())
-        held.push_back(XK_Shift_L);
-    for (KeySym m : held) sendKey(codeOf(m), true);
-    sendKey(place.code, true);
-    sendKey(place.code, false);
-    for (auto it = held.rbegin(); it != held.rend(); ++it) sendKey(codeOf(*it), false);
+    if (c.place.shift && std::find(c.held.begin(), c.held.end(), (KeySym)XK_Shift_L) == c.held.end())
+        c.held.push_back(XK_Shift_L);
+    c.ok = true;
+    return c;
+}
+}  // namespace
+
+void MCGuiKey(const std::string& chord) {
+    MCGuiFocusKeyWindow();
+    const Chord c = parseChord(chord);
+    if (!c.ok) return;
+    for (KeySym m : c.held) sendKey(codeOf(m), true);
+    sendKey(c.place.code, true);
+    sendKey(c.place.code, false);
+    for (auto it = c.held.rbegin(); it != c.held.rend(); ++it) sendKey(codeOf(*it), false);
+    XSync(Dpy(), False);
+}
+
+// A held key: the modifiers down, then the key, and everything stays down
+// until MCGuiKeyRelease. The X server's own auto-repeat sends the repeats (a
+// second XTest press of a key already down is dropped), so a suite waits the
+// repeat delay out (about 0.7 s by default) to see them.
+void MCGuiKeyHold(const std::string& chord) {
+    MCGuiFocusKeyWindow();
+    const Chord c = parseChord(chord);
+    if (!c.ok) return;
+    for (KeySym m : c.held) sendKey(codeOf(m), true);
+    sendKey(c.place.code, true);
+    XSync(Dpy(), False);
+}
+
+// The same chord's key and modifiers up.
+void MCGuiKeyRelease(const std::string& chord) {
+    const Chord c = parseChord(chord);
+    if (!c.ok) return;
+    sendKey(c.place.code, false);
+    for (auto it = c.held.rbegin(); it != c.held.rend(); ++it) sendKey(codeOf(*it), false);
     XSync(Dpy(), False);
 }
 

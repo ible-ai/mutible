@@ -9167,3 +9167,35 @@ side's; two are fixed, one left alone on purpose.
 - **Checked.** `compare` (the tints on a rejected, an accepted and an
   undecided hunk; replace, keep, and the scroll back after another tab).
 - **Not verified.** The look of the tint.
+
+### 150. A held Ctrl+W closes one tab (November 2026)
+
+- **What.** As the Mac's `closeFocused:` (which drops `isARepeat`), the first
+  Ctrl+W or Ctrl+F4 closes one thing and the repeats of the held key do
+  nothing until it is released. GDK4 has no repeat flag, so a capture-phase
+  key controller on the window (`closeKeyPressed`, `closeKeyReleased`, and
+  `notify::is-active`, in main.cpp, beside the hints' controller) compares each press
+  with the accelerators now set for `win.closetab`
+  (`gtk_application_get_accels_for_action`): the first press passes and its
+  key is remembered in `App::closeHeld`; a press of the same key while it is
+  remembered returns TRUE, swallowed before the accelerators. Release, or the
+  window going inactive (a question the first press raised takes the release),
+  forgets it. Reading the live accelerators keeps
+  a rebound key right, and where Close Tab is not bound (the terminal, whose
+  shell has Ctrl+W) the controller does nothing. Every place Close Tab works
+  (editor, viewers, the browser pane hiding, the window closing with no tab)
+  is the same action, so they hold alike.
+- **A lost release.** A press that raises a question (or closes the widget
+  that had the focus) can have its release go elsewhere, which would leave
+  the key dead. Beside `notify::is-active`, a press more than a second after
+  the last is a new press (event time), so a lost release costs nothing.
+- **Checked.** `tabs`: three clean tabs of its own, `MCGuiKeyHold("ctrl+w")`
+  (new in Input.cpp, with `MCGuiKeyRelease`: modifiers and key down and kept
+  down, the X server's own auto-repeat sending the repeats after its 0.66 s
+  delay; a second XTest press of a key already down is dropped, so a count of
+  presses cannot make them) closes exactly one over 1.6 s; after the release
+  Ctrl+W closes the next. Without the filter the same check closes every tab
+  and the window (tried). Ctrl+W in the terminal reaching the shell stays
+  checked by `terminal_keys`.
+- **Not verified.** Real auto-repeat from a keyboard on a desktop (GDK's
+  detectable repeat on a live session; the harness's is Xvfb's).
