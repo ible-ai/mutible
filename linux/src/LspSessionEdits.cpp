@@ -42,6 +42,10 @@ bool textTab(Document* d) {
 
 }  // namespace
 
+std::string LspSession::realOf(const std::string& p) const {
+    return isRemote() ? p : lspui::realPath(p);
+}
+
 // A file the server named, under the tree's own spelling of the path when it
 // is inside the folder (the server answers with resolved paths), so a tab
 // opened for it is the one the tree would open; "" when the URI is not a
@@ -49,7 +53,7 @@ bool textTab(Document* d) {
 std::string LspSession::treePathForUri(const std::string& uri) const {
     const std::string target = Lsp::pathFromUri(uri);
     if (target.empty()) return "";
-    const std::string real = lspui::realPath(target), rootReal = lspui::realPath(root_);
+    const std::string real = realOf(target), rootReal = realOf(root_);
     if (!rootReal.empty() && real.rfind(rootReal + "/", 0) == 0)
         return root_ + real.substr(rootReal.size());
     return target;
@@ -59,10 +63,10 @@ std::string LspSession::treePathForUri(const std::string& uri) const {
 // file it names (a link, /tmp and /private/tmp).
 Document* LspSession::documentForPath(const std::string& path) const {
     if (Document* d = editor_->documentFor(path)) return d;
-    const std::string real = lspui::realPath(path);
+    const std::string real = realOf(path);
     for (Document* d : editor_->documents())
         if (d->kind() != Document::Kind::Diff && !d->path().empty() &&
-            lspui::realPath(d->path()) == real)
+            realOf(d->path()) == real)
             return d;
     return nullptr;
 }
@@ -101,6 +105,12 @@ int LspSession::applyEdit(const Lsp::WorkspaceEdit& we, Server* server,
         }
     }
 
+    // Texts read through the host for tabs not made yet go with the call.
+    struct ForgetHostTexts {
+        Editor* e;
+        ~ForgetHostTexts() { e->forgetHostTextsForEdit(); }
+    } forgetHostTexts{editor_};
+
     // 1. Read and check every file.
     struct File {
         std::string path;
@@ -122,11 +132,11 @@ int LspSession::applyEdit(const Lsp::WorkspaceEdit& we, Server* server,
         if (textTab(d)) {
             file.text = d->text();
         } else {
-            if (remote_) {   // its disk is the host's, not read from here
-                *failure = "A change to " + name + ", which no tab shows, is not made in a window over SSH yet";
-                return -1;
-            }
-            if (Document::readText(file.path, file.text) != Document::Read::Ok) {
+            // Its disk is the host's: read through it (the tab made below
+            // holds this very text), never from this machine's.
+            const bool read = remote_ ? editor_->readHostTextForEdit(file.path, &file.text)
+                                      : Document::readText(file.path, file.text) == Document::Read::Ok;
+            if (!read) {
                 *failure = "Could not read " + name;
                 return -1;
             }
@@ -151,7 +161,7 @@ int LspSession::applyEdit(const Lsp::WorkspaceEdit& we, Server* server,
         if (auto t = serverTextOf(f.uri)) {
             base = *t;
         } else {
-            if (!diskRead && Document::readText(file.path, disk) != Document::Read::Ok) {
+            if (!diskRead && (remote_ || Document::readText(file.path, disk) != Document::Read::Ok)) {
                 *failure = "Could not read " + name;
                 return -1;
             }

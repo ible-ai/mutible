@@ -255,6 +255,12 @@ public:
     // uses that tab, as it is. Null when it could not be opened.
     Document* openForAgent(const std::string& path, bool preview, bool quiet);
     Document* agentPreviewTab() const;
+    // A window over SSH, for a workspace edit to a file no tab holds: the
+    // file's text read through the host, waiting (Link::readText), and kept
+    // so the tab openFile makes next holds it at once instead of "Opening".
+    // False when it cannot be read or the window is not over SSH.
+    bool readHostTextForEdit(const std::string& path, std::string* text);
+    void forgetHostTextsForEdit() { preread_.clear(); }
     // The window's notes, hanging over the text (AgentNotes.h).
     AgentNotes* notes() const { return notes_; }
     // The inline agent's bar over the text (InlineAgentBar.h).
@@ -874,6 +880,7 @@ private:
     std::shared_ptr<SessionLink::Link> link_;
     // A window over SSH (EditorRemoteViewers.cpp).
     std::shared_ptr<RemoteWorkspace> remoteWs_;
+    std::map<std::string, SessionLink::Link::RemoteText> preread_;   // readHostTextForEdit
     std::unique_ptr<RemoteCopies> copies_;
     bool remote() const { return link_ && link_->kind() == SessionLink::Link::Kind::Remote; }
     RemoteCopies* copiesForWrite();

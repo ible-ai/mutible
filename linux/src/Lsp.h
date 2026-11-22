@@ -586,6 +586,8 @@ private:
                   const Lsp::DocVersions* asked, std::string* failure,
                   const std::string& actionName = "Edit");
     std::string treePathForUri(const std::string& uri) const;
+    // A path's real path on this machine; a remote window's is the host's, as given.
+    std::string realOf(const std::string& p) const;
     Document* documentForPath(const std::string& path) const;
     std::shared_ptr<const std::u16string> serverTextOf(const std::string& uri) const;
 

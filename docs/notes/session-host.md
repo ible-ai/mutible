@@ -5335,12 +5335,18 @@ no change in `src/`: the seam is the transport, as on the Mac.
 - **Files changed there.** `updateFileWatcher` makes no inotify watch
   (`watchedFolders()` is empty); the host's `LspFiles` go to
   `filesChangedOnDisk` as a batch matched on the main thread.
-- **Not done.** A workspace edit's file that no tab holds is refused with a
-  note ("... is not made in a window over SSH yet"; the Mac reads it through
-  the host): rename and Organize Imports across unopened files. The
-  documents' URIs are made with this machine's `realpath` (`lspui::uriOf`),
-  which leaves a remote path alone unless this machine has a link at the
-  same path. Each flush of a document's edits settles its host copy (one
+- **Workspace edits to files no tab holds** (stage 9, third slice): the file
+  is read through the host (`Link::readText`, waiting, as the Mac's
+  `languageServerDiskText`; `Editor::readHostTextForEdit`), the text kept in
+  `preread_` so `loadInto` makes the tab with it at once (no "Opening"
+  tab to wait for), then the edit is applied as for a local file: a kept tab,
+  one undo step, nothing saved (a save is the host's write). `applyEdit`
+  forgets what was read when it ends, however it ends.
+- **URIs.** A remote window's document URIs and the paths read from the
+  server's URIs (`lspui::uriOf(path, remote)`, `canonicalUri`,
+  `LspSession::realOf`) are never run through this machine's `realpath`: a
+  link that exists only here at a remote file's path is not followed.
+- **Not done.** Each flush of a document's edits settles its host copy (one
   round trip; the Mac follows the storage instead). Go to Definition outside
   the folder (the host reads only inside it) is not looked at. A host that
   is too old (no flag 512) could not be made by the stand-in.

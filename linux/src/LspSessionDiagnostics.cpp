@@ -42,7 +42,7 @@ bool LspSession::sameFile(const std::string& a, const std::string& b) const {
     if (b.empty()) return false;
     if (a == b) return true;
     std::string pa = Lsp::pathFromUri(a), pb = Lsp::pathFromUri(b);
-    return !pa.empty() && lspui::realPath(pa) == lspui::realPath(pb);
+    return !pa.empty() && realOf(pa) == realOf(pb);
 }
 
 // Each tag comes off its own mark's range, which always holds it (the start
@@ -73,7 +73,7 @@ void LspSession::clearMarks() {
 // server's name, so each says where it is from.
 void LspSession::diagnosticsArrived(Server* s, const std::string& uriIn,
                                     const std::vector<Lsp::Diagnostic>& list) {
-    const std::string uri = lspui::canonicalUri(uriIn);
+    const std::string uri = lspui::canonicalUri(uriIn, isRemote());
     if (!diag_->store.publish(uri, s->key(), list, s->client().textFor(uriIn), s->name())) return;
     if (sameFile(uri, uri_)) {
         paintDiagnostics();
@@ -83,7 +83,7 @@ void LspSession::diagnosticsArrived(Server* s, const std::string& uriIn,
 }
 
 void LspSession::forgetDiagnostics(const std::string& uri, const std::string& serverKey) {
-    if (!diag_->store.erase(lspui::canonicalUri(uri), serverKey)) return;
+    if (!diag_->store.erase(lspui::canonicalUri(uri, isRemote()), serverKey)) return;
     if (!uri_.empty() && sameFile(uri, uri_)) paintDiagnostics();
     problemsChanged();
 }
@@ -102,12 +102,12 @@ void LspSession::forgetAllDiagnostics() {
 }
 
 std::vector<Lsp::Diagnostic> LspSession::diagnosticsOf(const std::string& uri) const {
-    return diag_->store.merged(lspui::canonicalUri(uri));
+    return diag_->store.merged(lspui::canonicalUri(uri, isRemote()));
 }
 
 std::vector<Lsp::Diagnostic> LspSession::diagnosticsOf(const std::string& uri,
                                                        const std::string& serverKey) const {
-    const Lsp::DiagnosticStore::Set* set = diag_->store.find(lspui::canonicalUri(uri), serverKey);
+    const Lsp::DiagnosticStore::Set* set = diag_->store.find(lspui::canonicalUri(uri, isRemote()), serverKey);
     return set ? set->list : std::vector<Lsp::Diagnostic>();
 }
 
@@ -143,7 +143,7 @@ void LspSession::paintDiagnostics() {
     const std::string& uri = shownUri();
     if (!buffer_ || uri.empty()) return;
     const std::vector<const Lsp::DiagnosticStore::Set*> sets =
-        diag_->store.forUri(lspui::canonicalUri(uri));
+        diag_->store.forUri(lspui::canonicalUri(uri, isRemote()));
     if (sets.empty()) return;
     const std::u16string now = utf16::fromUtf8(lspui::bufferText(buffer_));
     const std::vector<Lsp::MergedSpan> spans = Lsp::mergedDiagnosticSpans(sets, now);

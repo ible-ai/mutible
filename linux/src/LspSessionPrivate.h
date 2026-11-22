@@ -49,13 +49,17 @@ inline std::string lowerExt(const std::string& path) {
 
 // The URI a file is open under: its real path's, so a symlink and its
 // target, and /tmp and /private/tmp spellings, are one document.
-inline std::string uriOf(const std::string& path) { return Lsp::uriFromPath(realPath(path)); }
+// A remote window's path is the host's: this machine's realpath of it would
+// follow a link that exists only here, so it is used as given.
+inline std::string uriOf(const std::string& path, bool remote = false) {
+    return Lsp::uriFromPath(remote ? path : realPath(path));
+}
 
 // A URI as that one spelling (Lsp::CanonicalUri, for parseWorkspaceEdit and
 // groupReferences).
-inline std::string canonicalUri(const std::string& uri) {
+inline std::string canonicalUri(const std::string& uri, bool remote = false) {
     const std::string path = Lsp::pathFromUri(uri);
-    return path.empty() ? uri : uriOf(path);
+    return path.empty() ? uri : uriOf(path, remote);
 }
 
 // The UTF-8 text of line `line` of `text`, lines ending at \n, \r\n or \r
