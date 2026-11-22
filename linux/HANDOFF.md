@@ -9518,3 +9518,23 @@ side's; two are fixed, one left alone on purpose.
 - **What.** Entry 161's gap: a remote terminal re-attached after a reconnect (or taken from the session browser) stayed unmarked. `Terminal.cpp` now keeps `{nonce, bash}` in a process-wide map by the link's key (machine and folder) and the terminal's id on the host (`remoteMarks()`, as the Mac's `HostNonces`); `termIntegrated` stores it, `attachShell` on a remote link looks it up and sets `nonce_`, `bashShell_` and `remoteNonce_`, and the shell's exit, `closeOnHost`, `rehost` and the destructor erase it. The key is the link's, not the Link object's, so the new link of a reconnect finds it. No `src/` change.
 - **Checks.** remote_ssh: after the connection drops and the window reconnects by itself to the same lasting host, the same shell's prompt is marked and `(exit 3)` is seen with status 3.
 - **Not done.** A shell from before a relaunch has no nonce here and stays unmarked. Real ssh never run.
+
+### 164. markdown_details waits for the page to be laid out (November 2026)
+
+- **What.** `markdown_details` failed 2 checks once, in a long order of 25
+  suites (2026-11-22), and passed alone twice. It was not reproduced: three
+  runs of that order, seeds 1 and 2 of a shuffled markdown_* plus
+  tab_viewers, html_page, large_file, preview_tabs, tabs order under two busy
+  loops, and 25 runs alone under four busy loops all passed, before and
+  after.
+- **Likely cause, not proved.** Each click read the summary's place from
+  `gtk_text_view_get_iter_location` in the step right after the page was set
+  or drawn again; GTK estimates the heights of lines it has not validated (in
+  idle slices), so on a loaded machine the place can move under the click,
+  which then reaches another line and toggles nothing. The suite now waits
+  (`waitPlaced`) until the place, the scroll and the view's height are the
+  same at three polls in a row and the line is inside the view, before each
+  of its three clicks, and logs the place it clicks (`click on "..." at x,y`)
+  so the next failure says where the click went.
+- **Checked.** The markdown_* suites, the 25-suite order three times, 25 runs
+  alone under load; `meson test`.
