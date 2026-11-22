@@ -75,9 +75,10 @@ says what each built and what is left.
   first and the rest in idle time, as the GTK port already does.
 - Broader, more correct highlighting would mean tree-sitter, the one place a
   dependency might be weighed.
-- Terminal: OSC 8 hyperlinks on Linux (the Mac opens them; VTE is told to
-  allow them, but Ctrl+click reads only the text). Other shells (bash, fish)
-  run without the shell integration's marks.
+- Terminal: other shells run without the shell integration's marks: fish
+  everywhere, and bash in the Mac's own terminals (Linux's
+  `linux/resources/mutible-bash-integration.bash` could go in the Mac's
+  bundle too; a Mac window over SSH already runs it on the other machine).
 - Settings: the terminal's ANSI palette as keys; the find bar and Find in
   Folder follow the theme but have no keys of their own, and the hints
   overlay still uses fixed colors.
