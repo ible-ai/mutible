@@ -866,6 +866,10 @@ extern NSUInteger MCDirtyFromHostMarks;
 // The window's language servers become its host's (once; a window on this
 // Mac, or a session not made yet, does nothing).
 - (void)giveLanguageServersTheHost;
+// What the folder's answer about its own programs (MCFolderToolsConsent)
+// is kept under: the link's ssh:// machine and folder over SSH, so it never
+// applies to a folder of this Mac's with the same path; else the folder.
+- (NSString *)folderToolsKey;
 // The tree listed, opened or closed folders: the host is told which to
 // watch (on the main queue's next turn, once).
 - (void)remoteTreeFoldersChanged;

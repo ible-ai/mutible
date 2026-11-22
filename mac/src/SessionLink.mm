@@ -416,7 +416,15 @@ std::uint64_t Link::git(const std::string &dir, const std::vector<std::string> &
     return req;
 }
 
-// Each git answer that came, to its `done` (taken out first); every one
+std::uint64_t Link::format(Json request, std::string text,
+                           std::function<void(bool, Json &&, std::string &&)> done) {
+    if (!runsFormatters()) return 0;
+    const std::uint64_t req = client_->requestFormat(0, std::move(request), std::move(text));
+    if (req) gits_[req] = std::move(done);   // answered as git's are (pumpGits)
+    return req;
+}
+
+// Each git (or format) answer that came, to its `done` (taken out first); every one
 // still waiting once the host is gone, without an answer.
 void Link::pumpGits() {
     if (gits_.empty() || !client_) return;

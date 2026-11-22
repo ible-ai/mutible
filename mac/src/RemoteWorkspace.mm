@@ -1,11 +1,13 @@
 // RemoteWorkspace.mm — see RemoteWorkspace.h.
 #import "RemoteWorkspace.h"
+#import "FormatRunner.h"
 #import "SessionLink.h"
 
 #include <algorithm>
 #include <string>
 
 #include "GitStatus.h"
+#include "SessionFormat.h"
 #include "SessionGit.h"
 
 @interface MCRemoteWorkspace ()
@@ -348,8 +350,8 @@ MCGitResult *GitFailed(const std::string &why) {
         // the main thread as each link is attached.
         NSString *labelText = weakSelf.labelText;
         const std::string label = labelText.length ? std::string(labelText.UTF8String ?: "") : "the other machine";
-        // They would want credentials nobody can type there.
-        if (Git::talksToRemote(argv)) return GitFailed(Shared::gitRemoteOpText(label));
+        // Fetch, pull and push too: the host runs them with that machine's
+        // credentials, never a prompt (SessionGit.h's remoteGitSettings).
         // The answer comes on the main queue: never wait for it there.
         if ([NSThread isMainThread]) return GitFailed("git for a window over SSH runs off the main thread.");
         const std::string where = dir.UTF8String ?: "";
@@ -405,6 +407,102 @@ MCGitResult *GitFailed(const std::string &why) {
         }
         return result.firstObject ?: GitFailed("git did not run.");
     };
+}
+
+// ------------------------------------------------------------ formatting
+
+- (void)formatText:(NSString *)text
+              path:(NSString *)path
+           setting:(NSString *)setting
+           consent:(NSString *)consent
+         firstLine:(NSInteger)firstLine
+          lastLine:(NSInteger)lastLine
+       projectOnly:(BOOL)projectOnly
+           timeout:(NSTimeInterval)timeout
+              done:(void (^)(MCFormatResult *result))done {
+    MCSession::Link *l = [self live];
+    // The machine, for what is said ("thinkpad"), else the title's name.
+    std::string host = l ? l->target().host : std::string();
+    if (host.empty()) host = l ? l->label() : std::string(self.labelText.UTF8String ?: "");
+    if (host.empty()) host = "the other machine";
+    auto said = [](const std::string &s) { return [NSString stringWithUTF8String:s.c_str()] ?: @""; };
+    // Called once, whichever comes first: the answer, the link's end, or
+    // the wait past the formatter's own limit.
+    __block BOOL finished = NO;
+    void (^finish)(MCFormatResult *) = ^(MCFormatResult *r) {
+        if (finished) return;
+        finished = YES;
+        done(r);
+    };
+    auto failed = [&](const std::string &why) {
+        MCFormatResult *r = [MCFormatResult new];
+        r.error = said(why);
+        return r;
+    };
+    if (!l) {
+        MCFormatResult *r = failed(Shared::formatLostText(host));
+        dispatch_async(dispatch_get_main_queue(), ^{ finish(r); });
+        return;
+    }
+    if (!l->runsFormatters()) {
+        MCFormatResult *r = failed(Shared::formatTooOldText(l->label()));
+        dispatch_async(dispatch_get_main_queue(), ^{ finish(r); });
+        return;
+    }
+    Shared::FormatRequest req;
+    req.path = path.UTF8String ?: "";
+    req.setting = setting.UTF8String ?: "";
+    req.consent = consent.UTF8String ?: "";
+    req.firstLine = (int)firstLine;
+    req.lastLine = (int)lastLine;
+    req.projectOnly = projectOnly;
+    req.timeout = timeout;
+    std::string bytes = text.UTF8String ?: "";
+    const std::string lostText = Shared::formatLostText(host);
+    _formats++;
+    const std::uint64_t asked = l->format(
+        Shared::formatRequestJson(req), std::move(bytes),
+        [finish, host, lostText, said](bool got, Json &&answer, std::string &&out) {
+            MCFormatResult *r = [MCFormatResult new];
+            if (!got) {
+                r.error = said(lostText);
+                finish(r);
+                return;
+            }
+            Shared::FormatReply reply = Shared::formatReplyFrom(answer, std::move(out));
+            r.tool = reply.tool.empty() ? nil : said(reply.tool);
+            r.style = reply.style.empty() ? nil : said(reply.style);
+            r.ranged = reply.ranged;
+            if (reply.kind == "consent") {
+                r.needsConsent = YES;
+                r.consentFolder = reply.consentFolder.empty() ? nil : said(reply.consentFolder);
+                r.consentConfig = reply.consentConfig.empty() ? nil : said(reply.consentConfig);
+            } else if (reply.ok) {
+                r.text = [[NSString alloc] initWithBytes:reply.text.data() length:reply.text.size()
+                                                encoding:NSUTF8StringEncoding];
+                if (!r.text) r.error = said(reply.tool + " wrote something that is not UTF-8 text. The file was not changed.");
+            } else {
+                r.unavailable = reply.kind == "unavailable";
+                r.serverMayFormat = reply.serverMayFormat;
+                // No install commands: this Mac's would not put it there.
+                r.error = said(reply.missing ? Shared::formatMissingText(reply.message, host) : reply.message);
+            }
+            finish(r);
+        });
+    if (!asked) {
+        MCFormatResult *r = failed(lostText);
+        dispatch_async(dispatch_get_main_queue(), ^{ finish(r); });
+        return;
+    }
+    // The host stops the formatter at its own limit; past that and a little
+    // more for the answer to cross, the window stops waiting.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((timeout + 30) * NSEC_PER_SEC)), dispatch_get_main_queue(),
+                   ^{
+                       MCFormatResult *r = [MCFormatResult new];
+                       r.error = said("The other machine did not answer within " + Git::durationText(timeout + 30) +
+                                      ": the file was not changed.");
+                       finish(r);
+                   });
 }
 
 // ------------------------------------------------------------ new files

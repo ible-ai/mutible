@@ -1304,6 +1304,7 @@ SyncPlan syncPlan(SyncOp op, const Snapshot& s) {
         if (remote.empty()) remote = publishRemote(s);
         if (remote.empty()) remote = s.remotes[0];
         p.steps.push_back({"fetch", remote});
+        p.remote = remote;
         p.busyText = "Fetching from " + remote + "…";
         p.doneText = "Fetched from " + remote + ".";
         return p;
@@ -1322,6 +1323,7 @@ SyncPlan syncPlan(SyncOp op, const Snapshot& s) {
         if (!p.refusal.empty()) return p;
         const std::string remote = publishRemote(s);
         p.steps.push_back({"push", "--set-upstream", remote, s.branch});
+        p.remote = remote;
         p.busyText = "Publishing " + s.branch + " to " + remote + "…";
         p.doneText = "Published " + s.branch + " to " + remote + ".";
         return p;
@@ -1331,6 +1333,7 @@ SyncPlan syncPlan(SyncOp op, const Snapshot& s) {
                     "terminal (git push -u <remote> " + s.branch + ").";
         return p;
     }
+    p.remote = upstreamRemote(s);
     switch (op) {
     case SyncOp::Pull:
         p.steps.push_back({"pull"});
@@ -1395,6 +1398,28 @@ std::string networkFailureText(int status, const std::string& out, const std::st
                ") or connect once from the terminal.";
     return t;
 }
+
+std::string credentialsLine(const std::string& out, const std::string& err) {
+    static const char* const needles[] = {"terminal prompts disabled", "could not read Username",
+                                          "could not read Password", "Authentication failed",
+                                          "Invalid username or password", "Permission denied (publickey",
+                                          "Host key verification failed", "passphrase"};
+    for (const std::string* s : {&err, &out}) {
+        std::size_t start = 0;
+        while (start < s->size()) {
+            std::size_t end = s->find('\n', start);
+            if (end == std::string::npos) end = s->size();
+            std::string line = s->substr(start, end - start);
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+            for (const char* n : needles)
+                if (line.find(n) != std::string::npos) return line;
+            start = end + 1;
+        }
+    }
+    return std::string();
+}
+
+bool needsCredentials(const std::string& out, const std::string& err) { return !credentialsLine(out, err).empty(); }
 
 // ------------------------------------------------------------ autofetch
 double autoFetchWait(int period, int failures) {

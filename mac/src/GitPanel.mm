@@ -2480,13 +2480,9 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
 - (void)runSync:(GitUi::SyncOp)op quietly:(BOOL)quiet {
     NSString *root = self.root;
     if (!root) return;
-    if (_overSshHost) {
-        // They would want credentials nobody can type on that machine.
-        if (quiet) return;
-        NSBeep();
-        [self say:NSFromBytes(Shared::gitRemoteOpText(_overSshHost.UTF8String ?: "")) info:NO];
-        return;
-    }
+    // Over SSH the same steps run on the other machine through its host
+    // (the panel's queue has its runner), with that machine's credentials
+    // and never a prompt (SessionGit.h).
     // One asked for at a time; one asked for while a background fetch runs
     // waits behind it on the queue.
     if (quiet ? (_syncing || _autoFetching) : _syncing) {
@@ -2556,8 +2552,11 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
         info = NO;
         if (!quiet) NSBeep();
     } else if (!ok) {
-        text = NSFromBytes(GitUi::networkFailureText(r.status, Bytes(r.output),
-                                                     (r.errorText ?: @"").UTF8String ?: ""));
+        const std::string out = Bytes(r.output), err = (r.errorText ?: @"").UTF8String ?: "";
+        text = NSFromBytes(GitUi::networkFailureText(r.status, out, err));
+        // Over SSH: the other machine's credentials, said as such.
+        if (_overSshHost && GitUi::needsCredentials(out, err))
+            text = NSFromBytes(Shared::gitCredentialsText(_overSshHost.UTF8String ?: "", plan.remote, out, err));
         if (r.timedOut) text = r.errorText;
         if (quiet) text = [@"Autofetch: " stringByAppendingString:text];
         info = NO;
@@ -2577,7 +2576,7 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
 // a time of their own). YES when a fetch was started.
 - (BOOL)autoFetchTickAt:(NSTimeInterval)now {
     const Settings &cfg = [AppSettings shared].settings;
-    if (!cfg.gitAutoFetch() || !self.root || _syncing || _autoFetching || _overSshHost) return NO;
+    if (!cfg.gitAutoFetch() || !self.root || _syncing || _autoFetching) return NO;
     BOOL active = self.isActive ? self.isActive() : self.window.isKeyWindow;
     if (!active) return NO;
     // By what is known so far: the repository's top level once a status

@@ -53,9 +53,19 @@ namespace Web {
 // `timeoutMs` or past 256 MB of output (`timedOut` then), or as soon as
 // `cancel` goes up. What a headless host runs; the Mac gives its own runner
 // (Options::git). A window over SSH's git runs here too (SessionGit.h).
+//
+// `spawn` (a window over SSH's fetch, pull and push, SessionGit.h): the
+// environment to start from in place of this process's, settings put in
+// place of any of the same name, and a session of its own, so git and the
+// ssh it starts have no controlling terminal to ask a passphrase on.
+struct GitSpawn {
+    const std::vector<std::string>* env = nullptr;   // "NAME=value"; null: this process's
+    std::vector<std::string> set;                    // "NAME=value", each in place of NAME
+    bool newSession = false;
+};
 ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::string>& args,
                             const std::string& input, int timeoutMs = 30000,
-                            const std::atomic<bool>* cancel = nullptr);
+                            const std::atomic<bool>* cancel = nullptr, const GitSpawn* spawn = nullptr);
 
 // Holds a read to the session's folder (see above): `folder` resolved or
 // not, `hidden` the tree's Show Hidden Files.

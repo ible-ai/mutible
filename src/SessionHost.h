@@ -117,6 +117,11 @@
 // over SSH) on a worker the same way, its answer git's status, standard
 // error and (as the bytes) standard output.
 //
+// A window's formatters (stage 9, SessionFormat.h, Welcome flag 1024):
+// FsRead's "format" plans a document's formatter on this machine and runs
+// it on a worker the same way, the text on its standard input, in the
+// file's folder; the answer's bytes are what it printed.
+//
 // A window's language servers (stage 9, SessionLsp.h, Welcome flag 512):
 // LspStart starts one for an app's window, found on this machine, in the
 // window's folder; its standard input and output are relayed as LspInput
@@ -466,6 +471,10 @@ private:
     // session's folder, its one answer with git's output as the bytes;
     // refused from a renderer that only reads and from a guest.
     void onGit(ClientId c, Message& m);
+    // A window's formatter (FsRead's "format", SessionFormat.h): planned
+    // and run on a worker in the session's folder, its one answer with the
+    // formatted text as the bytes; refused from a reader and a guest.
+    void onFormat(ClientId c, Message& m);
     // A page's Save As (DocSave with "saveAs"): the document's file named
     // anew, inside the session's folder, written, and its path changed.
     void onSaveAs(ClientId c, Message& m);

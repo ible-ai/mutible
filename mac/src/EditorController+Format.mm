@@ -2,6 +2,7 @@
 #import "EditorController+Private.h"
 #import "EditorFont.h"
 #import "EditorController+FormatIvars.h"
+#import "RemoteWorkspace.h"
 
 @implementation EditorController (Format)
 
@@ -62,8 +63,7 @@
     NSUInteger generation = ++_formatGeneration;
     __weak EditorController *weakSelf = self;
     __weak MCTab *weakTab = tab;
-    MCFormatText(original, path, self.rootPath, first, last, projectOnly, 10,
-                 ^(MCFormatResult *r) {
+    void (^formatted)(MCFormatResult *) = ^(MCFormatResult *r) {
         EditorController *s = weakSelf;
         // Another format started, or the window closed, or another tab is
         // on show (which saved this one as it left, if a save waited).
@@ -96,7 +96,27 @@
                             error:NO];
         }
         if (then) then();
-    });
+    };
+    // A window over SSH: the file is the other machine's, and so are its
+    // formatter, its configuration and its folder's own programs; its host
+    // plans and runs it there (SessionFormat.h, docs/notes/formatting.md,
+    // "Over SSH").
+    if (MCRemoteWorkspace *ws = [self remoteWorkspace]) {
+        const std::string lang = Formatter::languageFor(Utf8String(path));
+        NSString *setting =
+            lang.empty() ? @"" : (@([AppSettings shared].settings.formatCommand(lang).c_str()) ?: @"");
+        [ws formatText:original
+                  path:path
+               setting:setting
+               consent:MCFolderToolsConsent([self folderToolsKey])
+             firstLine:first
+              lastLine:last
+           projectOnly:projectOnly
+               timeout:10
+                  done:formatted];
+        return;
+    }
+    MCFormatText(original, path, self.rootPath, first, last, projectOnly, 10, formatted);
 }
 
 // The formatter to run is the folder's own (its .venv or node_modules), and
@@ -137,7 +157,8 @@
     [a addButtonWithTitle:@"Don't Allow"];
     [a addButtonWithTitle:@"Cancel"];
     MCTab *tab = _activeTab;
-    NSString *root = self.rootPath;
+    // Over SSH, kept for that machine's folder (folderToolsKey).
+    NSString *root = [self folderToolsKey];
     __weak EditorController *weakSelf = self;
     [a beginSheetModalForWindow:self.window completionHandler:^(NSModalResponse answer) {
         EditorController *s = weakSelf;
@@ -289,6 +310,9 @@
 // (FormatOnSave.h decides, and shows the bar at most once a launch).
 - (void)offerFormatOnSaveAfterSaving {
     if (![self canFormatSource]) return;
+    // Over SSH the project's configuration is the other machine's, which
+    // the offer would look for on this Mac's disk: no offer there.
+    if ([self remoteWorkspace]) return;
     if (!_formatOnSaveOffer) {
         __weak EditorController *weakSelf = self;
         _formatOnSaveOffer = [[MCFormatOnSaveOffer alloc]

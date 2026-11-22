@@ -423,6 +423,7 @@ struct SyncPlan {
     std::string busyText;    // "Pulling from origin/main…", while it runs
     std::string doneText;    // "Pulled from origin/main.", when all went well
     bool fetches = false;    // it fetches (Fetch, Pull, Sync): autofetch may wait
+    std::string remote;      // the remote it talks to ("origin"), for what is said
 };
 SyncPlan syncPlan(SyncOp op, const Snapshot& s);
 
@@ -446,6 +447,15 @@ std::string syncButtonToolTip(const Snapshot& s);
 // has (a libsecret credential helper, plain ssh-add).
 std::string networkFailureText(int status, const std::string& out, const std::string& err,
                                bool forLinux = false);
+// Whether a failed push, pull or fetch wanted a password, a token, an ssh
+// key or a host key it could not ask for (what networkFailureText adds its
+// line for). A window over SSH says so in its own words
+// (SessionGit.h's gitCredentialsText).
+bool needsCredentials(const std::string& out, const std::string& err);
+// The line of git's output that says so ("git@host: Permission denied
+// (publickey).", "fatal: could not read Username ...: terminal prompts
+// disabled"), standard error's first; "" when none does.
+std::string credentialsLine(const std::string& out, const std::string& err);
 
 // ------------------------------------------------------------ autofetch
 // git.autofetch, as VS Code's: the folder's repository is fetched in the

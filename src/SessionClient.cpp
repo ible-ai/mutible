@@ -1065,6 +1065,21 @@ std::uint64_t Client::requestGit(std::uint64_t window, Json request, std::string
     return req;
 }
 
+std::uint64_t Client::requestFormat(std::uint64_t window, Json request, std::string text) {
+    if (!hostFormats()) return 0;
+    Message m;
+    m.kind = Kind::FsRead;
+    m.window = window;
+    m.json = std::move(request);
+    m.json.set("op", Json("format"));
+    m.bytes = std::move(text);
+    m.req = ++nextReq_;
+    const std::uint64_t req = m.req;
+    queue(std::move(m));   // behind this renderer's edits and saves
+    pump();
+    return req;
+}
+
 bool Client::readAnswer(std::uint64_t req, Json* out, std::string* bytes) {
     auto it = replies_.find(req);
     if (it == replies_.end() || it->second.kind != Kind::FsData) return false;

@@ -472,6 +472,23 @@ bool fromNodeModules(const std::string& program) {
     return name == "prettier" || name == "biome";
 }
 
+const std::vector<std::string>& knownPrograms() {
+    static const std::vector<std::string> names = [] {
+        std::vector<std::string> out;
+        for (const Language& l : table())
+            for (const Tool& t : l.tools)
+                if (std::find(out.begin(), out.end(), t.program) == out.end()) out.push_back(t.program);
+        std::sort(out.begin(), out.end());
+        return out;
+    }();
+    return names;
+}
+
+bool isKnownProgram(const std::string& name) {
+    const std::vector<std::string>& k = knownPrograms();
+    return std::binary_search(k.begin(), k.end(), name);
+}
+
 bool insideFolder(const std::string& path, const std::string& root) {
     if (root.empty() || path.empty() || path[0] != '/' || root[0] != '/') return false;
     std::string r = root;

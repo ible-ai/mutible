@@ -2,6 +2,7 @@
 #include "SessionHost.h"
 
 #include "SessionFiles.h"
+#include "SessionFormat.h"
 #include "SessionGit.h"
 
 #include <algorithm>
@@ -24,6 +25,10 @@
 #endif
 
 namespace Shared {
+
+namespace {
+std::vector<std::string> processEnvironment();   // below, with the language servers
+}  // namespace
 
 // ---------------------------------------------------------------- Host
 
@@ -305,6 +310,7 @@ void Host::onRead(ClientId c, Message& m) {
     }
     if (op == "replace") return onReplace(c, m);
     if (op == "git") return onGit(c, m);
+    if (op == "format") return onFormat(c, m);
     if (isFileOp(op)) return onFileOp(c, m);
     if (isWorkerRead(op)) {
         // Quick Open's list and Find in Folder, on a worker: answered as it
@@ -414,6 +420,9 @@ void Host::onHello(ClientId c, Message& m) {
     w.flag |= kHostRunsGit;
     // And runs language servers for an app's window (LspStart, SessionLsp.h).
     w.flag |= kHostRunsServers;
+    // And runs formatters for an app's window (FsRead's "format",
+    // SessionFormat.h).
+    w.flag |= kHostFormats;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));
@@ -1676,11 +1685,50 @@ void Host::onGit(ClientId c, Message& m) {
     std::string why;
     Json request = m.json;
     std::string input = std::move(m.bytes);
+    // Fetch, pull and push start from this machine's own environment (its
+    // login shell's, as a terminal and a language server get), where the
+    // user's ssh agent and GIT_SSH_COMMAND are.
+    std::vector<std::string> env = ownEnv_;
     const bool started = workers_->startTask(
         c, m.req, m.window,
-        [root, request = std::move(request), input = std::move(input)](std::atomic<bool>& cancel, Json* json,
-                                                                       std::string* bytes) {
-            GitAnswer a = runGitRequest(root, request, input, &cancel);
+        [root, request = std::move(request), input = std::move(input), env = std::move(env)](
+            std::atomic<bool>& cancel, Json* json, std::string* bytes) {
+            GitAnswer a = runGitRequest(root, request, input, &cancel, env.empty() ? nullptr : &env);
+            *json = std::move(a.json);
+            *bytes = std::move(a.out);
+        },
+        &why, kMaxGitJobs);
+    if (!started) refuse(why, "busy");
+}
+
+void Host::onFormat(ClientId c, Message& m) {
+    auto refuse = [&](const std::string& why, const char* reason) {
+        Message r;
+        r.kind = Kind::FsData;
+        r.req = m.req;
+        r.window = m.window;
+        r.json = formatRefused(why, reason).json;
+        send(c, std::move(r));
+    };
+    // It runs a program of this machine's: an app's window only.
+    auto who = renderers_.find(c);
+    if (who == renderers_.end() || who->second.readOnly || who->second.guest)
+        return refuse("Only an app's window runs a formatter on the host.", "readonly");
+    const std::string root = readRoot(m.window);
+    if (root.empty()) return refuse("There is no folder to format in.", "outside");
+    if (!workers_) workers_ = std::make_unique<ReadWorkers>();
+    std::string why;
+    Json request = m.json;
+    std::string input = std::move(m.bytes);
+    // The formatter is found and run as a terminal's command would be:
+    // this machine's own environment (its login shell's, else this
+    // process's).
+    std::vector<std::string> env = ownEnv_.empty() ? processEnvironment() : ownEnv_;
+    const bool started = workers_->startTask(
+        c, m.req, m.window,
+        [root, request = std::move(request), input = std::move(input), env = std::move(env)](
+            std::atomic<bool>& cancel, Json* json, std::string* bytes) {
+            FormatAnswer a = runFormatRequest(root, request, input, env, &cancel);
             *json = std::move(a.json);
             *bytes = std::move(a.out);
         },

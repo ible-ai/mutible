@@ -129,6 +129,12 @@ std::vector<std::string> venvBinDirs(const std::string& path, const std::string&
 std::vector<std::string> nodeBinDirs(const std::string& path, const std::string& root);
 // Is this a formatter a project installs in node_modules ("prettier", "biome")?
 bool fromNodeModules(const std::string& program);
+// Every formatter the table names, by program name ("black", "biome",
+// "clang-format", "gofmt", "latexindent", "prettier", "pyink", "ruff",
+// "rustfmt", "shfmt", "yapf"), sorted: what a host runs for a window over
+// SSH (SessionFormat.h), whatever the window's settings say.
+const std::vector<std::string>& knownPrograms();
+bool isKnownProgram(const std::string& name);
 
 // Is `path` inside the folder `root` (or the folder itself)? Both spelled
 // the same way (resolved by the caller); "/" holds everything, "" nothing.

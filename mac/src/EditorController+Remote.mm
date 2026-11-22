@@ -100,6 +100,12 @@ static char kRemoteWorkspaceKey;
     return [self remoteWorkspace].gitRunner;
 }
 
+- (NSString *)folderToolsKey {
+    MCSessionLinkRef *link = [self sessionRemoteLink];
+    if ([self sessionIsRemote] && link.link) return @(link.link->key().c_str());
+    return self.rootPath;
+}
+
 // Reconnect: the new host lists the tree again (what changed there while
 // the connection was gone shows) and watches what it has open.
 - (void)remoteWorkspaceMovedToLink {

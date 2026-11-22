@@ -303,6 +303,7 @@ Decision decide(const std::string& path, const std::string& root, const std::str
     }
     if (!chosen) {
         result.kind = Kind::Failed;
+        result.missing = true;
         std::vector<std::string> programs;
         for (const Formatter::Candidate& c : plan.candidates)
             programs.push_back(Formatter::programName(c.program));

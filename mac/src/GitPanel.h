@@ -160,7 +160,8 @@ extern NSNotificationName const MCGitPanelDidRefreshNotification;
 
 // A window over SSH: git runs through `runner` (MCGitSetQueueRunner on the
 // panel's queue), `host` its "host:path" for what is said. Fetch, pull,
-// push and autofetch say they do not work over SSH yet; Discard keeps the
+// push, Sync and autofetch run there too, with that machine's credentials
+// (a missing one said as such, Shared::gitCredentialsText); Discard keeps the
 // changed copy as a git object there (GitUi::discardPlanOverSsh), since
 // that machine has no Trash, and offers no Undo Discard; the Review
 // Changes row is hidden (the review reads the work tree from this Mac's

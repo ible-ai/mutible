@@ -106,7 +106,11 @@ goes here first, with tests; the GUI only displays it.
   over SSH's language servers, started by its host there from the
   window's commands (`planServer`, `ServerProcess`), their JSON-RPC relayed
   as LspInput and LspOutput, files changed there as LspFiles
-  (`FolderStamps`), Welcome flag 512; `hostlsp:*`), `DiskWatch`
+  (`FolderStamps`), Welcome flag 512; `hostlsp:*`), `SessionFormat`
+  (stage 9's third slice: FsRead's "format", a window over SSH's
+  formatter planned by its host there with FormatRun and run on a worker
+  in the file's folder (`runProgram`), held to the formatter table,
+  Welcome flag 1024; `hostformat:*`), `DiskWatch`
   (stage 7's watching: the core's one platform interface for the disk's
   notices, inotify on Linux and FSEvents on the Mac, each on a thread or
   queue of its own behind a pipe the host polls, with the pure `Filter`,

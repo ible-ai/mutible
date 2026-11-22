@@ -31,6 +31,7 @@
 #import "GitPanel.h"
 
 @class MCSessionLinkRef;
+@class MCFormatResult;
 
 @interface MCRemoteWorkspace : NSObject <MCTreeSource>
 - (instancetype)initWithFolder:(NSString *)folder;
@@ -85,12 +86,32 @@
 // such a queue, it asks the host on the main queue (Link::git) and waits
 // for the answer there, never on the main thread; with a host too old for
 // it, or the connection lost, its result is status -1 with the sentence
-// saying so (Shared::gitTooOldText, gitLostText), and fetch, pull and push
-// are not sent (gitRemoteOpText).
+// saying so (Shared::gitTooOldText, gitLostText). Fetch, pull and push
+// (stage 9's third slice) go the same way: the host runs them with that
+// machine's own credentials and never a prompt (SessionGit.h).
 @property(nonatomic, readonly) MCGitRunner gitRunner;
 // The host said Source Control may have changed (FsChanged's "git": a
 // write in the folder, or in .git's index, HEAD or refs).
 @property(nonatomic, copy) void (^onGitChanged)(void);
+
+// Format Document for the window (stage 9, Welcome flag 1024,
+// SessionFormat.h): `text`, the tab's text at `path` (the remote's), sent
+// to the host, which plans the formatter on its own disk with `setting`
+// (format.<lang>) and `consent` (the folder's answer, kept per host and
+// folder), runs it there in the file's folder, and answers. `done` once,
+// on the main thread, with the result as MCFormatText gives one: the text,
+// or the note (a host too old, the connection lost, a formatter missing
+// there named with the host and no install commands, the folder's own
+// program waiting for an answer: needsConsent).
+- (void)formatText:(NSString *)text
+              path:(NSString *)path
+           setting:(NSString *)setting
+           consent:(NSString *)consent
+         firstLine:(NSInteger)firstLine
+          lastLine:(NSInteger)lastLine
+       projectOnly:(BOOL)projectOnly
+           timeout:(NSTimeInterval)timeout
+              done:(void (^)(MCFormatResult *result))done;
 
 // Files opened here that are not on the host yet: shown empty, made by
 // their first save.
@@ -103,4 +124,6 @@
 // git commands the host ran for the window, and its notices that git may
 // have changed.
 @property(nonatomic, readonly) NSUInteger gitRuns, gitNotices;
+// Formats the host was asked for.
+@property(nonatomic, readonly) NSUInteger formats;
 @end

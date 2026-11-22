@@ -98,7 +98,13 @@
 //     Commit, checked with git on the stand-in's disk; a change made there
 //     listed by the host's notice; a new file's discard refused; b.txt's
 //     Discard keeping its changed copy as a git object that git cat-file
-//     shows there; Fetch refused with nothing sent.
+//     shows there. Fetch, pull and push there (stage 9's third slice), a
+//     bare repository on the stand-in's disk as its origin: Push publishes
+//     main (origin has the commit, main tracks it), another clone's commit
+//     comes by Fetch (origin/main) and Pull (the work tree), each run by
+//     the host; an origin whose ssh (core.sshCommand, a script) refuses the
+//     key fails at once with "origin needs credentials set up on ..." and
+//     the line that says why.
 //   - Language servers over SSH (stage 9, Welcome flag 512): a window on a
 //     folder of its own there, its lsp.fakelang the scripted server
 //     (build/fakelsp, .fk files), which its host starts there (its parent
@@ -108,6 +114,14 @@
 //     host at the server's range, a file made there reaches the server's
 //     watchers by the host's disk notice (no FSEvents stream here), and the
 //     server ends when the window closes.
+//   - Formatters over SSH (stage 9's third slice, Welcome flag 1024): a
+//     window on a folder of its own there, its format.shell a scripted
+//     shfmt named by its path. Format Document changes the tab's text
+//     through the host (the window's count of formats), the formatter run
+//     in the file's folder there and in the host's environment (the
+//     stand-in's variable), with format.shell's arguments; format on save
+//     formats there and the host saves; a format.shell naming a program
+//     outside the formatter table is refused by the host, nothing run.
 //   - The connection drops (the stand-in's process group killed: the relay
 //     only), with the stand-in refusing to connect for a while: the window
 //     says it is reconnecting (its title, no Reconnect button), the text
@@ -200,6 +214,12 @@ NSString *gGitFolder;            // a repository there, with a window of its own
 EditorController *gGitC;
 NSUInteger gGitRunsBefore, gGitNoticesBefore;
 NSString *gKeptObject;           // the object Discard kept b.txt's changed copy as
+NSString *gGitOrigin, *gGitOther;    // a bare repository there as its origin, and another clone of it
+NSString *gLockedSsh, *gLockedSeen;  // an ssh that refuses the key, and its record that it ran
+double gSyncAt;                      // when a fetch was asked for
+NSString *gFmtFolder, *gFmtMark;     // a folder there whose formatter its host runs, and the formatter's record
+EditorController *gFmtC;
+NSUInteger gFormatsBefore;
 NSString *gLspFolder;            // a folder there whose window's server its host runs
 EditorController *gLspC;
 pid_t gLspServer;                // that server's pid (the stand-in's machine's)
@@ -1727,12 +1747,95 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(st == 0);
         GCHECK_EQ_STR(out, @"bee two\n");
     });
-    MCGuiStep(@"Fetch says it does not work over SSH yet", ^{
+    // ---- fetch, pull and push over SSH (stage 9's third slice): the host
+    // runs them there, with that machine's credentials and never a prompt.
+    // The remote's origin is a bare repository on the stand-in's disk.
+    GitThere(@"an origin there: a bare repository beside it", ^NSString * {
+        gGitOrigin = [MCGuiScratch() stringByAppendingPathComponent:@"remote-git-origin.git"];
+        gGitOther = [MCGuiScratch() stringByAppendingPathComponent:@"remote-git-other"];
+        return [NSString stringWithFormat:@"git init -q --bare -b main '%@' && git remote add origin '%@'", gGitOrigin,
+                                          gGitOrigin];
+    }, ^(int st, NSString *) { GCHECK(st == 0); });
+    MCGuiStep(@"Push publishes main to origin, through the host", ^{
+        if (!gGit) return;
+        gGitRunsBefore = GitRuns(gGitC);
+        [GitOf(gGitC) push];
+    });
+    MCGuiWait(@"pushed", 60, ^BOOL { return !gGit || [GitOf(gGitC).lastSync isEqualToString:@"push ok"]; });
+    MCGuiStep(@"the push ran on the host", ^{
+        if (!gGit) return;
+        GCHECK(GitRuns(gGitC) > gGitRunsBefore);
+        MCGuiNote(@"said: %@", GitOf(gGitC).errorLine);
+    });
+    GitThere(@"origin there has the commit, and main tracks it", ^NSString * {
+        return [NSString stringWithFormat:@"git --git-dir='%@' log -1 --format=%%s main && git rev-parse --abbrev-ref "
+                                          @"main@{upstream}",
+                                          gGitOrigin];
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"second, over ssh\norigin/main\n");
+    });
+    GitThere(@"someone else pushes a commit to origin", ^NSString * {
+        return [NSString stringWithFormat:@"git clone -q '%@' '%@' && cd '%@' && echo other > c.txt && git add c.txt && "
+                                          @"git commit -qm 'from elsewhere' && git push -q",
+                                          gGitOrigin, gGitOther, gGitOther];
+    }, ^(int st, NSString *) { GCHECK(st == 0); });
+    MCGuiStep(@"Fetch, through the host", ^{
         if (!gGit) return;
         gGitRunsBefore = GitRuns(gGitC);
         [GitOf(gGitC) fetch];
-        GCHECK([GitOf(gGitC).errorLine containsString:@"do not work in a window over SSH yet"]);
-        GCHECK(GitRuns(gGitC) == gGitRunsBefore);
+    });
+    MCGuiWait(@"fetched", 60, ^BOOL { return !gGit || [GitOf(gGitC).lastSync isEqualToString:@"fetch ok"]; });
+    GitThere(@"origin/main there has the other commit, main not yet", ^NSString * {
+        return @"git log -1 --format=%s origin/main && git log -1 --format=%s main";
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"from elsewhere\nsecond, over ssh\n");
+    });
+    MCGuiStep(@"Pull, through the host", ^{
+        if (!gGit) return;
+        GCHECK(GitRuns(gGitC) > gGitRunsBefore);
+        [GitOf(gGitC) pull];
+    });
+    MCGuiWait(@"pulled", 60, ^BOOL { return !gGit || [GitOf(gGitC).lastSync isEqualToString:@"pull ok"]; });
+    GitThere(@"the other commit is in the work tree there", ^NSString * {
+        return @"git log -1 --format=%s && cat c.txt";
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"from elsewhere\nother\n");
+    });
+    // An origin that needs a key that machine cannot use: its ssh (the
+    // repository's core.sshCommand, a script that answers as a server
+    // refusing the key would) fails, and the panel says plainly what to
+    // set up there, at once rather than hanging on a prompt.
+    GitThere(@"origin now needs credentials there", ^NSString * {
+        gLockedSsh = [MCGuiScratch() stringByAppendingPathComponent:@"locked-ssh"];
+        gLockedSeen = [MCGuiScratch() stringByAppendingPathComponent:@"locked-ssh-seen.txt"];
+        MCGuiWriteFile(gLockedSsh, [NSString stringWithFormat:@"#!/bin/sh\necho ran > '%@'\n"
+                                                              @"echo 'git@locked.invalid: Permission denied (publickey).' >&2\n"
+                                                              @"exit 255\n",
+                                                              gLockedSeen]);
+        chmod(gLockedSsh.fileSystemRepresentation, 0755);
+        return [NSString stringWithFormat:@"git remote set-url origin git@locked.invalid:x.git && "
+                                          @"git config core.sshCommand '%@'",
+                                          gLockedSsh];
+    }, ^(int st, NSString *) { GCHECK(st == 0); });
+    MCGuiStep(@"Fetch, with no credentials there", ^{
+        if (!gGit) return;
+        gSyncAt = MCGuiNowMs();
+        [GitOf(gGitC) fetch];
+    });
+    MCGuiWait(@"failed", 60, ^BOOL { return !gGit || [GitOf(gGitC).lastSync isEqualToString:@"fetch failed"]; });
+    MCGuiStep(@"said plainly, with the line that says why, at once", ^{
+        if (!gGit) return;
+        NSString *line = GitOf(gGitC).errorLine;
+        MCGuiNote(@"said: %@ (after %.0f ms)", line, MCGuiNowMs() - gSyncAt);
+        GCHECK([line hasPrefix:@"origin needs credentials set up on "]);
+        GCHECK([line containsString:@"never asks for a password"]);
+        GCHECK([line containsString:@"\ngit: git@locked.invalid: Permission denied (publickey)."]);
+        GCHECK([Read(gLockedSeen) isEqualToString:@"ran\n"]);
+        GCHECK(!GitOf(gGitC).syncing);
+        GCHECK(MCGuiNowMs() - gSyncAt < 30000);
     });
     MCGuiStep(@"its window closes", ^{
         if (!gGit) return;
@@ -1880,6 +1983,111 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiWait(@"its server ended with it, there", 15, ^BOOL { return gLspServer <= 0 || Gone(gLspServer); });
     MCGuiStep(@"language servers off again", ^{ MCGuiSetSettings(@"lsp.enabled = false\n"); });
+    // ---- formatters over SSH (stage 9's third slice, Welcome flag 1024):
+    // a window on a folder of its own there, whose format.shell names a
+    // scripted shfmt (one of the formatter table's programs) by its path.
+    // The stand-in's disk is this Mac's, so what proves the host ran it is
+    // the window's count of formats asked of the host and the variable the
+    // stand-in exports, which only the host's environment has.
+    MCGuiStep(@"formatters over SSH: a folder there, and a scripted formatter", ^{
+        NSString *made = [MCGuiScratch() stringByAppendingPathComponent:@"remote-fmt"];
+        [NSFileManager.defaultManager createDirectoryAtPath:[made stringByAppendingPathComponent:@"scripts"]
+                                withIntermediateDirectories:YES attributes:nil error:nil];
+        gFmtFolder = RealPath(made);
+        MCGuiWriteFile([gFmtFolder stringByAppendingPathComponent:@"scripts/run.sh"], @"echo hello\n");
+        NSString *bin = [MCGuiScratch() stringByAppendingPathComponent:@"fmt-bin"];
+        [NSFileManager.defaultManager createDirectoryAtPath:bin withIntermediateDirectories:YES attributes:nil error:nil];
+        NSString *fmt = [bin stringByAppendingPathComponent:@"shfmt"];
+        gFmtMark = [MCGuiScratch() stringByAppendingPathComponent:@"fmt-seen.txt"];
+        // It uppercases, and says where it ran, in whose environment, with what.
+        MCGuiWriteFile(fmt, [NSString stringWithFormat:@"#!/bin/sh\n"
+                                                       @"{ pwd -P; echo \"standin=$SSH_STANDIN\"; printf '%%s\\n' \"$@\"; } > '%@'\n"
+                                                       @"tr a-z A-Z\n",
+                                                       gFmtMark]);
+        chmod(fmt.fileSystemRepresentation, 0755);
+        MCGuiSetSettings([NSString stringWithFormat:@"lsp.enabled = false\nformat.shell = %@ -i 2\n", fmt]);
+        // The folder's window first, then the file a folder down in it.
+        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"ssh://standin%@", gFmtFolder]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+    });
+    MCGuiWait(@"connected", 20, ^BOOL { return MCRemoteConnect.pending.count == 0 && RemoteWindowOn(gFmtFolder); });
+    MCGuiStep(@"scripts/run.sh in it", ^{
+        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"ssh://standin%@/scripts/run.sh", gFmtFolder]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+    });
+    MCGuiWait(@"open, through its host", 20, ^BOOL {
+        EditorController *c = RemoteWindowOn(gFmtFolder);
+        CodeTextView *tv = [c valueForKey:@"textView"];
+        return !c || ([c.currentPath isEqualToString:[gFmtFolder stringByAppendingPathComponent:@"scripts/run.sh"]] &&
+                      [tv.string isEqualToString:@"echo hello\n"]);
+    });
+    MCGuiStep(@"its host formats (flag 1024); Format Document", ^{
+        gFmtC = RemoteWindowOn(gFmtFolder);
+        GCHECK(gFmtC != nil);
+        if (!gFmtC) return;
+        GCHECK([gFmtC sessionRemoteLink].link->client().hostFormats());
+        GCHECK([gFmtC.currentPath isEqualToString:[gFmtFolder stringByAppendingPathComponent:@"scripts/run.sh"]]);
+        gFormatsBefore = [gFmtC remoteWorkspace].formats;
+        [gFmtC formatDocument:nil];
+    });
+    MCGuiWait(@"the document formatted, by the host", 20, ^BOOL {
+        if (!gFmtC) return YES;
+        CodeTextView *tv = [gFmtC valueForKey:@"textView"];
+        return [tv.string isEqualToString:@"ECHO HELLO\n"];
+    });
+    MCGuiStep(@"run there: in the file's folder, in the host's environment, as format.shell says", ^{
+        if (!gFmtC) return;
+        GCHECK([gFmtC remoteWorkspace].formats == gFormatsBefore + 1);
+        NSString *seen = Read(gFmtMark);
+        MCGuiNote(@"the formatter saw: %@", seen);
+        GCHECK_EQ_STR(seen, ([NSString stringWithFormat:@"%@/scripts\nstandin=yes\n-i\n2\n", gFmtFolder]));
+        // An edit of the tab's, unsaved: the file there is as it was.
+        NSString *file = [gFmtFolder stringByAppendingPathComponent:@"scripts/run.sh"];
+        GCHECK(TabFor(gFmtC, file).dirty);
+        GCHECK_EQ_STR(Read(file), @"echo hello\n");
+        // Format on save: Cmd+S formats there, then the host saves.
+        MCGuiSetSettings([NSString stringWithFormat:@"lsp.enabled = false\nformat.shell = %@ -i 2\nformat.on-save = true\n",
+                                                    [MCGuiScratch() stringByAppendingPathComponent:@"fmt-bin/shfmt"]]);
+        TypeAtEnd(gFmtC, @"echo bye\n");
+        [gFmtC saveCurrentFile:gFmtC];
+    });
+    MCGuiWait(@"formatted on save, and saved there", 20, ^BOOL {
+        if (!gFmtC) return YES;
+        NSString *file = [gFmtFolder stringByAppendingPathComponent:@"scripts/run.sh"];
+        return [Read(file) isEqualToString:@"ECHO HELLO\nECHO BYE\n"] && !TabFor(gFmtC, file).dirty;
+    });
+    MCGuiStep(@"by the host again; a setting naming another program is refused there", ^{
+        if (!gFmtC) return;
+        GCHECK([gFmtC remoteWorkspace].formats == gFormatsBefore + 2);
+        [NSFileManager.defaultManager removeItemAtPath:gFmtMark error:nil];
+        MCGuiSetSettings(@"lsp.enabled = false\nformat.shell = tr a-z A-Z\n");
+        TypeAtEnd(gFmtC, @"echo more\n");
+        [gFmtC formatDocument:nil];
+    });
+    MCGuiWait(@"the host's refusal, as a note", 20, ^BOOL {
+        return !gFmtC || [gFmtC.lastFormatNote containsString:@"does not run for a window"];
+    });
+    MCGuiStep(@"nothing ran, the text as typed", ^{
+        if (!gFmtC) return;
+        MCGuiNote(@"said: %@", gFmtC.lastFormatNote);
+        GCHECK([gFmtC.lastFormatNote hasPrefix:@"format.shell runs tr, which the other machine does not run"]);
+        GCHECK(![NSFileManager.defaultManager fileExistsAtPath:gFmtMark]);
+        CodeTextView *tv = [gFmtC valueForKey:@"textView"];
+        GCHECK_EQ_STR(tv.string, @"ECHO HELLO\nECHO BYE\necho more\n");
+        MCGuiSetSettings(@"lsp.enabled = false\n");
+        [gFmtC saveCurrentFile:nil];   // a save of mutible's own: nothing formats
+    });
+    MCGuiWait(@"saved there, as typed", 20, ^BOOL {
+        if (!gFmtC) return YES;
+        NSString *file = [gFmtFolder stringByAppendingPathComponent:@"scripts/run.sh"];
+        return [Read(file) isEqualToString:@"ECHO HELLO\nECHO BYE\necho more\n"] && !TabFor(gFmtC, file).dirty;
+    });
+    MCGuiStep(@"its window closes", ^{
+        if (!gFmtC) return;
+        [gFmtC.window performClose:nil];
+        gFmtC = nil;
+    });
+    MCGuiWait(@"gone", 10, ^BOOL { return RemoteWindowOn(gFmtFolder) == nil; });
     MCGuiStep(@"nothing left", ^{
         // The suite's own, by their recorded pids.
         if (gHostB > 0 && !Gone(gHostB)) kill(-gHostB, SIGKILL);
