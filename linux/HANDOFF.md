@@ -9487,3 +9487,9 @@ side's; two are fixed, one left alone on purpose.
   `onFiles`.
 - **Not done.** Real ssh never run; the Mac's Quick Look-only documents have
   no GTK viewer; video and audio named by a Markdown page do not play.
+
+### 161. The window over SSH, the remote shell's own integration (stage 8; November 2026)
+
+- **What.** A terminal in a window over SSH to a flag-128 host (core `src/HostIntegration.*`, the Mac's #350) now sends a nonce and `integration = {"zsh","bash"}` in `Terminal::spawnShell`'s remote branch (`remoteNonce_`); `HostListener::termIntegrated` sets `nonce_` and `bashShell_` from the shell name TermOpened gives, so the marks, exit status, busy tracking and held line are the local integrated shell's. An older host or a shell without it runs unmarked as before. `attachShell` no longer reads `/proc/<pid>/comm` for a remote pid.
+- **Checks.** remote_ssh: the remote bash's prompt marked, `sleep 2` busy with its text then idle at status 0, `false` status 1. zsh is not installed here, so not checked.
+- **Not done.** A held remote terminal (attached after a reconnect or from the session browser) stays unmarked; the Mac keeps the nonce by link and terminal id. Real ssh never run.

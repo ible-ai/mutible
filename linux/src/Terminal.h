@@ -354,6 +354,9 @@ private:
     int startedCols_ = 0;
     ShellIntegration::ShellState shell_;
     std::string finished_;   // finishedCommand()
+    // A remote shell's nonce, sent with TermSpec's integration and believed
+    // (nonce_ set) only once TermOpened names the shell that got it.
+    std::string remoteNonce_;
     std::string nonce_;   // this shell's, "" when it runs without the integration
     void spawnShell();
     void applyTheme();
@@ -375,6 +378,7 @@ private:
     // The host's side: what it sends about this terminal's shell.
     struct HostListener : Shared::Client::TermListener {
         Terminal* t = nullptr;
+        void termIntegrated(Shared::TermId id, const std::string& shell) override;
         void termOpened(Shared::TermId id, int pid) override;
         void termOutput(Shared::TermId id, const std::string& bytes, long long cursorLine, bool alt,
                         bool replay) override;

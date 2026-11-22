@@ -1312,6 +1312,42 @@ MC_GUI_SUITE(remote_ssh) {
                         "remote-yes-42 parent-mutible");
     });
 
+    // ---- the remote shell's own integration, set up by its host: the marks
+    // are believed like a local shell's. The login shell here is bash (zsh,
+    // where installed, would be the same through the same code); the stand-in
+    // runs this machine's binary, so the host finds the scripts beside it.
+    MCGuiWait("the remote shell's prompt is marked", 30, [] {
+        Terminal* t = remoteWindow().terminal;
+        return t && t->shellState().known && t->shellState().atPrompt && !t->shellState().busy;
+    });
+    MCGuiStep("marked: a prompt counted, no status yet needed; sleep 2 typed", [] {
+        Terminal* t = remoteWindow().terminal;
+        GCHECK(t && t->shellState().prompts >= 1 && t->shellState().started == t->shellState().done);
+        if (!t) return;
+        const std::string line = "sleep 2\n";
+        vte_terminal_feed_child(VTE_TERMINAL(t->vteWidget()), line.c_str(), (gssize)line.size());
+    });
+    MCGuiWait("busy with the command's text", 10, [] {
+        Terminal* t = remoteWindow().terminal;
+        return t && t->shellState().busy && t->shellState().command == "sleep 2" && t->busy();
+    });
+    MCGuiWait("idle again at the prompt, status 0", 15, [] {
+        Terminal* t = remoteWindow().terminal;
+        return t && t->shellState().atPrompt && !t->shellState().busy && t->shellState().status == 0 &&
+               t->shellState().command.empty();
+    });
+    MCGuiStep("false typed", [] {
+        Terminal* t = remoteWindow().terminal;
+        GCHECK(t != nullptr);
+        if (!t) return;
+        const std::string line = "false\n";
+        vte_terminal_feed_child(VTE_TERMINAL(t->vteWidget()), line.c_str(), (gssize)line.size());
+    });
+    MCGuiWait("the exit status 1 is seen", 10, [] {
+        Terminal* t = remoteWindow().terminal;
+        return t && t->shellState().atPrompt && t->shellState().status == 1;
+    });
+
     // ---- the lasting host: which process holds the shell
     MCGuiStep("the shell's ids", [] { gSent = 0; });
     MCGuiWait("the shell's pid and its parent's, the lasting host", 40, [] {

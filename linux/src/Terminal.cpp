@@ -656,7 +656,7 @@ void Terminal::attachShell() {
         return;
     }
     std::string comm;
-    {
+    if (link_->kind() != SessionLink::Link::Kind::Remote) {   // a remote pid is no process here
         gchar* raw = nullptr;
         const std::string file = "/proc/" + std::to_string(heldPid_) + "/comm";
         if (g_file_get_contents(file.c_str(), &raw, nullptr, nullptr)) comm = raw;
@@ -1706,6 +1706,15 @@ void Terminal::startAgain() {
 
 // ---- the host's side of the terminal (SessionLink's client, on the main loop)
 
+// The remote's host set up its shell's integration (said before termOpened):
+// the marks it reads are believed, and bash has the bash script's marks.
+void Terminal::HostListener::termIntegrated(Shared::TermId id, const std::string& shell) {
+    if (id != t->hostTerm_ || t->remoteNonce_.empty()) return;
+    if (shell != "zsh" && shell != "bash") return;
+    t->nonce_ = t->remoteNonce_;
+    t->bashShell_ = shell == "bash";
+}
+
 void Terminal::HostListener::termOpened(Shared::TermId id, int pid) {
     if (id != t->hostTerm_) return;
     t->shellPid_ = pid;   // for its directory, the processes, busy()
@@ -2099,8 +2108,11 @@ void Terminal::spawnShell() {
         // A window over SSH (stage 8): the remote host's own login shell and
         // environment (TermSpec's hostShell), where this machine's PATH,
         // ZDOTDIR and helpers name nothing. Only what the screen here needs
-        // goes over it, and no integration's marks: its script is a file of
-        // this machine's.
+        // goes over it. The integration is the remote's own: its host sets
+        // up its installed copy of the scripts (Welcome flag 128) with this
+        // nonce, for a login zsh or bash 4.4 or later, and says in TermOpened
+        // which (termIntegrated). Until it does, and for an older host, the
+        // shell runs unmarked.
         spec.program.clear();
         spec.argv.clear();
         spec.env = {"TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Mutible"};
@@ -2108,6 +2120,13 @@ void Terminal::spawnShell() {
         spec.nonce.clear();
         nonce_.clear();
         bashShell_ = false;
+        remoteNonce_.clear();
+        unsigned char rawNonce[16];
+        if (link_->client().hostIntegrates() && getrandom(rawNonce, sizeof rawNonce, 0) == (ssize_t)sizeof rawNonce) {
+            remoteNonce_ = ShellIntegration::nonceHex(rawNonce, sizeof rawNonce);
+            spec.nonce = remoteNonce_;
+            spec.integration = {"zsh", "bash"};
+        }
     }
     hostTerm_ = link_->client().newId();   // from the client's range on the host
     sentCols_ = spec.cols;
