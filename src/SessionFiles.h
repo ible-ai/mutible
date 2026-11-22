@@ -112,6 +112,38 @@ struct NewPath {
 };
 NewPath newFilePath(const std::string& root, const std::string& rel, bool hidden);
 
+// ---- the tree's file operations (FsRead's "rename", "move", "delete",
+// "newFile" and "newFolder"; the host's onFileOp, SessionHost.h)
+// Every path is `rel`, '/'-separated from the folder, never "" (the folder
+// itself is not renamed, moved or deleted). The request (FsRead's json):
+//   {"op": "rename", "path": rel, "name": the new name in the same folder}
+//   {"op": "move", "path": rel, "to": the folder it goes into ("" the folder)}
+//   {"op": "delete", "path": rel, "permanent": true}
+//   {"op": "newFile" | "newFolder", "path": rel of the new one}
+// Each is refused (answer {"op", "path", "error", "reason"}, nothing
+// changed) for a path that is not one of the folder's (an absolute one, a
+// ".." or "." or empty name, a NUL), a folder that leads out of the folder by
+// its real place (a link out), a source that is not there, a target there
+// already (nothing is ever replaced), a name that is empty, "." or "..",
+// holds '/' or NUL or is over 255 bytes, a folder moved into itself, and a
+// delete not asked "permanent": the core has no Trash, so a renderer that
+// has none either must say it means it. A symlink as the last name is itself
+// renamed, moved or deleted, never what it points at. "reason": "path",
+// "outside", "missing", "exists", "name", "into-itself", "notrash", "failed".
+// Success answers {"op", "path", "to" (the new path from the folder, for a
+// rename or move), "dir", "ok": true}.
+struct FileOp {
+    bool ok = false;
+    std::string reason, why;
+    std::string from, to;     // absolute, spelled under `root`; `to` for rename and move
+    std::string toRel;
+    bool dir = false;         // the source (or the new one) is a folder
+    bool created = false;     // newFile or newFolder
+    bool removed = false;     // delete
+};
+bool isFileOp(const std::string& op);
+FileOp doFileOp(const std::string& root, const Json& request);
+
 // ---- saving (the host's DocSave; SessionHost.h)
 struct SaveAsk {
     std::string path;           // the document's file, absolute ("" for none yet)

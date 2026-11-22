@@ -420,6 +420,12 @@ private:
     // Replace in Folder from a page (FsRead's "replace", SessionSearch.h):
     // the documents the host holds edited here, the other files on a worker.
     void onReplace(ClientId c, Message& m);
+    // A tree's file operation (FsRead's "rename", "move", "delete", "newFile",
+    // "newFolder", SessionFiles.h's doFileOp): done in the session's folder,
+    // the documents under a moved path following it (DocDirty flag 2 with
+    // {path, from, moved: true} to every renderer that hears DocDirty), those
+    // under a deleted one marked gone as a file deleted on disk is.
+    void onFileOp(ClientId c, Message& m);
     // A page's Save As (DocSave with "saveAs"): the document's file named
     // anew, inside the session's folder, written, and its path changed.
     void onSaveAs(ClientId c, Message& m);

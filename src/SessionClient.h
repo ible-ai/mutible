@@ -295,6 +295,15 @@ public:
     // Save As (requestSaveAs), a new untitled document (openUntitled), and
     // Replace in Folder (requestReplace).
     bool hostWritesForPages() const { return (hostFlags_ & 16) != 0; }
+    // Whether the host does a tree's file operations (requestFileOp).
+    bool hostDoesFileOps() const { return (hostFlags_ & 64) != 0; }
+    // A tree's file operation on the host (SessionFiles.h's doFileOp, FsRead's
+    // "rename", "move", "delete", "newFile", "newFolder"; `request` is the op's
+    // json). 0 when the host does not (hostDoesFileOps: an older one would
+    // answer an error, but say so first). Queued behind this renderer's edits;
+    // answered by readAnswer(req, &json) as any read, {"ok": true, ...} or
+    // {"error", "reason"}.
+    std::uint64_t requestFileOp(std::uint64_t window, Json request);
     // A guest's Save As: the document written to `rel` ('/'-separated from
     // `window`'s folder, which it must be held inside: SessionFiles.h's
     // newFilePath, with dotfiles only when `hidden`), after every edit this
