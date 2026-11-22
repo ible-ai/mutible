@@ -1668,7 +1668,7 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK_EQ_STR(readFile(gFolder + "/src/util.c"), "int util() { return 1; }  /* needle two */\n");
         remoteWindow().search->setHostReplace([ws = remoteWindow().remoteWs](Json request, SearchPanel::HostBatch batch) {
             return ws->replace(std::move(request), std::move(batch));
-        });
+        }, [ws = remoteWindow().remoteWs] { return ws->hostReplacesOne(); });
         if (Document* u = tabOf(gFolder + "/src/util.c")) remoteWindow().editor->closeTab(u);
         MCGuiWriteFile(gFolder + "/src/fresh.c", "needle held\n");
         MCGuiSetKeyWindow(nullptr);
@@ -1777,6 +1777,89 @@ MC_GUI_SUITE(remote_ssh) {
         remoteWindow().editor->openFile(gFile);   // notes.txt for what follows
     });
     MCGuiWait("notes.txt shown again", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
+
+    // ---- Preserve Case and Replace This Match through the host (Welcome flag
+    // 2048): a closed file whose line holds three matches in three cases. One
+    // match of the row changes alone, in the case of what it replaces; Replace
+    // All then does the rest of the line, each in its own case. A host without
+    // the flag refuses both, with a note.
+    MCGuiStep("case.c, closed, three matches on one line; Find in Folder", [] {
+        MCGuiWriteFile(gFolder + "/src/case.c", "Zorp zorp ZORP\n");
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+shift+f");
+    });
+    MCGuiWait("the panel's entry on screen", 10, [] {
+        SearchPanel* p = remoteWindow().search;
+        return p && MCGuiOnScreen(p->queryEntry());
+    });
+    MCGuiStep("the replace row", [] { remoteWindow().search->showReplace(); });
+    MCGuiWait("its entry on screen", 10, [] { return MCGuiOnScreen(remoteWindow().search->replaceEntry()); });
+    MCGuiStep("searched for zorp, replaced by quux", [] {
+        SearchPanel* p = remoteWindow().search;
+        MCGuiSetKeyWindow(GTK_WINDOW(p->window()));
+        MCGuiClick(p->queryEntry());
+        MCGuiKey("ctrl+a");
+        MCGuiType("zorp");
+        MCGuiClick(p->replaceEntry());
+        MCGuiKey("ctrl+a");
+        MCGuiType("quux");
+    });
+    MCGuiWait("one row, from the host", 30, [] {
+        SearchPanel* p = remoteWindow().search;
+        return !p->searching() && p->matches().size() == 1 && p->matches()[0].count == 3;
+    });
+    MCGuiStep("Preserve Case on; a host that lacks the flag refuses Replace This Match and Preserve Case", [] {
+        SearchPanel* p = remoteWindow().search;
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(p->preserveButton()), TRUE);
+        p->setHostReplace([ws = remoteWindow().remoteWs](Json request, SearchPanel::HostBatch batch) {
+            return ws->replace(std::move(request), std::move(batch));
+        });   // no flag
+        p->replaceMatchAt(0);
+        GCHECK(p->statusText().find("Replacing one match does not work in a window over SSH yet") == 0);
+        GCHECK_EQ_STR(readFile(gFolder + "/src/case.c"), "Zorp zorp ZORP\n");
+        p->replaceAll();
+        GCHECK(p->statusText().find("Preserve Case does not work in Replace in Folder over SSH yet") == 0);
+        GCHECK_EQ_STR(readFile(gFolder + "/src/case.c"), "Zorp zorp ZORP\n");
+        p->setHostReplace([ws = remoteWindow().remoteWs](Json request, SearchPanel::HostBatch batch) {
+            return ws->replace(std::move(request), std::move(batch));
+        }, [ws = remoteWindow().remoteWs] { return ws->hostReplacesOne(); });
+        p->replaceMatchAt(0);
+    });
+    MCGuiWait("only the row's first match changed, in its case", 30, [] {
+        SearchPanel* p = remoteWindow().search;
+        return !p->replacing() && !p->searching() && readFile(gFolder + "/src/case.c") == "Quux zorp ZORP\n";
+    });
+    MCGuiWait("the results again: the line still holds three matches... two", 30, [] {
+        SearchPanel* p = remoteWindow().search;
+        return !p->searching() && p->matches().size() == 1 && p->matches()[0].count == 2;
+    });
+    MCGuiStep("Replace All, Preserve Case on", [] {
+        SearchPanel* p = remoteWindow().search;
+        MCGuiSetKeyWindow(GTK_WINDOW(p->window()));
+        MCGuiKey("ctrl+alt+enter");
+    });
+    MCGuiWait("it asks first", 10, [] { return alertText().find("Replace 2 matches in 1 file?") != std::string::npos; });
+    MCGuiWait("its Replace button on screen", 10, [] {
+        GtkWindow* top = MCGuiTopWindow();
+        GtkWidget* b = top ? MCGuiFindButton(GTK_WIDGET(top), "Replace") : nullptr;
+        return b && MCGuiOnScreen(b);
+    });
+    MCGuiStep("Replace", [] { MCGuiSetKeyWindow(MCGuiTopWindow()); });
+    MCGuiClickWhenReady("the question's Replace button", [] {
+        return MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Replace");
+    });
+    MCGuiWait("the rest of the line replaced, each in its case", 30, [] {
+        SearchPanel* p = remoteWindow().search;
+        return !p->replacing() && !p->searching() && readFile(gFolder + "/src/case.c") == "Quux quux QUUX\n";
+    });
+    MCGuiStep("case.c gone; Preserve Case off; the search closed", [] {
+        SearchPanel* p = remoteWindow().search;
+        unlink((gFolder + "/src/case.c").c_str());
+        gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(p->preserveButton()), FALSE);
+        gtk_widget_set_visible(p->window(), FALSE);
+        MCGuiSetKeyWindow(nullptr);
+    });
 
     // ---- addresses an open window's folder holds (slice 3, the Mac's #327).
     // As a local file goes to the window whose folder holds it, an ssh://

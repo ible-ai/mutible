@@ -40,6 +40,9 @@ FLAKY line.
 - GTK over SSH: fetch, pull, push, Sync and autofetch run on the host,
   and Format Document and format on save run its formatter (item 169);
   the core's unused `Shared::gitRemoteOpText` is deleted.
+- GTK over SSH: Preserve Case and Replace This Match through the host (Welcome
+  flag 2048, item 170). The Mac client still refuses both until it checks
+  `hostReplacesOne()`.
 
 ## Where it stands
 
@@ -9591,3 +9594,9 @@ side's; two are fixed, one left alone on purpose.
 - **What.** The Mac's #361 on GTK; the only change in `src/` deletes `Shared::gitRemoteOpText`, which neither app used any more. Fetch, pull, push, Sync and autofetch are no longer refused (`hostGitRunner`, `GitPanel::runSync` and `autoFetchTickAt` lost their `gitRemoteOpText` checks): the host runs them with its own credentials and never a prompt, and `finishSync` says `Shared::gitCredentialsText` when `GitUi::needsCredentials` holds. Format Document and format on save go through `Formatting::Host::remoteFormat` (main.cpp `remoteFormat`: `Link::formatAsync`, `Client::requestFormat`, flag 1024) and come back as the same `FormatRunner::Result` (`FormatRunner::fromHost`), so the consent question, the server fallback, the notes and the undo step are the local code. The consent answer is kept under `consentRoot()` (the link's ssh:// key). No format on save offer in a remote window. A host without flag 1024: "needs a newer mutible there" (`formatTooOldText`).
 - **Checks.** remote_ssh: push to a bare origin on the stand-in's disk, another clone's commit by Fetch and Pull, a force, a `+` refspec, a deletion and a URL refused in the host's sentences, an origin whose ssh refuses the key says the credentials sentence at once; a formatter block (scripted shfmt run by the host: folder, SSH_STANDIN, arguments; format on save; a `format.shell` program outside the table refused).
 - **Not done.** A flag-less host not checked; the format on save offer over SSH; real ssh never run.
+
+### 170. The window over SSH, Preserve Case and Replace This Match (stage 9; November 2026)
+
+- **What.** A host whose Welcome has flag 2048 (`kHostReplacesOne`, `Client::hostReplacesOne()`) honours the "replace" request's `preserveCase` and a row's `byteColumn` (one match of that row, `ReplaceRow::only`), through the local replace's own `TextFind` functions. Search rows carry `byteColumn` now. Core: `src/SessionSearch.{h,cpp}`, `SessionClient.h`, `SessionHost.cpp` (the flag), `SessionProtocol.h` (comment). GTK: `Link::replacesOne`, `RemoteWorkspace::hostReplacesOne`, `SearchPanel::setHostReplace(replace, replacesOne)`, `replaceMatchOnHost`; the two refusals stay for a host without the flag. Numbered 168 at origin/main's last 167; renumber if another entry took it.
+- **Mac.** Not changed: the Mac client still refuses Preserve Case and Replace This Match over SSH until it checks `hostReplacesOne()`; then it can drop both refusals (docs/notes/session-host.md, "Preserve Case and one match through the host").
+- **Checks.** Core `host:replace-one`; remote_ssh's Preserve Case block (a closed file, Replace This Match on a line with three matches, then Replace All, cases kept).

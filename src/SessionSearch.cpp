@@ -288,6 +288,21 @@ ReplaceCheck replaceRows(const std::string& content, const std::vector<ReplaceRo
     std::size_t counted = 0;
     std::set<int> skip;
     bool any = false;
+    // One match of one row (a row with "byteColumn"): that line must still
+    // read as the row showed it, and a match must still start there.
+    for (const ReplaceRow& r : rows)
+        if (r.only >= 0) {
+            std::string now;
+            if (rows.size() != 1 || !FolderSearch::lineAt(content, r.line, &now) ||
+                FolderSearch::displayText(now, options.maxLineChars) != r.text)
+                return ReplaceCheck::Changed;
+            if (!r.on) return ReplaceCheck::Nothing;
+            if (!FolderSearch::replaceMatchInText(content, query, replacement, options, r.line,
+                                                  (std::size_t)r.only, out))
+                return ReplaceCheck::Changed;
+            if (replaced) *replaced = 1;
+            return ReplaceCheck::Replaced;
+        }
     for (const ReplaceRow& r : rows) {
         std::string now;
         if (!FolderSearch::lineAt(content, r.line, &now) ||
@@ -321,6 +336,7 @@ bool replaceRowsFrom(const Json& rows, std::size_t most, std::vector<ReplaceRow>
         row.text = r["text"].asString();
         row.count = (std::size_t)std::max<std::int64_t>(1, r["count"].asInt(1));
         row.on = !r.has("on") || r["on"].asBool();
+        if (r["byteColumn"].isNumber()) row.only = std::max<std::int64_t>(0, r["byteColumn"].asInt());
         out->push_back(std::move(row));
     }
     return true;
@@ -333,6 +349,7 @@ FolderSearchOptions searchOptions(const Json& request) {
     o.caseSensitive = request["caseSensitive"].asBool();
     o.wholeWord = request["wholeWord"].asBool();
     o.regex = request["regex"].asBool();
+    o.preserveCase = request["preserveCase"].asBool();
     o.include = request["include"].asString();
     o.exclude = request["exclude"].asString();
     o.skipDotfiles = !request["hidden"].asBool();
@@ -345,6 +362,7 @@ Json searchRowJson(const FolderSearchMatch& m, const TextFind::Query& query) {
     row.set("path", Json(m.relativePath));
     row.set("line", Json((int64_t)m.line));
     row.set("column", Json((int64_t)m.column));
+    row.set("byteColumn", Json((int64_t)m.byteColumn));
     row.set("text", Json(m.text));
     Json hl = Json::array();
     if (query.usable())

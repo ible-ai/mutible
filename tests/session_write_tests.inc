@@ -454,6 +454,120 @@ static void testSessionWrites() {
         CHECK(readFile((root + "/closed.py").c_str()) == "foo()\nbar()\nqux(qux)\n");
     }
 
+    GROUP("host:replace-one");
+    {
+        // Preserve Case, and one match of a row (Welcome flag 2048).
+        using Shared::ReplaceCheck;
+        using Shared::ReplaceRow;
+        Json pc = Json::object();
+        pc.set("preserveCase", Json(true));
+        const FolderSearchOptions po = Shared::searchOptions(pc);
+        CHECK(po.preserveCase && !Shared::searchOptions(Json::object()).preserveCase);
+        const std::string text = "Foo foo FOO\nfoo foo\n";
+        auto row = [&](int line, std::size_t count) {
+            std::string raw;
+            FolderSearch::lineAt(text, line, &raw);
+            return ReplaceRow{line, FolderSearch::displayText(raw), count, true, -1};
+        };
+        std::string out;
+        std::size_t n = 0;
+        std::vector<ReplaceRow> rows = {row(1, 3), row(2, 2)};
+        CHECK(Shared::replaceRows(text, rows, "foo", "bar", po, &out, &n) == ReplaceCheck::Replaced);
+        CHECK(n == 5 && out == "Bar bar BAR\nbar bar\n");
+        // Without it: the replacement as typed (the old shape).
+        const FolderSearchOptions plain = Shared::searchOptions(Json::object());
+        CHECK(Shared::replaceRows(text, rows, "foo", "bar", plain, &out, &n) == ReplaceCheck::Replaced);
+        CHECK(n == 5 && out == "bar bar bar\nbar bar\n");
+        // One match: the one starting at the row's byte column, nothing else.
+        ReplaceRow one = row(1, 3);
+        one.only = 4;
+        CHECK(Shared::replaceRows(text, {one}, "foo", "bar", plain, &out, &n) == ReplaceCheck::Replaced);
+        CHECK(n == 1 && out == "Foo bar FOO\nfoo foo\n");
+        one.only = 8;   // with Preserve Case: FOO becomes BAR
+        CHECK(Shared::replaceRows(text, {one}, "foo", "bar", po, &out, &n) == ReplaceCheck::Replaced);
+        CHECK(n == 1 && out == "Foo foo BAR\nfoo foo\n");
+        ReplaceRow second = row(2, 2);
+        second.only = 4;
+        CHECK(Shared::replaceRows(text, {second}, "foo", "bar", plain, &out, &n) == ReplaceCheck::Replaced);
+        CHECK(out == "Foo foo FOO\nfoo bar\n");
+        // Stale: no match starts there now, the line reads otherwise, a
+        // row left out, and one match beside other rows.
+        one.only = 5;
+        CHECK(Shared::replaceRows(text, {one}, "foo", "bar", plain, &out, &n) == ReplaceCheck::Changed);
+        one.only = 4;
+        CHECK(Shared::replaceRows("Foo foo FOO x\nfoo foo\n", {one}, "foo", "bar", plain, &out, &n) ==
+              ReplaceCheck::Changed);
+        one.on = false;
+        CHECK(Shared::replaceRows(text, {one}, "foo", "bar", plain, &out, &n) == ReplaceCheck::Nothing);
+        one.on = true;
+        CHECK(Shared::replaceRows(text, {one, second}, "foo", "bar", plain, &out, &n) == ReplaceCheck::Changed);
+        // The rows from a request: "byteColumn" is the only field that says so.
+        Json js = Json::array();
+        Json a = replaceRowJson(text, 1, 3);
+        js.push(a);
+        a.set("byteColumn", Json((int64_t)4));
+        js.push(a);
+        std::vector<ReplaceRow> got;
+        CHECK(Shared::replaceRowsFrom(js, 10, &got) && got.size() == 2 && got[0].only == -1 && got[1].only == 4);
+
+        // Through the host: a closed file, an old-shape request first.
+        const std::string root = fsScratch();
+        fsWrite(root + "/a.txt", "Foo foo FOO\nfoo foo\n");
+        Net net(true, true);
+        net.host.setFolder(root);
+        Net::Link& guest = net.add(Unit::Utf16, "browser", 2 | 8);
+        guest.client->dispatch();
+        CHECK(guest.client->hostReplacesOne());
+        // A request over a real search of the file; `column` >= 0 makes it
+        // one match: line 1's row as the host sent it, at that column.
+        auto ask = [&](bool preserve, int column) {
+            const std::vector<Json> found = runRead(root, searchAsk("foo"));
+            Json files = replaceFilesFrom(found);
+            if (column >= 0) {
+                Json rowsOnly = Json::array();
+                for (const Json& r : found[0]["rows"].elements()) {
+                    if (r["line"].asInt() != 1) continue;
+                    CHECK(r["byteColumn"].isNumber());   // the search row carries it
+                    Json x = Json::object();
+                    x.set("line", r["line"]);
+                    x.set("text", r["text"]);
+                    x.set("count", r["count"]);
+                    x.set("byteColumn", Json((int64_t)column));
+                    rowsOnly.push(std::move(x));
+                }
+                Json f = Json::object();
+                f.set("path", Json("a.txt"));
+                f.set("rows", std::move(rowsOnly));
+                files = Json::array();
+                files.push(std::move(f));
+            }
+            Json r = replaceAsk("foo", "bar", std::move(files));
+            if (preserve) r.set("preserveCase", Json(true));
+            return r;
+        };
+        std::vector<Json> got2;
+        std::uint64_t req = guest.client->requestReplace(0, ask(false, -1));
+        CHECK(req && pumpStream(net, *guest.client, req, &got2) && got2.size() == 1);
+        CHECK(readFile((root + "/a.txt").c_str()) == "bar bar bar\nbar bar\n");
+        fsWrite(root + "/a.txt", "Foo foo FOO\nfoo foo\n");
+        got2.clear();
+        req = guest.client->requestReplace(0, ask(true, -1));
+        CHECK(req && pumpStream(net, *guest.client, req, &got2) && got2.size() == 1);
+        CHECK(readFile((root + "/a.txt").c_str()) == "Bar bar BAR\nbar bar\n");
+        // One match of line 1: the row's own column.
+        fsWrite(root + "/a.txt", "Foo foo FOO\nfoo foo\n");
+        got2.clear();
+        req = guest.client->requestReplace(0, ask(true, 0));
+        CHECK(req && pumpStream(net, *guest.client, req, &got2) && got2.size() == 1);
+        CHECK(readFile((root + "/a.txt").c_str()) == "Bar foo FOO\nfoo foo\n" && got2[0]["replaced"].asInt() == 1);
+        // A column no match starts at: reported, not replaced.
+        got2.clear();
+        req = guest.client->requestReplace(0, ask(false, 5));
+        CHECK(req && pumpStream(net, *guest.client, req, &got2) && got2.size() == 1);
+        CHECK(skippedOf(got2[0]) == "a.txt:changed" && got2[0]["replaced"].asInt() == 0);
+        CHECK(readFile((root + "/a.txt").c_str()) == "Bar foo FOO\nfoo foo\n");
+    }
+
     GROUP("sessionweb:writes");
     {
         ServerRig rig;

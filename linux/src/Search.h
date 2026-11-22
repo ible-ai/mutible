@@ -109,8 +109,12 @@ public:
     // The host's "replace" (RemoteWorkspace::replace): `replace` returns the
     // request's id, 0 when the host does not take it. Without it, Replace in
     // Folder in a window over SSH is refused with a sentence.
-    void setHostReplace(std::function<std::uint64_t(Json request, HostBatch batch)> replace) {
+    // `replacesOne` says whether the host honours Preserve Case and one match
+    // of a row (Welcome flag 2048); without it those two are refused.
+    void setHostReplace(std::function<std::uint64_t(Json request, HostBatch batch)> replace,
+                        std::function<bool()> replacesOne = nullptr) {
         hostReplace_ = std::move(replace);
+        hostReplacesOne_ = std::move(replacesOne);
     }
     // A pane command (a registry id of kPaneCommands) pressed in this
     // window: the editor window runs it, taking the keyboard first.
@@ -270,12 +274,15 @@ private:
     std::function<std::uint64_t(Json, HostBatch)> hostSearch_;
     std::function<void(std::uint64_t)> cancelHostSearch_;
     std::function<std::uint64_t(Json, HostBatch)> hostReplace_;
+    std::function<bool()> hostReplacesOne_;
     std::string hostPlace_;
     // The rows dismissed since the search, kept for Replace All over SSH: the
     // host checks a file against every row it showed, the dismissed ones sent
     // as left out.
     std::vector<FolderSearchMatch> hostDismissed_;
     void replaceAllOnHost();
+    void replaceMatchOnHost(const FolderSearchMatch& hit);
+    bool hostReplacesOne() const { return hostReplacesOne_ && hostReplacesOne_(); }
     void hostReplaced(std::vector<Json>&& answers, bool done, const std::vector<std::string>& held);
     std::uint64_t hostReq_ = 0;
     std::size_t hostRows_ = 0;

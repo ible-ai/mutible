@@ -423,6 +423,9 @@ void Host::onHello(ClientId c, Message& m) {
     // And runs formatters for an app's window (FsRead's "format",
     // SessionFormat.h).
     w.flag |= kHostFormats;
+    // And replaces in Folder with Preserve Case, and one match of a row
+    // (SessionSearch.h's ReplaceRow::only).
+    w.flag |= kHostReplacesOne;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));

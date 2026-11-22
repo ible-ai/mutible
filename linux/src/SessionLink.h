@@ -186,6 +186,9 @@ public:
     // Shared::gitReplyFrom reading it. False, calling nothing, when the link
     // is lost or the host does not run git (runsGit).
     bool runsGit() const;
+    // Whether the host's replace honours Preserve Case and one match of a
+    // row (Welcome flag 2048, Client::hostReplacesOne).
+    bool replacesOne() const;
     bool gitAsync(Json request, std::string input, BytesFn done);
     // A document's formatter planned and run by the host (Welcome flag 1024,
     // SessionFormat.h: Client::requestFormat), `request` its

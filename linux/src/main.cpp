@@ -4315,7 +4315,7 @@ static void useHostSearch(App* app, SearchPanel* panel) {
         app->link ? app->link->label() : std::string("the other machine"));
     panel->setHostReplace([ws = app->remoteWs](Json request, SearchPanel::HostBatch batch) {
         return ws->replace(std::move(request), std::move(batch));
-    });
+    }, [ws = app->remoteWs] { return ws->hostReplacesOne(); });
 }
 
 // Find in Folder: search the folder selected in the tree, or else the open
