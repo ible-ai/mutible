@@ -92,6 +92,8 @@
 #include "ConsentBar.h"
 #include "FakeLsp.h"
 #include "FolderConsent.h"
+#include "FormatOffer.h"
+#include "Formatting.h"
 #include "Lsp.h"
 #include "ConnectWindow.h"
 #include "GitChecks.h"
@@ -386,7 +388,9 @@ void fails(const std::string& what, const std::string& body, const std::string& 
 // the same repository and every check pass with the routing broken: the
 // window's workspace counts the host's runs (gitRuns, gitNotices), and what
 // git there says is read apart from the window (gitchecks::GitText).
-std::string gGitFolder, gKeptObject;
+std::string gGitFolder, gKeptObject, gGitOrigin, gGitOther, gLockedSsh, gLockedSeen;
+std::vector<std::string> gRefusals;
+gint64 gSyncAtUs = 0;
 size_t gGitRunsBefore = 0, gGitNoticesBefore = 0, gGitDocsBefore = 0;
 std::atomic<bool> gLostAnswered{false};
 std::string gLostText;
@@ -519,15 +523,103 @@ void gitOverSsh() {
         GCHECK(gitPanel()->undoDiscardTitle().empty());
         GCHECK_EQ_STR(GitText({"cat-file", "-p", gKeptObject.empty() ? "none" : gKeptObject}), "bee two\n");
     });
-    MCGuiStep("Fetch, Pull and Push say they do not work over SSH yet, sending nothing", [] {
+    // ---- fetch, pull and push over SSH (stage 9's third slice): the host
+    // runs them there, with that machine's credentials and never a prompt.
+    // The remote's origin is a bare repository on the stand-in's disk.
+    MCGuiStep("an origin there: a bare repository beside it", [] {
+        gGitOrigin = rp(MCGuiScratch()) + "/remote-git-origin.git";
+        gGitOther = rp(MCGuiScratch()) + "/remote-git-other";
+    });
+    Shell("git init --bare there, and the remote's name", "set -e; " + G() + " init -q --bare -b main '" + rp(MCGuiScratch()) +
+                                                              "/remote-git-origin.git' && cd '" + rp(MCGuiScratch()) +
+                                                              "/remote-git' && " + G() + " remote add origin '" + rp(MCGuiScratch()) +
+                                                              "/remote-git-origin.git'");
+    MCGuiStep("Push publishes main to origin, through the host", [] {
         gGitRunsBefore = gitWs()->gitRuns;
-        for (int i = 0; i < 3; i++) {
-            if (i == 0) gitPanel()->fetch();
-            else if (i == 1) gitPanel()->pull();
-            else gitPanel()->push();
-            GCHECK(gitPanel()->errorLine().find("do not work in a window over SSH yet") != std::string::npos);
-        }
-        GCHECK(gitWs()->gitRuns == gGitRunsBefore);
+        gitPanel()->push();
+    });
+    MCGuiWait("pushed", 60, [] { return gitPanel()->lastSync() == "push ok"; });
+    MCGuiStep("the push ran on the host; origin has the commit, and main tracks it", [] {
+        GCHECK(gitWs()->gitRuns > gGitRunsBefore);
+        GCHECK_EQ_STR(GitText({"--git-dir", gGitOrigin, "log", "-1", "--format=%s", "main"}), "second, over ssh\n");
+        GCHECK_EQ_STR(GitText({"rev-parse", "--abbrev-ref", "main@{upstream}"}), "origin/main\n");
+    });
+    Shell("someone else pushes a commit to origin",
+          "set -e; " + G() + " clone -q '" + rp(MCGuiScratch()) + "/remote-git-origin.git' '" + rp(MCGuiScratch()) +
+              "/remote-git-other' && cd '" + rp(MCGuiScratch()) + "/remote-git-other' && echo other > c.txt && " + G() +
+              " add c.txt && " + G() + " commit -qm 'from elsewhere' && " + G() + " push -q");
+    MCGuiStep("Fetch, through the host", [] {
+        gGitRunsBefore = gitWs()->gitRuns;
+        gitPanel()->fetch();
+    });
+    MCGuiWait("fetched", 60, [] { return gitPanel()->lastSync() == "fetch ok"; });
+    MCGuiStep("origin/main has the other commit, main not yet; Pull", [] {
+        GCHECK(gitWs()->gitRuns > gGitRunsBefore);
+        GCHECK_EQ_STR(GitText({"log", "-1", "--format=%s", "origin/main"}), "from elsewhere\n");
+        GCHECK_EQ_STR(GitText({"log", "-1", "--format=%s", "main"}), "second, over ssh\n");
+        gitPanel()->pull();
+    });
+    MCGuiWait("pulled", 60, [] { return gitPanel()->lastSync() == "pull ok"; });
+    MCGuiStep("the other commit is in the work tree there", [] {
+        GCHECK_EQ_STR(GitText({"log", "-1", "--format=%s"}), "from elsewhere\n");
+        GCHECK_EQ_STR(MCGuiReadFile(gGitFolder + "/c.txt"), "other\n");
+    });
+    // What the host refuses it says in its own words, whoever asks: a
+    // forced push, a deletion and a URL (the panel never sends them).
+    MCGuiStep("a forced push, a deletion and a URL go to the host", [] {
+        gLostAnswered = false;
+        std::shared_ptr<RemoteWorkspace> ws = gitWs()->shared_from_this();
+        GitRunnerPtr runner = hostGitRunner(ws);
+        const std::string dir = gGitFolder;
+        std::thread([runner, ws, dir] {
+            gRefusals.clear();
+            for (const std::vector<std::string>& args :
+                 {std::vector<std::string>{"push", "--force", "origin", "main"},
+                  std::vector<std::string>{"push", "origin", "+main"},
+                  std::vector<std::string>{"push", "origin", ":main"},
+                  std::vector<std::string>{"fetch", "https://example.invalid/x.git"}})
+                gRefusals.push_back((*runner)(dir, args, 20, nullptr).err);
+            gLostAnswered = true;
+        }).detach();
+    });
+    MCGuiWait("answered", 30, [] { return gLostAnswered.load(); });
+    MCGuiStep("each in the host's sentence; origin unchanged", [] {
+        GCHECK(gRefusals.size() == 4);
+        if (gRefusals.size() != 4) return;
+        for (const std::string& r : gRefusals) MCGuiNote("refused: %s", r.c_str());
+        GCHECK(gRefusals[0].find("does not force, delete or mirror a push for a window") != std::string::npos);
+        GCHECK(gRefusals[1].find("does not force or delete a ref for a window") != std::string::npos);
+        GCHECK(gRefusals[2].find("does not force or delete a ref for a window") != std::string::npos);
+        GCHECK(gRefusals[3].find("names one of the repository's remotes") != std::string::npos);
+        GCHECK_EQ_STR(GitText({"--git-dir", gGitOrigin, "log", "-1", "--format=%s", "main"}), "from elsewhere\n");
+    });
+    // An origin that needs a key that machine cannot use: its ssh (the
+    // repository's core.sshCommand, a script that answers as a server
+    // refusing the key would) fails at once, and the panel says what to set
+    // up there rather than hanging on a prompt.
+    MCGuiStep("origin now needs credentials there", [] {
+        gLockedSsh = rp(MCGuiScratch()) + "/locked-ssh";
+        gLockedSeen = rp(MCGuiScratch()) + "/locked-ssh-seen.txt";
+        MCGuiWriteFile(gLockedSsh, "#!/bin/sh\necho ran > '" + gLockedSeen + "'\n" +
+                                       "echo 'git@locked.invalid: Permission denied (publickey).' >&2\nexit 255\n");
+        chmod(gLockedSsh.c_str(), 0755);
+    });
+    Shell("origin's url and its ssh there", "set -e; cd '" + rp(MCGuiScratch()) + "/remote-git' && " + G() +
+                                                " remote set-url origin git@locked.invalid:x.git && " + G() +
+                                                " config core.sshCommand '" + rp(MCGuiScratch()) + "/locked-ssh'");
+    MCGuiStep("Fetch, with no credentials there", [] {
+        gSyncAtUs = g_get_monotonic_time();
+        gitPanel()->fetch();
+    });
+    MCGuiWait("failed", 60, [] { return gitPanel()->lastSync() == "fetch failed"; });
+    MCGuiStep("said plainly, with the line that says why, at once", [] {
+        const std::string line = gitPanel()->errorLine();
+        MCGuiNote("said: %s (after %.0f ms)", line.c_str(), (g_get_monotonic_time() - gSyncAtUs) / 1000.0);
+        GCHECK(line.rfind("origin needs credentials set up on ", 0) == 0);
+        GCHECK(line.find("never asks for a password") != std::string::npos);
+        GCHECK(line.find("\ngit: git@locked.invalid: Permission denied (publickey).") != std::string::npos);
+        GCHECK_EQ_STR(MCGuiReadFile(gLockedSeen), "ran\n");
+        GCHECK(g_get_monotonic_time() - gSyncAtUs < 30 * 1000000);
     });
     // The review and commit pages and the comparisons are read from the host
     // (the stand-in's folder is this machine's too: the host's runs and
@@ -567,8 +659,8 @@ void gitOverSsh() {
     });
     MCGuiWait("the commit's files, read there", 20, [] {
         ChangeReviewPage* p = reviewPage();
-        return p && p->loaded() && p->isCommit() && p->headerTitle().find("second, over ssh") != std::string::npos &&
-               p->fileCount() == 1 && p->pageText().find("a.txt") != std::string::npos &&
+        return p && p->loaded() && p->isCommit() && p->headerTitle().find("from elsewhere") != std::string::npos &&
+               p->fileCount() == 1 && p->pageText().find("c.txt") != std::string::npos &&
                gitWs()->gitRuns > gGitRunsBefore;
     });
     MCGuiStep("Compare with the first commit: its text from the host, the file's from the host too", [] {
@@ -627,8 +719,125 @@ void gitOverSsh() {
     MCGuiStep("the lost connection's words, and Push's", [] {
         GCHECK(gLostResult.status == -1);
         GCHECK(gLostResult.err.find("is lost") != std::string::npos);
-        GCHECK(gLostText.find("do not work in a window over SSH yet") != std::string::npos);
+        // Push goes to the host like the rest: with no host, the same words.
+        GCHECK(gLostText.find("is lost") != std::string::npos);
     });
+}
+
+// ---- formatters over SSH (stage 9's third slice, Welcome flag 1024; the
+// Mac's block of this suite): a window on a folder of its own there, whose
+// format.shell names a scripted shfmt (one of the formatter table's
+// programs) by its path. The stand-in's disk is this machine's, so what
+// proves the host ran it is the variable the stand-in exports, which only
+// the host's environment has, and where it ran.
+std::string gFmtFolder, gFmtMark;
+
+MCGuiAppWindow fmtWindow() {
+    MCGuiAppWindow found;
+    for (const MCGuiAppWindow& w : MCGuiAppWindows())
+        if (w.editor && w.rootDir == gFmtFolder) found = w;
+    return found;
+}
+std::string fmtText() {
+    GtkTextBuffer* b = fmtWindow().editor->sourceBuffer();
+    GtkTextIter s, e;
+    gtk_text_buffer_get_bounds(b, &s, &e);
+    char* raw = gtk_text_buffer_get_text(b, &s, &e, TRUE);
+    std::string out = raw ? raw : "";
+    g_free(raw);
+    return out;
+}
+std::string fmtSettings(const std::string& more) {
+    return "lsp.enabled = false\nformat.shell = " + rp(MCGuiScratch()) + "/fmt-bin/shfmt -i 2\n" + more;
+}
+
+void formatOverSsh() {
+    MCGuiStep("formatters over SSH: a folder there, and a scripted formatter", [] {
+        const std::string made = rp(MCGuiScratch()) + "/remote-fmt";
+        g_mkdir_with_parents((made + "/scripts").c_str(), 0700);
+        g_mkdir_with_parents((rp(MCGuiScratch()) + "/fmt-bin").c_str(), 0700);
+        gFmtFolder = rp(made);
+        MCGuiWriteFile(gFmtFolder + "/scripts/run.sh", "echo hello\n");
+        const std::string fmt = rp(MCGuiScratch()) + "/fmt-bin/shfmt";
+        gFmtMark = rp(MCGuiScratch()) + "/fmt-seen.txt";
+        // It uppercases, and says where it ran, in whose environment, with what.
+        MCGuiWriteFile(fmt, "#!/bin/sh\n{ pwd -P; echo \"standin=$SSH_STANDIN\"; printf '%s\\n' \"$@\"; } > '" +
+                                gFmtMark + "'\ntr a-z A-Z\n");
+        chmod(fmt.c_str(), 0755);
+        MCGuiSetSettings(fmtSettings(""));
+        gErrors.clear();
+        gWindowsBefore = MCGuiAppWindows().size();
+        // The folder's window first, then the file a folder down in it.
+        MCGuiCommandLine({"ssh://standin" + gFmtFolder}, gFolder, &gErrors);
+    });
+    MCGuiWait("its window", 30, [] {
+        return MCGuiAppWindows().size() == gWindowsBefore + 1 && fmtWindow().editor;
+    });
+    MCGuiStep("scripts/run.sh in it", [] {
+        MCGuiCommandLine({"ssh://standin" + gFmtFolder + "/scripts/run.sh"}, gFolder, &gErrors);
+    });
+    MCGuiWait("run.sh shown, through its host", 30, [] {
+        MCGuiAppWindow w = fmtWindow();
+        return MCGuiAppWindows().size() == gWindowsBefore + 1 && w.editor &&
+               w.editor->currentPath() == gFmtFolder + "/scripts/run.sh" && fmtText() == "echo hello\n";
+    });
+    MCGuiStep("its host formats (flag 1024); Format Document", [] {
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(fmtWindow().editor->textView());   // the typing below goes to the text
+        GCHECK(gErrors.empty());
+        GCHECK(alertText().empty());
+        GCHECK(fmtWindow().format != nullptr);
+        if (!fmtWindow().format) return;
+        GCHECK(fmtWindow().editor->sessionLink()->runsFormatters());
+        fmtWindow().format->formatDocument();
+    });
+    MCGuiWait("the document formatted, by the host", 20, [] {
+        return !fmtWindow().format || fmtText() == "ECHO HELLO\n";
+    });
+    MCGuiStep("run there: in the file's folder, in the host's environment, as format.shell says", [] {
+        const std::string seen = MCGuiReadFile(gFmtMark);
+        MCGuiNote("the formatter saw: %s", seen.c_str());
+        GCHECK_EQ_STR(seen, gFmtFolder + "/scripts\nstandin=yes\n-i\n2\n");
+        // An edit of the tab's, unsaved: the file there is as it was.
+        GCHECK_EQ_STR(MCGuiReadFile(gFmtFolder + "/scripts/run.sh"), "echo hello\n");
+        // Format on save: Ctrl+S formats there, then the host saves.
+        MCGuiSetSettings(fmtSettings("format.on-save = true\n"));
+        MCGuiKey("ctrl+end");
+        MCGuiType("echo bye\n");
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("formatted on save, and saved there", 20, [] {
+        return MCGuiReadFile(gFmtFolder + "/scripts/run.sh") == "ECHO HELLO\nECHO BYE\n";
+    });
+    MCGuiStep("a setting naming another program is refused there, nothing run", [] {
+        GCHECK_EQ_STR(fmtText(), "ECHO HELLO\nECHO BYE\n");
+        unlink(gFmtMark.c_str());
+        MCGuiSetSettings("lsp.enabled = false\nformat.shell = tr a-z A-Z\n");
+        MCGuiKey("ctrl+end");
+        MCGuiType("echo more\n");
+        fmtWindow().format->formatDocument();
+    });
+    MCGuiWait("the host's refusal, as a note", 20, [] {
+        return !fmtWindow().format || fmtWindow().format->lastNote().find("does not run for a window") != std::string::npos;
+    });
+    MCGuiStep("nothing ran, the text as typed", [] {
+        const std::string note = fmtWindow().format->lastNote();
+        MCGuiNote("said: %s", note.c_str());
+        GCHECK(note.rfind("format.shell runs tr, which the other machine does not run", 0) == 0);
+        GCHECK(!g_file_test(gFmtMark.c_str(), G_FILE_TEST_EXISTS));
+        GCHECK_EQ_STR(fmtText(), "ECHO HELLO\nECHO BYE\necho more\n");
+        MCGuiSetSettings("lsp.enabled = false\n");
+        MCGuiKey("ctrl+s");   // nothing formats: saved as typed
+    });
+    MCGuiWait("saved there, as typed", 20, [] {
+        return MCGuiReadFile(gFmtFolder + "/scripts/run.sh") == "ECHO HELLO\nECHO BYE\necho more\n";
+    });
+    MCGuiStep("no format-on-save offer over SSH, and its window closes", [] {
+        GCHECK(fmtWindow().formatOffer == nullptr || !MCGuiOnScreen(fmtWindow().formatOffer->widget()));
+        MCGuiSetKeyWindow(nullptr);
+        gtk_window_close(fmtWindow().window);
+    });
+    MCGuiWait("gone", 30, [] { return fmtWindow().window == nullptr; });
 }
 
 // ---- language servers over SSH (stage 9, Welcome flag 512; the Mac's
@@ -1699,6 +1908,7 @@ MC_GUI_SUITE(remote_ssh) {
 
     if (!gitchecks::GitPath().empty()) gitOverSsh();
     else MCGuiStep("no git here: the git over SSH checks are skipped", [] { MCGuiNote("no git"); });
+    formatOverSsh();
     lspOverSsh();
 
     // ---- opening a file does not block the window (third slice): the tab

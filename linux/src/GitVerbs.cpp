@@ -643,13 +643,8 @@ void GitPanel::updateSyncButton() {
 void GitPanel::runSync(GitUi::SyncOp op, bool quietly) {
     const std::string root = rootDir_;
     if (root.empty()) return;
-    if (runner_) {
-        // They would want credentials nobody can type on that machine.
-        if (quietly) return;
-        gtk_widget_error_bell(root_);
-        say(Shared::gitRemoteOpText(hostLabel_), false);
-        return;
-    }
+    // Over SSH the same steps run on the other machine through its host (the
+    // git thread's runner), with that machine's credentials and never a prompt.
     // One asked for at a time; one asked for while a background fetch runs
     // waits behind it on the git thread.
     if (quietly ? (syncing_ || autoFetching_) : syncing_) {
@@ -724,6 +719,9 @@ void GitPanel::finishSync(GitUi::SyncOp op, const GitUi::SyncPlan& plan, const G
         }
     } else if (!ok) {
         text = r->timedOut ? r->err : GitUi::networkFailureText(r->status, r->out, r->err, true);
+        // Over SSH: the other machine's credentials, said as such.
+        if (runner_ && !r->timedOut && GitUi::needsCredentials(r->out, r->err))
+            text = Shared::gitCredentialsText(hostLabel_, plan.remote, r->out, r->err);
         if (quietly) text = "Autofetch: " + text;
         info = false;
         haveText = true;
@@ -746,7 +744,7 @@ void GitPanel::finishSync(GitUi::SyncOp op, const GitUi::SyncPlan& plan, const G
 // repository's top level once a status has said it, else the folder; the
 // fetch itself reads the remotes again and fetches nothing without one.
 bool GitPanel::autoFetchTickAt(double now) {
-    if (!autoFetchOn_ || rootDir_.empty() || syncing_ || autoFetching_ || runner_) return false;
+    if (!autoFetchOn_ || rootDir_.empty() || syncing_ || autoFetching_) return false;
     if (!(isActive && isActive())) return false;
     const std::string key = autoKey_.empty() ? rootDir_ : autoKey_;
     GitUi::AutoFetchState& st = autoFetchStates()[key];

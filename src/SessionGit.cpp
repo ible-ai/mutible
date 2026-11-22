@@ -328,11 +328,6 @@ std::string gitLostText(const std::string& host) {
     return "The connection to " + host + " is lost: Reconnect, then try again.";
 }
 
-std::string gitRemoteOpText(const std::string& host) {
-    return "Fetch, pull and push do not work in a window over SSH yet: run them in the terminal, which runs on " +
-           host + ".";
-}
-
 std::string gitCredentialsText(const std::string& host, const std::string& remote, const std::string& out,
                                const std::string& err) {
     // What failed, in git's (or ssh's) words: the line that names the

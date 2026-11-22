@@ -65,8 +65,9 @@ std::function<FolderSearch::ReadStatus(const std::string& path, std::string* out
 
 class RemoteWorkspace;
 // The runner for a window over SSH: asks `ws` (held weakly) on the main loop
-// and waits for the answer. Fetch, pull and push, a lost connection and a
-// host too old to run git are answered at once in Shared::gitRemoteOpText's,
+// and waits for the answer. Fetch, pull and push go to the host too (it runs
+// them with its own credentials and never a prompt, SessionGit.h); a lost
+// connection and a host too old to run git are answered at once in
 // gitLostText's and gitTooOldText's words, status -1.
 GitRunnerPtr hostGitRunner(const std::shared_ptr<RemoteWorkspace>& ws);
 

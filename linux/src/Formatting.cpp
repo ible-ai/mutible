@@ -86,9 +86,12 @@ void Formatting::run(bool quiet, std::function<void()> then, bool projectOnly) {
     const std::string root = host_.root ? host_.root() : "";
     const std::string setting =
         editor_->documentSettings().formatCommand(Formatter::languageFor(path));
-    FormatRunner::format(
-        original, path, root, setting, FolderConsent::answer(root), first, last, kTimeoutSeconds,
-        [this, alive, gen, id, quiet, then, original, selStart, selEnd,
+    // Over SSH the file, the formatter, its configuration and the folder's
+    // own programs are the other machine's: its host plans and runs it, and
+    // the folder's answer is kept per host and folder.
+    const bool overSsh = (bool)host_.remoteFormat;
+    const std::string consentRoot = overSsh && host_.consentRoot ? host_.consentRoot() : root;
+    auto finished = [this, alive, gen, id, quiet, then, original, selStart, selEnd,
          projectOnly](FormatRunner::Result r) {
             if (alive.expired()) return;
             // Another format started, or another tab is on show (which
@@ -123,8 +126,13 @@ void Formatting::run(bool quiet, std::function<void()> then, bool projectOnly) {
                     showNote(FormatRun::alreadyFormatted(r.decision.tool, r.decision.style), false);
             }
             if (then) then();
-        },
-        projectOnly);
+        };
+    if (overSsh)
+        host_.remoteFormat(original, path, setting, FolderConsent::answer(consentRoot), first, last,
+                           projectOnly, kTimeoutSeconds, finished);
+    else
+        FormatRunner::format(original, path, root, setting, FolderConsent::answer(root), first, last,
+                             kTimeoutSeconds, finished, projectOnly);
 }
 
 // The formatter to run is the folder's own (its .venv or node_modules), or
@@ -154,8 +162,12 @@ void Formatting::ask(const FormatRun::Decision& d, bool quiet, std::function<voi
         std::string root;
     };
     Document* on = editor_->active();
+    // Over SSH the answer is kept for that machine's folder.
+    const std::string askedRoot = host_.remoteFormat && host_.consentRoot ? host_.consentRoot()
+                                  : host_.root                            ? host_.root()
+                                                                          : "";
     auto a = std::make_shared<Asked>(Asked{this, alive_, quiet, projectOnly, std::move(then),
-                                           on ? on->id() : 0, host_.root ? host_.root() : ""});
+                                           on ? on->id() : 0, askedRoot});
     Question::ask(window_, spec, [a](int choice) {
         if (a->alive.expired()) return;
         Formatting* self = a->self;

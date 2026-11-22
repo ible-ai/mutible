@@ -529,10 +529,8 @@ coincide, the wrong repository).
 - **Not done.** The review page and the commit page over SSH (their reads
   would need the work tree through the host), line history
   (EditorLineHistory), and the agents' worktree pages; GTK's window over
-  SSH is done (below), except fetch, pull and push, which its runner still
-  refuses itself (`GitRun.cpp`, `GitVerbs.cpp`: `gitRemoteOpText`); taking
-  those checks out and saying `gitCredentialsText` on a credentials
-  failure is all it needs, since the host runs them now.
+  SSH is done (below), fetch, pull, push, Sync and autofetch included
+  (2026-11-22).
 - **Checks.** Core: `hostgit:args`, `:dir`, `:words`, `:run`, `:wire`
   (tests/session_git_tests.inc). GUI: remote_ssh's git block (a window on
   a repository of its own through the stand-in; the panel lists the
@@ -577,4 +575,16 @@ git object). Over SSH the review and commit pages and the comparisons of a
 revision run through the same runner and a host file reader (session-host.md,
 "the review pages and comparisons"); `mutible diff`, the agents' worktrees,
 Apply to Main and a page's Discard of a block are refused with a note; line history is not routed.
+- Over SSH on GTK, fetch, pull, push, Sync and autofetch (the Mac's #361): `hostGitRunner` no longer
+  answers `Git::talksToRemote` commands itself, so they take the same path as
+  every command (the host runs them with that machine's credentials and never
+  a prompt, session-host.md "Fetch, pull and push over SSH"); the wait is the
+  command's own `Git::timeoutFor` plus 30 s, and the panel's busy text and
+  Sync button show as for a local run. `GitPanel::finishSync` says
+  `Shared::gitCredentialsText` (the remote, the host's label, git's line)
+  when `GitUi::needsCredentials` holds, in place of the plain failure text;
+  `autoFetchTickAt` no longer stops over SSH. What the host refuses (a force,
+  a deletion, a URL as the remote, an option it does not take) comes back as
+  its own sentence in `GitResult::err`; the panel never sends them, remote_ssh
+  sends them through the runner.
 - Over SSH on GTK: **the stand-in's folder is this machine's**, so remote_ssh counts the host's runs (`RemoteWorkspace::gitRuns`) and reads git's results apart from the window. A runner is called only on a git thread: a call from the main thread answers an error rather than hang.

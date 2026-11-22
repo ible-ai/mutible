@@ -4680,7 +4680,7 @@ side is in docs/notes/git.md, "Over SSH".
   for a write in the folder or in .git's index, HEAD or refs; the Mac's
   `MCRemoteWorkspace` now hears it (`onGitChanged`, `gitNotices`).
 - **For GTK**: done, see "The GTK window over SSH, git" below; the texts
-  (`gitTooOldText`, `gitLostText`, `gitRemoteOpText`) are shared.
+  (`gitTooOldText`, `gitLostText`) are shared.
 - **Checks.** `hostgit:args` (every argument vector the apps build passes,
   each refusal above refused), `:dir`,
   `:words` (the Discard plans and texts over SSH), `:run` (a real
@@ -4723,8 +4723,8 @@ refusal ("do not work in a window over SSH yet"), which the panel shows.
 - **Words**: `gitCredentialsText(host, remote, out, err)` when
   `GitUi::needsCredentials`: "origin needs credentials set up on host:
   ..." and the line that says why (`GitUi::credentialsLine`, else git's
-  last line). `gitRemoteOpText` stays for GTK's runner, which still refuses
-  them itself.
+  last line). The old refusal, `gitRemoteOpText`, went once neither app
+  used it (GTK's runner stopped refusing them on 2026-11-22).
 - **Checks.** `hostgit:args` (syncPlan's steps pass; forced, deleting,
   URL, path and transport forms refused; `remoteGitSettings` with and
   without the user's GIT_SSH_COMMAND, GIT_SSH and core.sshCommand; the
@@ -5187,8 +5187,9 @@ seam as the Mac's but at the thread rather than the queue.
   `post()` wraps each job in a `GitRunScope`, a thread-local the job's
   `runGitWithin` finds and hands the command to instead of spawning git.
   Their code and the core's parsing run unchanged. The runner, on that
-  thread: fetch, pull, push (`Git::talksToRemote`) are answered at once with
-  `gitRemoteOpText`; refused on the main thread (it would wait on itself);
+  thread: fetch, pull, push (`Git::talksToRemote`) went through the same path from
+  2026-11-22 (they were answered at once with `gitRemoteOpText` before);
+  refused on the main thread (it would wait on itself);
   else an idle on the main loop asks `RemoteWorkspace::git` (`Link::gitAsync`
   over `Client::requestGit`; the answer is a `byteReads_` entry, read by
   `gitReplyFrom`) and the thread waits on a condition variable, at most the
@@ -5209,8 +5210,8 @@ seam as the Mac's but at the thread rather than the queue.
   hunk's, use `GitUi::discardBatchPlanOverSsh`, `discardPlanOverSsh`,
   `hunkPlanOverSsh`: `keepCopyArgs` first, the object named in the words
   (`keptCopiesText`), nothing for Undo Discard; an untracked file is
-  refused. Fetch, pull, push, Sync and autofetch say `gitRemoteOpText`
-  (autofetch nothing). The gutter's `sourceOverSshFor` takes the file's path
+  refused. Fetch, pull, push, Sync and autofetch ran through the host
+  from 2026-11-22 (they said `gitRemoteOpText` before). The gutter's `sourceOverSshFor` takes the file's path
   in its repository from `rev-parse --show-prefix`, asks the index entry at
   every look and reads the blob again only when its object changed.
 - **Refused, not routed** (this slice; the next one routes the pages and
@@ -5361,6 +5362,30 @@ no change in `src/`: the seam is the transport, as on the Mac.
   restricted Rust, the bar's Allow kept for `ssh://standin<folder>` and not
   the folder here, the server started again by the host with its defaults,
   and both servers gone with the window.
+
+#### The GTK window over SSH, formatters, fetch, pull and push (2026-11-22, stage 9's third slice on GTK)
+
+The Mac's #361 on GTK, with no change in `src/`.
+
+- **Fetch, pull, push, Sync, autofetch.** `hostGitRunner` no longer refuses
+  `Git::talksToRemote` commands; `GitVerbs.cpp`'s `runSync` and
+  `autoFetchTickAt` no longer stop over SSH. The host's allow-list takes them
+  as `syncPlan` writes them and runs them with its own credentials, in a
+  session of its own, with no prompt (`GIT_TERMINAL_PROMPT=0`, ssh in batch
+  mode). A failure that wanted a credential says
+  `Shared::gitCredentialsText`. The thread waits the command's limit plus 30
+  s, the host stops git at its own; the main loop is never held.
+- **Formatters.** `SessionLink::Link::runsFormatters` / `formatAsync` (flag
+  1024), `FormatRunner::fromHost`, `Formatting::Host::remoteFormat` (see
+  formatting.md, "Over SSH on GTK"). Consent per host and folder
+  (`consentRoot()`); no format on save offer in a remote window.
+- **Checks.** remote_ssh: fetch, pull and push against a bare repository
+  on the stand-in's disk (the host has the commit, the other clone's commit
+  arrives by Fetch and Pull), a force, a deletion, a refspec with + and a URL
+  refused in the host's sentences, an origin whose ssh refuses the key says
+  the credentials sentence at once; and the formatter block (Format Document
+  and format on save through a scripted shfmt on the host, a program outside
+  the formatter table refused there).
 
 #### The GTK window over SSH, viewers (2026-11-21, eighth slice)
 

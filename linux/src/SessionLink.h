@@ -187,6 +187,13 @@ public:
     // is lost or the host does not run git (runsGit).
     bool runsGit() const;
     bool gitAsync(Json request, std::string input, BytesFn done);
+    // A document's formatter planned and run by the host (Welcome flag 1024,
+    // SessionFormat.h: Client::requestFormat), `request` its
+    // formatRequestJson, `text` the document's text: `done` as gitAsync's,
+    // Shared::formatReplyFrom reading it. False, calling nothing, when the
+    // link is lost or the host does not format (runsFormatters).
+    bool runsFormatters() const;
+    bool formatAsync(Json request, std::string text, BytesFn done);
     // A tree's file operation on the host (Client::requestFileOp: rename,
     // move, delete, newFile, newFolder): `done(ok, answer)` as readAsync's,
     // the answer {"ok": true, ...} or {"error", "reason"}. False, calling
