@@ -41,7 +41,9 @@ static char kRemoteWorkspaceKey;
         // The host's notices, as FSEvents' listings are taken in: only the
         // folders the tree has listed, keeping what is open and selected.
         EditorController *s = weakSelf;
-        if (s && !s->_closing) [s applyTreeListings:listings stats:@{} reshowRoot:NO];
+        if (!s || s->_closing) return;
+        [s applyTreeListings:listings stats:@{} reshowRoot:NO];
+        [s remoteFoldersChanged:listings.allKeys];   // a copy a viewer shows, read again (+RemoteViewers)
     };
     _root.source = ws;
     _root.children = nil;
@@ -73,9 +75,13 @@ static char kRemoteWorkspaceKey;
         if (!w) return;
         w.watchQueued = NO;
         if (s->_closing) return;
-        // Every folder the tree has listed, open or closed since: the host
-        // sends each one's listing again when it changes there.
-        [w watchFolders:[s loadedTreeFolders].allKeys hidden:gShowHidden];
+        // Every folder the tree has listed, open or closed since, and those
+        // of the files a viewer shows from a copy: the host sends each
+        // one's listing again when it changes there.
+        NSMutableOrderedSet<NSString *> *folders =
+            [NSMutableOrderedSet orderedSetWithArray:[s loadedTreeFolders].allKeys];
+        [folders addObjectsFromArray:[s remoteCopiedFolders]];
+        [w watchFolders:folders.array hidden:gShowHidden];
     });
 }
 

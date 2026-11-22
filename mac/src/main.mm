@@ -28,6 +28,7 @@
 #import "RecentFolders.h"
 #import "Migration.h"
 #import "RemoteConnect.h"
+#import "RemoteFileCache.h"
 #include "ProcessEnv.h"
 #include "Rename.h"
 
@@ -111,6 +112,9 @@ NSURL * (^MCDockFolderChooser)(void) = nil;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification *)note {
+    // The copies windows over SSH showed in viewers, left by a process that
+    // ended without closing them (RemoteFileCache.h).
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{ [MCRemoteFileCache removeLeftovers]; });
     // The Dock's recent folders, for a first launch of a mutible that keeps
     // them (RecentFolders.h).
     dispatch_async(dispatch_get_main_queue(), ^{ MCSeedDockRecentFolders(); });

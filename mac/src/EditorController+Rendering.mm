@@ -509,7 +509,10 @@ static void MCTextSplice(NSString *a, NSString *b, NSRange *inA, NSRange *inB) {
 // say): nothing in the text view to save, as for an image. NO when the
 // viewer cannot show it.
 - (BOOL)showViewer:(MCViewerKind)kind {
-    if (![self.viewers showWithoutText:kind path:self.currentPath]) return NO;
+    // Over SSH the viewer reads the file's copy (+RemoteViewers): none yet,
+    // and the file is read again.
+    NSString *file = [self viewerPathOf:_activeTab];
+    if (!file || ![self.viewers showWithoutText:kind path:file]) return NO;
     self.viewerKind = kind;
     self.currentExt = self.currentPath.pathExtension.lowercaseString;
     [self setPlainMessage:@""];
@@ -563,9 +566,16 @@ static void MCTextSplice(NSString *a, NSString *b, NSRange *inA, NSRange *inB) {
     if (!held) [self forgetHistoryOf:_activeTab];   // the text is read afresh
     [self resetViewMode];
     // A window over SSH (stage 8): the file is on the other machine, read
-    // through its host as text; the viewers that read the disk themselves
-    // (pictures, PDFs, players, Quick Look) are not offered for it yet.
+    // through its host once (+RemoteViewers): text goes on as below, and
+    // what a viewer reads from a file of its own (pictures, PDFs, players,
+    // SQLite, Quick Look) is shown from a copy in the window's folder of
+    // copies, the tab keeping the remote path.
     const BOOL remote = [self sessionIsRemote];
+    MCDiskText *remoteText = nil;
+    MCViewerKind remoteViewer = MCViewerNone;
+    if (remote && !restored && !held) {
+        if ([self loadRemoteFile:&remoteText viewer:&remoteViewer]) return;
+    }
     // Images are routed by extension before any attempt to read them as text.
     if (!remote && [EditorController isImagePath:path] && [self showImageAtPath:path]) {
         [self recordModDate];
@@ -583,7 +593,7 @@ static void MCTextSplice(NSString *a, NSString *b, NSRange *inA, NSRange *inB) {
     // Binary by its content (or a document only Quick Look shows) is never
     // opened as text; a backup, being text, still is, and in the viewer its
     // kind of file has over its text (a CSV's table, a JSON outline).
-    MCViewerKind viewer = remote ? MCViewerNone : MCViewerKindForFile(path);
+    MCViewerKind viewer = remote ? remoteViewer : MCViewerKindForFile(path);
     if ((restored || held) && MCViewerKindWithoutText(viewer)) viewer = MCViewerNone;
     if (MCViewerKindWithoutText(viewer) && [self showViewer:viewer]) {
         [self recordModDate];
@@ -591,7 +601,7 @@ static void MCTextSplice(NSString *a, NSString *b, NSRange *inA, NSRange *inB) {
     }
     // Stat'ed before it is read, so a file still being written when it is
     // read never counts as matching the disk (FolderSearch::readFileStable).
-    MCDiskText *disk = remote ? [self sessionRemoteTextOf:_activeTab] : MCReadDiskText(path, ULLONG_MAX);
+    MCDiskText *disk = remote ? (remoteText ?: [self sessionRemoteTextOf:_activeTab]) : MCReadDiskText(path, ULLONG_MAX);
     NSString *content = disk.text;
     // Over SSH, a file not there yet (the address named a new one, or New
     // File made its tab): empty, untitled at its path, and made there by
@@ -629,6 +639,15 @@ static void MCTextSplice(NSString *a, NSString *b, NSRange *inA, NSRange *inB) {
                       [ext isEqualToString:@"markdown"];
     self.isLatex = [ext isEqualToString:@"tex"] || [ext isEqualToString:@"ltx"] ||
                    [ext isEqualToString:@"latex"];
+    // Over SSH the LaTeX preview is not offered yet: it typesets beside the
+    // file (its scratch copy and output), which is on the other machine.
+    // The source opens as text, and the status bar says why.
+    if (remote && self.isLatex) {
+        self.isLatex = NO;
+        [self flashStatus:[NSString stringWithFormat:@"The LaTeX preview does not work in a window over SSH yet: it "
+                                                     @"typesets beside the file, which is on %@.",
+                                                     self.sessionRemoteLabel]];
+    }
     // Markdown and LaTeX both open in their preview, unless the file is
     // empty: a blank preview of a new file looks like nothing opened.
     BOOL blank = [(held ?: content) stringByTrimmingCharactersInSet:

@@ -11976,6 +11976,7 @@ static void testMultiCaretOccurrences() {
 #include "rename_tests.inc"
 #include "window_title_tests.inc"
 #include "sidebar_panels_tests.inc"
+#include "remote_cache_tests.inc"
 
 int main() {
     std::printf("Running Mutible core tests...\n");
@@ -12172,6 +12173,7 @@ int main() {
     testProcessEnv();
     testRename();
     testWindowTitle();
+    testRemoteCache();
     std::printf("\n%d passed, %d failed\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

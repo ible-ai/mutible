@@ -37,6 +37,9 @@ extern const NSUInteger MCCsvLargeRows;
 // The viewer for a file, from its first bytes, its name and its size.
 // Images, PDFs, video and audio are routed before this is asked.
 MCViewerKind MCViewerKindForFile(NSString *path);
+// The same from bytes already read (`data`, its first `len` bytes; the
+// file's `size`): a window over SSH, which reads a file through its host.
+MCViewerKind MCViewerKindForHead(NSString *path, const char *data, size_t len, unsigned long long size);
 // A viewer of a file that has no text in the tab (nothing to save).
 BOOL MCViewerKindWithoutText(MCViewerKind kind);
 // A viewer shown over the tab's text in preview mode, which Shift+Cmd+V

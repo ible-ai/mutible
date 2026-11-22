@@ -584,16 +584,24 @@ static NSString *const kKeepUnsavedDetail = @"Keep Unsaved leaves your changes u
     _haveSourcePosition = t.haveSourcePosition;
     _previewEntryScroll = t.previewEntryScroll;
     [self makeEditorReadOnly];   // a long text the tab that left kept goes first
+    // Over SSH a viewer shows the file's copy (+RemoteViewers), read again
+    // when the host said it may have changed while another tab showed.
+    const BOOL showsFile = MCViewerKindWithoutText(t.viewerKind) || t.isImage || t.isPDF || t.isMedia;
+    if (showsFile && [self remoteCopyIsStaleFor:t]) {
+        [self loadActiveTab];
+        return;
+    }
+    NSString *shown = showsFile ? [self viewerPathOf:t] : path;
     if (MCViewerKindWithoutText(t.viewerKind)) {
         if (![self showViewer:t.viewerKind]) [self loadActiveTab];
         return;
     }
     if (t.isImage) {
-        if (![self showImageAtPath:path]) [self loadActiveTab];
+        if (!shown || ![self showImageAtPath:shown]) [self loadActiveTab];
         return;
     }
     if (t.isPDF) {
-        if (![self showPDFAtPath:path]) { [self loadActiveTab]; return; }
+        if (!shown || ![self showPDFAtPath:shown]) { [self loadActiveTab]; return; }
         PDFDocument *doc = self.pdfView.document;
         if (t.haveView && t.pdfPage < doc.pageCount) {
             [self pdfKeepsPlaceGiven];
@@ -605,7 +613,7 @@ static NSString *const kKeepUnsavedDetail = @"Keep Unsaved leaves your changes u
     }
     if (t.isMedia) {
         const double at = t.mediaTime;
-        if (![self showMediaAtPath:path]) { [self loadActiveTab]; return; }
+        if (!shown || ![self showMediaAtPath:shown]) { [self loadActiveTab]; return; }
         if (at > 0)
             [self.playerView.player seekToTime:CMTimeMakeWithSeconds(at, 600)
                                toleranceBefore:kCMTimeZero toleranceAfter:kCMTimeZero];

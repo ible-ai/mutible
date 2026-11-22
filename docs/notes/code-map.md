@@ -194,7 +194,11 @@ goes here first, with tests; the GUI only displays it.
   `ClaudeStatusLine` (`mutible statusline`: installing it over the user's
   status line, undo, the log);
   `ProcessTable` (processes and ports per folder: tracking, groups, Stop's plan).
-- Files: `FileSniff` (how a file is shown), `Csv`, `JsonOutline`, `Notebook`,
+- Files: `FileSniff` (how a file is shown), `RemoteCache` (a window over
+  SSH's viewers through copies: the copies' folder names, where a copy
+  goes, how a file read through the host is shown, the 64 MB limit, a
+  notice that may have changed a copy, a Markdown picture's remote file),
+  `Csv`, `JsonOutline`, `Notebook`,
   `SqliteRead` (a SQLite database read-only, with a deadline: tables and a
   page of rows; the system libsqlite3, the one library the core links),
   `WebBookmark` (web bookmarks as .url and .webloc files: reading, writing,
@@ -264,7 +268,9 @@ goes here first, with tests; the GUI only displays it.
   and what it took from a closed window's, stage 6), `RemoteWorkspace`
   (a window over SSH's folder through its host: the tree's `MCTreeSource`,
   the host's disk notices, Quick Open's list, Find in Folder, new files;
-  stage 8), `RemoteConnect` (the small window of a window over SSH
+  stage 8), `RemoteFileCache` (a window over SSH's private folder of
+  copies for the viewers, removed with the window and, for a process that
+  ended, at launch; stage 8), `RemoteConnect` (the small window of a window over SSH
   connecting off the main thread: its progress line, Cancel, the addresses
   waiting for it; stage 8), `TypesetPages`
   (the session web page's LaTeX pages drawn as PNGs with CoreGraphics,
@@ -295,7 +301,7 @@ goes here first, with tests; the GUI only displays it.
 `validateMenuItem:`, undo and redo, and the forwarding accessors of the active
 tab. The rest is in `EditorController+<Concern>.mm`: Layout, StatusBar, Panels
 (terminal dock, browser, keyboard between panes), Search, Tree, TreeDetails,
-Tabs (tabs, closed tabs, saving), Session (the session host's hooks), Remote (a window over SSH's tree, Quick Open, Find in Folder and new files through its host, and what it refuses there), Groups (the split editor, and the window's Model::Window behind both), Persistence (sessions, backups, auto-save,
+Tabs (tabs, closed tabs, saving), Session (the session host's hooks), Remote (a window over SSH's tree, Quick Open, Find in Folder and new files through its host, and what it refuses there), RemoteViewers (a window over SSH's files in the viewers, through copies read from its host, and its Markdown pictures), Groups (the split editor, and the window's Model::Window behind both), Persistence (sessions, backups, auto-save,
 files changed outside), PageTabs (the review, commit and comparison tabs
 as sessions keep them, made again on restore), TreeFocus (Focus on Folder and Add to Focus), TreeReveal (the tree following the active tab), WindowTitle (the window's title and representedURL, by who has the keyboard), Rendering (what the editor's slot shows), Highlighting,
 Settings, Format, EditorView (line numbers, brackets, zoom, comments, tasks,
