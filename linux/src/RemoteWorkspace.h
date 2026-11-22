@@ -60,6 +60,15 @@ public:
     // nothing, when there is no live link.
     bool listFolder(const std::string& path, std::function<void(bool ok, std::vector<Entry>&&)> done);
 
+    // Whether the host does the tree's file operations (an older one does
+    // not: the caller says so).
+    bool hostDoesFileOps() const;
+    // One of them on the host (fileOpAsync): `request` as SessionHost.md's
+    // "The tree's file operations" has it, paths from the folder ('/'-separated);
+    // `done(ok, answer)` once, never inside this call. False, calling
+    // nothing, when there is no live link or the host does not do them.
+    bool fileOp(Json request, std::function<void(bool ok, const Json& answer)> done);
+
     // The folders listed in the tree now (absolute): the host watches them.
     // Sent when it differs from what was sent last, once per turn of the main
     // loop, and again to a new host.

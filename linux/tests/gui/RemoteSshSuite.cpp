@@ -29,7 +29,11 @@
 //     (folders first, the ignored log marked, every listing counted by the
 //     window's workspace); the folder src opened; two files made on disk
 //     appear through the host's notices; Enter on a row opens it through the
-//     host; New Folder is refused with its note; Ctrl+P lists the host's
+//     host; the tree's file operations go through the host (flag 64): New
+//     Folder, Rename of an open file and of a folder holding one (the tabs'
+//     paths follow, a save then writes the new name), a refused rename (the
+//     host's sentence in the status bar, nothing changed), a drag onto a
+//     folder, Delete after its question, New File; Ctrl+P lists the host's
 //     files without the ignored log and opens src/util.c; Find in Folder
 //     finds "2 matches in 2 files" with the log left out, a row opens
 //     src/main.c, and Replace All goes through the host's replace (a host
@@ -203,6 +207,45 @@ void dismissAlert() {
     for (const MCGuiAppWindow& a : MCGuiAppWindows())
         if (top == a.window) return;
     if (top) gtk_window_close(top);
+}
+
+// The first widget of `type` under `w`.
+GtkWidget* firstOfType(GtkWidget* w, GType type) {
+    if (!w) return nullptr;
+    if (G_TYPE_CHECK_INSTANCE_TYPE(w, type)) return w;
+    for (GtkWidget* c = gtk_widget_get_first_child(w); c; c = gtk_widget_get_next_sibling(c))
+        if (GtkWidget* hit = firstOfType(c, type)) return hit;
+    return nullptr;
+}
+
+GtkWidget* nameEntry() { return firstOfType(remoteWindow().tree->namePopover(), GTK_TYPE_ENTRY); }
+
+// The tree's name box (New File, New Folder, Rename) filled in and answered.
+void typeName(const std::string& name) {
+    MCGuiWait("the name box, with the keyboard", 10, [] {
+        GtkWidget* e = nameEntry();
+        return e && gtk_widget_is_visible(e) && gtk_widget_has_focus(firstOfType(e, GTK_TYPE_TEXT)) &&
+               gtk_window_is_active(remoteWindow().window);
+    });
+    MCGuiStep("the name typed over what was there", [name] {
+        MCGuiKey("ctrl+a");
+        MCGuiType(name);
+    });
+    MCGuiWait("in the box", 10, [name] {
+        GtkWidget* e = nameEntry();
+        return e && std::string(gtk_editable_get_text(GTK_EDITABLE(e))) == name;
+    });
+    MCGuiStep("Enter", [] { MCGuiKey("enter"); });
+}
+
+// The row at `rel` (from the folder) revealed and selected, the tree with the keyboard.
+void selectRow(const std::string& rel) {
+    MCGuiStep("the row " + rel + " selected", [rel] {
+        remoteWindow().tree->revealPath(gFolder + rel);
+        remoteWindow().tree->focus();
+        MCGuiSetKeyWindow(nullptr);
+    });
+    MCGuiWait("selected", 10, [rel] { return remoteWindow().tree->selectedPath() == gFolder + rel; });
 }
 
 void writeScript(const std::string& path, const std::string& body) {
@@ -399,15 +442,181 @@ MC_GUI_SUITE(remote_ssh) {
     MCGuiWait("util.c read through the host", 20, [] {
         return textOf(tabOf(gFolder + "/src/util.c")) == "int util() { return 1; }  /* needle two */\n";
     });
-    MCGuiStep("New Folder is refused, with its note, and no folder is made", [] {
+    // ---- the tree's file operations through the host (Welcome flag 64):
+    // New Folder, Rename, Move by a drag, Delete after its question, a
+    // refusal, New File; each changes the disk (the stand-in's folder), the
+    // tree's rows come from the host's notices, and the tabs follow.
+    MCGuiStep("New Folder, from the tree's src folder", [] {
+        remoteWindow().tree->selectIfListed(gFolder + "/src/util.c");
+        remoteWindow().tree->focus();
+        MCGuiSetKeyWindow(nullptr);
         g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "newfolder", nullptr);
     });
-    MCGuiWait("the note", 10, [] { return statusText().find("New Folder does not work in a window over SSH") == 0; });
-    MCGuiStep("nothing made on disk", [] {
+    typeName("madeby");
+    MCGuiWait("made on the host's disk, its row there", 20, [] {
+        return g_file_test((gFolder + "/src/madeby").c_str(), G_FILE_TEST_IS_DIR) && hasRow("madeby", 1);
+    });
+    MCGuiStep("no refusal note, the new folder selected", [] {
+        GCHECK(statusText().find("does not work") == std::string::npos);
+        GCHECK(remoteWindow().remoteWs->hostDoesFileOps());
+    });
+    MCGuiWait("the new folder selected", 10, [] { return remoteWindow().tree->selectedPath() == gFolder + "/src/madeby"; });
+
+    MCGuiStep("ren.txt on disk and in a tab, its row selected", [] {
+        MCGuiWriteFile(gFolder + "/src/ren.txt", "ren\n");
+        MCGuiWriteFile(gFolder + "/src/pack/inner.txt", "inner\n");
+        MCGuiWriteFile(gFolder + "/src/dup.txt", "dup\n");
+        MCGuiWriteFile(gFolder + "/src/dup2.txt", "dup2\n");
+    });
+    MCGuiWait("their rows", 20, [] { return hasRow("ren.txt", 1) && hasRow("pack", 1) && hasRow("dup2.txt", 1); });
+    MCGuiStep("ren.txt and pack/inner.txt opened", [] {
+        remoteWindow().editor->openFile(gFolder + "/src/ren.txt");
+        remoteWindow().editor->openFile(gFolder + "/src/pack/inner.txt");
+    });
+    MCGuiWait("both read through the host", 20, [] {
+        return textOf(tabOf(gFolder + "/src/ren.txt")) == "ren\n" && textOf(tabOf(gFolder + "/src/pack/inner.txt")) == "inner\n";
+    });
+    selectRow("/src/ren.txt");
+    MCGuiStep("Rename (F2's action)", [] {
+        g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "rename", nullptr);
+    });
+    typeName("ren2.txt");
+    MCGuiWait("renamed on disk, its row renamed, its tab follows", 20, [] {
+        Document* d = tabOf(gFolder + "/src/ren2.txt");
+        return !g_file_test((gFolder + "/src/ren.txt").c_str(), G_FILE_TEST_EXISTS) &&
+               readFile(gFolder + "/src/ren2.txt") == "ren\n" && hasRow("ren2.txt", 1) && !hasRow("ren.txt", 1) &&
+               d && d->path() == gFolder + "/src/ren2.txt" && tabOf(gFolder + "/src/ren.txt") == nullptr;
+    });
+    MCGuiStep("the tab's text kept, clean, still the host's document", [] {
+        Document* d = tabOf(gFolder + "/src/ren2.txt");
+        GCHECK(d != nullptr);
+        if (!d) return;
+        GCHECK_EQ_STR(textOf(d), "ren\n");
+        GCHECK(!d->dirty());
+        GCHECK(d->remote());
+    });
+    MCGuiStep("typed into the renamed tab, Ctrl+S: the host saves it at the new name", [] {
+        remoteWindow().editor->openFile(gFolder + "/src/ren2.txt");
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+end");
+        MCGuiType("more\n");
+    });
+    MCGuiWait("unsaved", 10, [] { Document* d = tabOf(gFolder + "/src/ren2.txt"); return d && d->dirty(); });
+    MCGuiStep("Ctrl+S", [] { MCGuiKey("ctrl+s"); });
+    MCGuiWait("saved at the new name, no old file back", 10, [] {
+        Document* d = tabOf(gFolder + "/src/ren2.txt");
+        return readFile(gFolder + "/src/ren2.txt") == "ren\nmore\n" && d && !d->dirty() &&
+               !g_file_test((gFolder + "/src/ren.txt").c_str(), G_FILE_TEST_EXISTS);
+    });
+
+    selectRow("/src/pack");
+    MCGuiStep("Rename the folder holding an open file", [] {
+        g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "rename", nullptr);
+    });
+    typeName("pack2");
+    MCGuiWait("the folder renamed on disk and in the tree, the tab's path follows", 20, [] {
+        Document* d = tabOf(gFolder + "/src/pack2/inner.txt");
+        return !g_file_test((gFolder + "/src/pack").c_str(), G_FILE_TEST_EXISTS) &&
+               readFile(gFolder + "/src/pack2/inner.txt") == "inner\n" && hasRow("pack2", 1) && !hasRow("pack", 1) &&
+               d && d->path() == gFolder + "/src/pack2/inner.txt" && tabOf(gFolder + "/src/pack/inner.txt") == nullptr;
+    });
+
+    // ---- a refusal: nothing changes, the host's sentence is in the status bar
+    selectRow("/src/dup2.txt");
+    MCGuiStep("Rename dup2.txt to the name dup.txt has", [] {
+        g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "rename", nullptr);
+    });
+    typeName("dup.txt");
+    MCGuiWait("the host's refusal in the status bar", 20, [] { return statusText().find("dup.txt") != std::string::npos &&
+                                                                      statusText().find("exist") != std::string::npos; });
+    MCGuiStep("nothing changed", [] {
         MCGuiNote("status: %s", statusText().c_str());
-        GCHECK(statusText().find("the files are on standin:" + gFolder) != std::string::npos);
-        GCHECK(!g_file_test((gFolder + "/src/untitled folder").c_str(), G_FILE_TEST_EXISTS));
-        GCHECK(remoteWindow().tree->namePopover() == nullptr);
+        GCHECK_EQ_STR(readFile(gFolder + "/src/dup.txt"), "dup\n");
+        GCHECK_EQ_STR(readFile(gFolder + "/src/dup2.txt"), "dup2\n");
+        GCHECK(hasRow("dup2.txt", 1) && hasRow("dup.txt", 1));
+    });
+
+    // ---- Move: ren2.txt dragged onto the folder madeby
+    MCGuiStep("the row revealed", [] { remoteWindow().tree->revealPath(gFolder + "/src/ren2.txt"); });
+    MCGuiWait("both rows on screen", 10, [] {
+        GtkWidget* row = MCGuiTreeRow(remoteWindow().tree, gFolder + "/src/ren2.txt");
+        GtkWidget* to = MCGuiTreeRow(remoteWindow().tree, gFolder + "/src/madeby");
+        return row && to && MCGuiOnScreen(row) && MCGuiOnScreen(to);
+    });
+    MCGuiStep("the row dragged onto madeby", [] {
+        GtkWidget* row = MCGuiTreeRow(remoteWindow().tree, gFolder + "/src/ren2.txt");
+        GtkWidget* to = MCGuiTreeRow(remoteWindow().tree, gFolder + "/src/madeby");
+        if (!row || !to) return;
+        graphene_point_t mid = GRAPHENE_POINT_INIT((float)gtk_widget_get_width(to) / 2,
+                                                   (float)gtk_widget_get_height(to) / 2);
+        graphene_point_t at;
+        if (!gtk_widget_compute_point(to, row, &mid, &at)) {
+            GCHECK(!"the target's middle in the row's coordinates");
+            return;
+        }
+        const double x0 = 12, y0 = gtk_widget_get_height(row) / 2.0;
+        MCGuiDragThrough(row, {{x0, y0}, {x0 + 12, y0 + 2}, {(x0 + at.x) / 2, (y0 + at.y) / 2},
+                               {at.x, at.y}, {at.x + 3, at.y + 2}, {at.x, at.y}});
+    });
+    MCGuiWait("moved on disk, the tab follows", 20, [] {
+        Document* d = tabOf(gFolder + "/src/madeby/ren2.txt");
+        return !g_file_test((gFolder + "/src/ren2.txt").c_str(), G_FILE_TEST_EXISTS) &&
+               readFile(gFolder + "/src/madeby/ren2.txt") == "ren\nmore\n" &&
+               d && d->path() == gFolder + "/src/madeby/ren2.txt" && tabOf(gFolder + "/src/ren2.txt") == nullptr;
+    });
+    MCGuiWait("its row under madeby", 20, [] { return hasRow("ren2.txt", 2); });
+    // The drop came from the app's own drag: GDK's user time may be left
+    // ahead of the server's (Input.cpp's trap), so put it back.
+    MCGuiStep("GDK's user time put back", [] { MCGuiPutBackUserTime(); });
+    // ---- Delete: the question, then the host deletes
+    selectRow("/src/madeby/ren2.txt");
+    MCGuiStep("Delete", [] {
+        g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "trash", nullptr);
+    });
+    MCGuiWait("the question", 10, [] { return alertText().find("permanently") != std::string::npos; });
+    MCGuiStep("its words; Cancel changes nothing", [] {
+        const std::string t = alertText();
+        MCGuiNote("question: %s", t.c_str());
+        GCHECK(t.find("Delete “ren2.txt” permanently?") != std::string::npos);
+        GCHECK(t.find("no Trash") != std::string::npos);
+        MCGuiSetKeyWindow(MCGuiTopWindow());
+        MCGuiClick(MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Cancel"));
+    });
+    MCGuiWait("closed", 10, [] { return alertText().empty(); });
+    MCGuiStep("still there", [] {
+        GCHECK(g_file_test((gFolder + "/src/madeby/ren2.txt").c_str(), G_FILE_TEST_EXISTS));
+        GCHECK(hasRow("ren2.txt", 2));
+        g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "trash", nullptr);
+    });
+    MCGuiWait("the question again", 10, [] { return alertText().find("permanently") != std::string::npos; });
+    MCGuiStep("Delete Permanently", [] {
+        MCGuiSetKeyWindow(MCGuiTopWindow());
+        MCGuiClick(MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Delete Permanently"));
+    });
+    MCGuiWait("gone from the disk and the tree; its clean tab closed", 20, [] {
+        return !g_file_test((gFolder + "/src/madeby/ren2.txt").c_str(), G_FILE_TEST_EXISTS) && !hasRow("ren2.txt", 2) &&
+               tabOf(gFolder + "/src/madeby/ren2.txt") == nullptr;
+    });
+
+    // ---- New File
+    selectRow("/src/madeby");
+    MCGuiStep("New File in madeby", [] {
+        g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "newfile", nullptr);
+    });
+    typeName("made.txt");
+    MCGuiWait("made by the host, its row there, opened", 20, [] {
+        Document* d = tabOf(gFolder + "/src/madeby/made.txt");
+        return g_file_test((gFolder + "/src/madeby/made.txt").c_str(), G_FILE_TEST_IS_REGULAR) &&
+               hasRow("made.txt", 2) && d && remoteWindow().editor->currentPath() == gFolder + "/src/madeby/made.txt";
+    });
+    MCGuiStep("the new file's tab is the host's: empty, clean; the statuses carry no refusal", [] {
+        Document* d = tabOf(gFolder + "/src/madeby/made.txt");
+        GCHECK(d != nullptr);
+        if (d) GCHECK_EQ_STR(textOf(d), "");
+        GCHECK_EQ_STR(readFile(gFolder + "/src/madeby/made.txt"), "");
+        // Put the rest of the checks back as they were.
+        remoteWindow().tree->selectIfListed(gFolder + "/src/util.c");
     });
 
     MCGuiStep("Quick Open", [] {
@@ -536,6 +745,11 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiWait("it asks first: fresh.c, held by its tab, is out of the count", 10, [] {
         return alertText().find("Replace 2 matches in 2 files?") != std::string::npos;
+    });
+    MCGuiWait("its Replace button on screen", 10, [] {
+        GtkWindow* top = MCGuiTopWindow();
+        GtkWidget* b = top ? MCGuiFindButton(GTK_WIDGET(top), "Replace") : nullptr;
+        return b && MCGuiOnScreen(b);
     });
     MCGuiStep("the question's words, as the local one's; Replace", [] {
         const std::string t = alertText();

@@ -2716,6 +2716,47 @@ static bool refuseOverSsh(App* app, const std::string& what) {
     return true;
 }
 
+// A tree's file operation on the host of a window over SSH (the core's
+// "The tree's file operations", Welcome flag 64): `request` with its paths
+// from the folder. `done(answer)` runs on success; a refusal shows the
+// host's own sentence in the status bar and changes nothing. True when it
+// went (or was refused with a note), false for a window on this machine.
+static bool overSshFileOp(App* app, const std::string& what, Json request,
+                          std::function<void(const Json& answer)> done) {
+    if (!app->remote) return false;
+    const std::string where = app->link ? app->link->label() : std::string("the other machine");
+    if (!app->remoteWs || !app->remoteWs->hostDoesFileOps()) {
+        gtk_widget_error_bell(app->window);
+        const bool lost = app->link && app->link->lost();
+        flashStatus(app, lost ? "Not connected to " + where + ": " + what + " waits for the connection."
+                              : what + " does not work here: mutible on " + where +
+                                    " is too old for it. Upgrade it there, then open the address again.");
+        return true;
+    }
+    const bool sent = app->remoteWs->fileOp(std::move(request), [app, what, where, done](bool ok, const Json& answer) {
+        if (app->dead) return;
+        if (!ok) {
+            flashStatus(app, what + " did not finish: the connection to " + where + " was lost.");
+            return;
+        }
+        if (!answer["error"].isNull() || !answer["ok"].asBool()) {
+            gtk_widget_error_bell(app->window);
+            const std::string why = answer["error"].asString();
+            flashStatus(app, why.empty() ? what + " was refused by the host." : why);
+            return;
+        }
+        done(answer);
+    });
+    if (!sent) flashStatus(app, what + " waits for the connection to " + where + ".");
+    return true;
+}
+
+// `path` (absolute, under the window's folder) as the host spells it; false
+// for the folder itself or a path outside it.
+static bool remoteRel(App* app, const std::string& path, std::string* rel) {
+    return app->remoteWs && app->remoteWs->relative(path, rel) && !rel->empty();
+}
+
 static void act_new_file(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
     const std::string dir = targetDirectory(app);
@@ -2723,8 +2764,20 @@ static void act_new_file(GSimpleAction*, GVariant*, gpointer userp) {
         if (!validName(app, name)) return;
         const std::string path = dir + "/" + name;
         if (app->remote) {
-            // An empty untitled tab at that path, which its first save makes
-            // through the host.
+            // Made by the host, which opens it as the local New File does;
+            // a host without file operations (an older one) gets the empty
+            // untitled tab at that path, which its first save makes.
+            std::string rel;
+            if (app->remoteWs && app->remoteWs->hostDoesFileOps() && remoteRel(app, path, &rel)) {
+                Json q = Json::object();
+                q.set("op", Json("newFile"));
+                q.set("path", Json(rel));
+                overSshFileOp(app, "New File", std::move(q), [app, path](const Json&) {
+                    app->tree->revealPath(path, true);
+                    openFileCb(path, app);
+                });
+                return;
+            }
             app->editor->addUntitled(path);
             return;
         }
@@ -2747,11 +2800,19 @@ static void act_new_file(GSimpleAction*, GVariant*, gpointer userp) {
 
 static void act_new_folder(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
-    if (refuseOverSsh(app, "New Folder")) return;
     const std::string dir = targetDirectory(app);
     app->tree->askName("New folder name", "", [app, dir](const std::string& name) {
         if (!validName(app, name)) return;
         const std::string path = dir + "/" + name;
+        if (app->remote) {
+            std::string rel;
+            Json q = Json::object();
+            q.set("op", Json("newFolder"));
+            q.set("path", Json(remoteRel(app, path, &rel) ? rel : std::string()));
+            overSshFileOp(app, "New Folder", std::move(q),
+                          [app, path](const Json&) { app->tree->revealPath(path, true); });
+            return;
+        }
         GFile* f = g_file_new_for_path(path.c_str());
         GError* err = nullptr;
         const bool ok = g_file_make_directory(f, nullptr, &err);
@@ -2770,18 +2831,26 @@ static void act_new_folder(GSimpleAction*, GVariant*, gpointer userp) {
 // every window that has it open: one left on the old name would save its
 // edits back there and bring the old file back. That holds when a folder
 // above it moved, too.
+static void followMoveIn(App* a, const std::string& src, const std::string& dst, bool onHost) {
+    a->editor->pathMoved(src, dst, onHost);
+    a->nav->moved(src, dst);   // Go Back's places follow it
+    updateTitle(a);
+    refreshHints(a);   // the preview toggle depends on the name
+}
+
 static void followMove(const std::string& src, const std::string& dst) {
-    for (App* a : g.windows) {
-        a->editor->pathMoved(src, dst);
-        a->nav->moved(src, dst);   // Go Back's places follow it
-        updateTitle(a);
-        refreshHints(a);   // the preview toggle depends on the name
-    }
+    for (App* a : g.windows) followMoveIn(a, src, dst, false);
+}
+
+// A window over SSH's file or folder the host moved: the tabs of this window
+// only (another window's paths are of its own machine or host), whose
+// documents the host has moved already.
+static void followHostMove(App* app, const std::string& src, const std::string& dst) {
+    followMoveIn(app, src, dst, true);
 }
 
 static void act_rename(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
-    if (refuseOverSsh(app, "Rename")) return;
     const std::string src = app->tree->selectedPath();
     if (src.empty()) { gtk_widget_error_bell(app->window); return; }
     const std::string old = baseName(src);
@@ -2790,6 +2859,18 @@ static void act_rename(GSimpleAction*, GVariant*, gpointer userp) {
         char* parent = g_path_get_dirname(src.c_str());
         const std::string dst = std::string(parent) + "/" + name;
         g_free(parent);
+        if (app->remote) {
+            std::string rel;
+            Json q = Json::object();
+            q.set("op", Json("rename"));
+            q.set("path", Json(remoteRel(app, src, &rel) ? rel : std::string()));
+            q.set("name", Json(name));
+            overSshFileOp(app, "Rename", std::move(q), [app, src, dst](const Json&) {
+                followHostMove(app, src, dst);
+                app->tree->revealPath(dst, true);
+            });
+            return;
+        }
         GFile* from = g_file_new_for_path(src.c_str());
         GFile* to = g_file_new_for_path(dst.c_str());
         GError* err = nullptr;
@@ -2869,7 +2950,29 @@ bool copyTree(GFile* src, GFile* dst, GError** err) {
 // selects what arrived.
 static void dropOnTree(App* app, const std::vector<std::string>& paths,
                        const std::string& dir, bool move) {
-    if (refuseOverSsh(app, "Dropping files into the tree")) return;
+    if (app->remote) {
+        // A row dragged within the tree moves on the host; files from another
+        // program are on this machine, not there.
+        if (!move) {
+            refuseOverSsh(app, "Dropping files into the tree");
+            return;
+        }
+        std::string dirRel;
+        const bool toFolder = app->remoteWs && app->remoteWs->relative(dir, &dirRel);
+        for (const std::string& src : paths) {
+            const std::string dst = dir + "/" + baseName(src);
+            std::string rel;
+            Json q = Json::object();
+            q.set("op", Json("move"));
+            q.set("path", Json(remoteRel(app, src, &rel) ? rel : std::string()));
+            q.set("to", Json(toFolder ? dirRel : std::string("?")));
+            overSshFileOp(app, "Move", std::move(q), [app, src, dst](const Json&) {
+                followHostMove(app, src, dst);
+                app->tree->revealPath(dst, true);
+            });
+        }
+        return;
+    }
     if (move) {
         for (const std::string& src : paths) {
             const std::string name = baseName(src);
@@ -2938,6 +3041,19 @@ static void dropOnTree(App* app, const std::vector<std::string>& paths,
     g_object_unref(task);
 }
 
+// What a path gone leaves in one window: its tabs close, unless they hold
+// unsaved changes, which stay (the Mac's rule). The tab shown next is not
+// revealed in any tree: following it put the tree at that file, the top of
+// the tree for one near it ("the view resets and I am brought to the top").
+static void forgetGone(App* a, const std::string& path) {
+    if (a->treeFollow) a->treeFollow->quiet(true);
+    a->editor->pathTrashed(path);
+    if (a->treeFollow) a->treeFollow->quiet(false);
+    a->nav->removed(path);   // no place to go back to
+    updateTitle(a);
+    refreshHints(a);
+}
+
 static void trashNow(App* app, const std::string& path) {
     GFile* f = g_file_new_for_path(path.c_str());
     GError* err = nullptr;
@@ -2953,30 +3069,21 @@ static void trashNow(App* app, const std::string& path) {
     // after it, the tree keeps its scroll and open folders. Its folder's
     // listing takes the row out a moment later.
     app->tree->removing(path);
-    // The tabs of what went close, in every window, unless they hold unsaved
-    // changes: those stay open, and saving writes the file again (the Mac's
-    // rule). The tab shown next is not revealed in any tree: following it
-    // put the tree at that file, the top of the tree for one near it ("the
-    // view resets and I am brought to the top").
-    for (App* a : g.windows) {
-        if (a->treeFollow) a->treeFollow->quiet(true);
-        a->editor->pathTrashed(path);
-        if (a->treeFollow) a->treeFollow->quiet(false);
-        a->nav->removed(path);   // no place to go back to
-        updateTitle(a);
-        refreshHints(a);
-    }
+    // The tabs of what went close, in every window (forgetGone).
+    for (App* a : g.windows) forgetGone(a, path);
 }
 
 static void act_trash(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
-    if (refuseOverSsh(app, "Move to Trash")) return;
     const std::string path = app->tree->selectedPath();
     if (path.empty()) { gtk_widget_error_bell(app->window); return; }
 
     // A name with no spaces can be longer than a line: Question wraps it.
     Question::Spec q;
-    q.message = "Move “" + baseName(path) + "” to the Trash?";
+    // The host has no Trash (the core's): a window over SSH deletes for good,
+    // after this question.
+    q.message = app->remote ? "Delete “" + baseName(path) + "” permanently?"
+                            : "Move “" + baseName(path) + "” to the Trash?";
     // The Mac asks the same question. A tab of it with unsaved changes stays
     // open with them, so say so.
     for (Document* d : app->editor->dirtyDocuments())
@@ -2986,11 +3093,26 @@ static void act_trash(GSimpleAction*, GVariant*, gpointer userp) {
                 "writes the file again.";
             break;
         }
-    q.buttons = {"Move to Trash", "Cancel"};
+    if (app->remote) {
+        const std::string where = app->link ? app->link->label() : std::string("the other machine");
+        q.detail = "It is on " + where + ", which has no Trash for mutible: it cannot be brought back." +
+                   (q.detail.empty() ? std::string() : " " + q.detail);
+    }
+    q.buttons = {app->remote ? "Delete Permanently" : "Move to Trash", "Cancel"};
     q.defaultButton = 0;
     q.cancelButton = 1;
     Question::ask(GTK_WINDOW(app->window), q, [app, path](int answer) {
-        if (answer == 0 && !app->dead) trashNow(app, path);
+        if (answer != 0 || app->dead) return;
+        if (!app->remote) { trashNow(app, path); return; }
+        std::string rel;
+        Json r = Json::object();
+        r.set("op", Json("delete"));
+        r.set("path", Json(remoteRel(app, path, &rel) ? rel : std::string()));
+        r.set("permanent", Json(true));
+        overSshFileOp(app, "Delete", std::move(r), [app, path](const Json&) {
+            app->tree->removing(path);   // its row now; the host's notice lists the folder again
+            forgetGone(app, path);
+        });
     });
 }
 

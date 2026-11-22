@@ -259,7 +259,8 @@ public:
     bool anyDirty() const { return !dirtyDocuments().empty(); }
     // A file or folder moved (a rename, a drag in the tree): every tab of it,
     // or under it, follows, unsaved changes included.
-    void pathMoved(const std::string& from, const std::string& to);
+    // `onHost`: the session's host has moved it already (a window over SSH).
+    void pathMoved(const std::string& from, const std::string& to, bool onHost = false);
     // It went to the Trash: tabs of it, or under it, close, unless they hold
     // unsaved changes, which stay, so saving writes the file again (the
     // Mac's rule).
@@ -610,6 +611,9 @@ public:
     void documentWillReload(Document* d) override;
     void documentReloaded(Document* d) override;
     void documentWrittenByHost(Document* d) override { tookSave(d); }
+    void documentMovedByHost(Document*, const std::string& from, const std::string& now) override {
+        pathMoved(from, now, true);
+    }
     void documentLoaded(Document* d, int result, bool blank) override;   // LargeFileView.cpp
     Model::Preview documentPreview(const Document* d) const override;
     uint64_t documentLastUsed(const Document* d) const override;

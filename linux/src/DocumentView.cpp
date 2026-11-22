@@ -343,7 +343,8 @@ Document::~Document() {
     unenrol();
     if (writeIdle_) g_source_remove(writeIdle_);
     if (dirtyIdle_) g_source_remove(dirtyIdle_);
-    writeIdle_ = dirtyIdle_ = 0;
+    if (movedIdle_) g_source_remove(movedIdle_);
+    writeIdle_ = dirtyIdle_ = movedIdle_ = 0;
     if (!detached_ && client().isOpen(id_)) client().close(id_);
     folds_.reset();
     wrap_.reset();   // while the buffer is there to leave
@@ -1059,6 +1060,18 @@ void Document::tellHostSaved(const std::string* text) {
 void Document::hostWrote(std::uint64_t version, const Json& json) {
     Shared::Client& c = client();
     if (kind_ != Kind::Text || !c.isOpen(id_)) return;
+    // Not a save: the host renamed or moved the file ({path, from, moved}).
+    if (json["moved"].asBool()) {
+        movedTo_ = json["path"].asString();
+        if (movedTo_.empty() || movedIdle_) return;
+        movedIdle_ = g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer p) -> gboolean {
+            Document* d = static_cast<Document*>(p);
+            d->movedIdle_ = 0;
+            d->movedByHost(d->movedTo_);
+            return G_SOURCE_REMOVE;
+        }, this, nullptr);
+        return;
+    }
     HostWrite w;
     // The text written, when the buffer's is the host's at that version.
     w.knowsText = c.unconfirmed(id_) == 0 && c.version(id_) == version;
@@ -1078,6 +1091,19 @@ void Document::hostWrote(std::uint64_t version, const Json& json) {
         d->takeHostWrite();
         return G_SOURCE_REMOVE;
     }, this, nullptr);
+}
+
+void Document::movedByHost(const std::string& now) {
+    if (kind_ != Kind::Text || now.empty() || now == path_) return;
+    // The host has the new path: only the editor's views follow (the tab's
+    // title, the mode by the name).
+    host_->documentMovedByHost(this, path_, now);
+}
+
+void Document::setPathFromHost(const std::string& now) {
+    const bool inSync = hostPath_ == path_;
+    setPath(now, false);
+    if (inSync) hostPath_ = now;
 }
 
 void Document::takeHostWrite() {

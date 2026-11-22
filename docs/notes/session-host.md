@@ -4641,3 +4641,47 @@ files, tested alone), the documents in `Host::onFileOp`.
   changed (links out, "..", names, existing targets, an old host's Welcome),
   documents following a rename and a folder move for both renderers and
   saving to the new path, delete marking them gone.
+
+#### The GTK window over SSH, the tree's file operations (2026-11-21, seventh slice)
+
+A GTK window over SSH whose host has Welcome flag 64
+(`RemoteWorkspace::hostDoesFileOps`) does New Folder, New File, Rename,
+Delete and a row dragged onto a folder through the host's `requestFileOp`
+(`Link::fileOpAsync`, `RemoteWorkspace::fileOp`: answered on the main loop
+as any read, never waited for). No src/ change. `overSshFileOp` (main.cpp)
+sends one and shows a refusal's `error` sentence, as the host spells it, in
+the status bar, changing nothing; the local actions are unchanged.
+
+- **Rename** (the tree's name box, F2) sends `{rename, path, name}`; **move**
+  a drop of a tree row on a folder, one request per row, `to` the folder's
+  path from the window's folder ("" the folder itself); **New Folder** and
+  **New File** the name box's name under the target folder (a new file is
+  then revealed and opened, as the local one is; a host without flag 64
+  keeps the untitled tab that a save makes); the new rows come from the
+  host's FsChanged.
+- **Delete** asks first, in Question's window with words of the local
+  one's: "Delete “x” permanently?", its detail saying the machine has no
+  Trash for mutible, buttons "Delete Permanently" and "Cancel"; only then
+  `{delete, permanent: true}`. The row goes at once (`FileTree::removing`)
+  and the tabs of it close unless they hold unsaved changes, which stay
+  (the local Trash's rule, `forgetGone`), so a clean tab does not stay open
+  on a file that is gone; a dirty one's save writes the file again.
+- **Tabs follow** two ways, whichever comes first: the answer calls
+  `Editor::pathMoved(from, to, onHost)` for this window (paths under a
+  renamed or moved folder too, non-text tabs too), and the host's DocDirty
+  flag 2 with `"moved"` (which every renderer of the document gets, this
+  window's other documents of the same file too) reaches `Document::
+  hostWrote`, which takes it as a move, not a save, and calls
+  `Document::movedByHost`, then `DocumentHost::documentMovedByHost`
+  (Editor: `pathMoved(from, now, true)`). Either way the document is told
+  its path without sending it back (`setPathFromHost`: the host has it
+  already), keeps its text, history and dirty state, and a save writes the
+  new name.
+- **Not done.** Dropping files from another program is still refused (they
+  are on this machine); several selected rows (the tree selects one);
+  other windows over SSH to the same host follow through the notice only
+  for text documents (their Go Back places and title do not follow); the Mac
+  still refuses all of these.
+- **Checked** (`remote_ssh`): each op through the stand-in, disk and tree
+  rows and tabs, a refused rename (the host's sentence, nothing changed), and
+  the question's Cancel.

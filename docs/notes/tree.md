@@ -518,8 +518,10 @@ ignored mark in the info's data (`mutible-ignored`, drawn in
 tree.git-ignored's color). The rest of the tree is the local tree's,
 including sorting, splicing, expansion, selection and scroll. Nothing local
 is read: no monitor, no Worktrees node, no `access()`, no `lstat` or
-`g_file_test` of a row's path. New Folder, Rename, Trash, drops and Reveal
-are refused with a status note. Details: `docs/notes/session-host.md`, "The
+`g_file_test` of a row's path. New Folder, New File, Rename, Delete and a
+row dragged onto a folder go to the host (`overSshFileOp` in main.cpp, "The
+tree's file operations on the host" in session-host.md); drops of files from
+another program and Reveal are refused with a status note. Details: `docs/notes/session-host.md`, "The
 GTK window's tree, Quick Open and Find in Folder over SSH".
 
 ## Traps
@@ -542,4 +544,5 @@ text is in place in its section.
 - The file tree (GTK): Trap: the 300 ms that `keepRows` undoes a jump to the top for counted wall time, and on a loaded machine (several builds, load 50) the frame clock may draw no layout in 300 ms, so the jump came after the keep ended and `tree_edits` failed "the tree kept its place" about one run in nine; the keep lasts at least `kKeepFrames` layouts as well, and at most `kKeepMostUs`.
 - The file tree (Mac): Trap: a remote window's rows are another machine's paths, so anything in the tree that reads this Mac's disk at a row's path (a stat, a file URL, Quick Look, the folder sizer) shows some other file or nothing; ask the row's `source` or pass over a row that has one.
 - The file tree (Mac over SSH): Trap: the tab menu's Rename and Move to Trash were enabled by `fileExistsAtPath:` of the tab's path, which in a window over SSH asks this Mac's disk (the stand-in's folder is on it, so a check passes); a remote tab's items follow the tab (not deleted, not untitled) and the host's flag 64.
+- The file tree (GTK over SSH): Trap: the local tree actions (`act_rename`, `trashNow`, `dropOnTree`) end in `followMove` or a loop over `g.windows`, which retitles the tabs of every window by path; a remote window's paths are another machine's and must follow only its own window (`followHostMove`, `forgetGone`), with `Editor::pathMoved(..., onHost = true)` so the document is not told its path again (the host has it: `Document::setPathFromHost`). The host's DocDirty flag 2 with `"moved"` is not a save: `Document::hostWrote` takes it first, or it would be read as a write of the file with no stamp.
 - The file tree (GTK over SSH): Trap: a path in a remote window names a file of another machine, so any call on it that reads this disk (`g_file_test`, `lstat`, a monitor, `access`, a GFile that is opened) is wrong even when the scratch "remote" of a check passes it; the stand-in serves this machine's own folder, so such a call passes the checks and fails on a real remote (the listing's count of workspace reads and the ignored mark are what a check can see).

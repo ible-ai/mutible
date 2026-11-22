@@ -9411,3 +9411,28 @@ side's; two are fixed, one left alone on purpose.
   search's files with rows not shown come back "changed since the search".
   Real ssh never run. The host op lacks nothing the window needs.
 
+
+### 158. The window over SSH, the tree's file operations (stage 8; November 2026)
+
+- **What it is.** In a GTK window over SSH whose host has Welcome flag 64,
+  New Folder, New File, Rename (F2), Delete and a tree row dragged onto a
+  folder go through the host's `requestFileOp` (the core's #344). Delete asks
+  first ("Delete “x” permanently?", "Delete Permanently" / "Cancel"; the core
+  has no Trash) and sends `permanent: true`. A refusal shows the host's own
+  sentence in the status bar and changes nothing; a host without flag 64 says
+  that mutible there is too old (New File then keeps the untitled tab). Tabs
+  follow a rename or move (a folder's too) from the answer
+  (`Editor::pathMoved(..., onHost)`) and from the host's DocDirty "moved"
+  (`Document::hostWrote` -> `movedByHost`), without sending the path back;
+  Delete closes clean tabs of what went and keeps dirty ones, as the local
+  Trash does. Design: docs/notes/session-host.md, "The GTK window over SSH,
+  the tree's file operations"; trap in docs/notes/tree.md. No src/ change.
+- **Where.** `overSshFileOp`, `followHostMove`, `forgetGone` in main.cpp;
+  `Link::fileOpAsync`, `RemoteWorkspace::fileOp`; `Document::movedByHost`,
+  `setPathFromHost`; `DocumentHost::documentMovedByHost`.
+- **Checked.** `remote_ssh` (157 checks, the New Folder refusal step is now
+  the operations: disk, rows, tabs, a refused rename, the delete question's
+  Cancel and Delete, New File opened).
+- **Not done.** Drops of files from another program (refused); several
+  selected rows (the tree selects one); Go Back places of another window over
+  the same host; the Mac still refuses. Real ssh never run.

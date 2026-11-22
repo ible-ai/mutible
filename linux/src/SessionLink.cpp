@@ -436,6 +436,14 @@ bool Link::readAsync(Json request, std::function<void(bool, const Json&)> done) 
     return true;
 }
 
+bool Link::fileOpAsync(Json request, std::function<void(bool, const Json&)> done) {
+    if (lost() || !client_->hostDoesFileOps()) return false;
+    const std::uint64_t req = client_->requestFileOp(0, std::move(request));
+    if (!req) return false;
+    reads_[req] = std::move(done);
+    return true;
+}
+
 bool Link::readBytesAsync(Json request, BytesFn done) {
     if (lost()) return false;
     const std::uint64_t req = client_->requestRead(0, std::move(request));

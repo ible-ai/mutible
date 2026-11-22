@@ -108,6 +108,10 @@ public:
     // and the document took that as its own save (stage 7): what a save
     // leaves follows (a preview tab kept, the LaTeX preview, the title).
     virtual void documentWrittenByHost(Document*) {}
+    // The session's host moved the document's file (a rename or move done
+    // for another renderer, or this window's own; DocDirty flag 2 with
+    // "moved"): the document has `now` as its path, which `from` was.
+    virtual void documentMovedByHost(Document*, const std::string& /* from */, const std::string& /* now */) {}
     // A file read in the background (Document::beginLoading) is in its
     // buffer, or could not be read (`result`); `blank` when it holds only
     // white space.
@@ -536,6 +540,13 @@ public:
     // a host that saves for apps (its Welcome's flag 2), not lost, not
     // detached.
     bool hostSavesFile() const;
+    // The path as the session's host moved the file (a rename or move for
+    // any renderer): this document's path, which the host has already, so
+    // nothing is sent back, and the editor told (documentMovedByHost).
+    void movedByHost(const std::string& now);
+    // Its path now `now`, which the host has already (a window's own rename
+    // answered by the host, or movedByHost's): nothing is sent to it.
+    void setPathFromHost(const std::string& now);
 
 private:
     struct Load;
@@ -650,6 +661,8 @@ private:
     };
     HostWrite hostWrite_;
     guint     writeIdle_ = 0;
+    std::string movedTo_;         // the host's rename or move, to take at the top of the next turn
+    guint     movedIdle_ = 0;
     bool      hostDirty_ = false;
     uint64_t  dirtyEdits_ = 0;    // edits_ when it was heard
     guint     dirtyIdle_ = 0;
