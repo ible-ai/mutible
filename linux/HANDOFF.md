@@ -9391,3 +9391,23 @@ side's; two are fixed, one left alone on purpose.
 - **Not done.** A new file's tab is dirty on GTK (as New File's), not clean
   as on the Mac; the locate waits on the host (5 s at most) in the command
   line's handler; real ssh never run.
+
+### 157. The window over SSH, Replace All through the host (stage 8; November 2026)
+
+- **What it is.** Replace All in a GTK window over SSH uses the host's
+  "replace" op, as the browser page does (SessionWeb's `onReplace`): the rows
+  the search showed go with the replacement, the dismissed rows as `on:false`
+  (a file whose tab has unsaved changes is not sent, only named). The question is the
+  local one's, word for word. The host edits documents it holds that have no
+  unsaved changes (the tab shows the text, unsaved), rewrites the other files
+  on its worker with the save rules, and leaves a dirty document alone and
+  named; the status says "Replaced N matches in F files (E open in tabs,
+  unsaved). Left alone, ...". Design: docs/notes/session-host.md, "Replace All
+  through the host". No src/ change.
+- **Where.** `SearchPanel::replaceAllOnHost` and `hostReplaced`,
+  `setHostReplace`, `RemoteWorkspace::replace`, `Link::replace`.
+- **Not done.** Preserve Case (the host's options lack it) and Replace Match
+  (the host replaces a row's whole line) are refused with a note. A truncated
+  search's files with rows not shown come back "changed since the search".
+  Real ssh never run. The host op lacks nothing the window needs.
+

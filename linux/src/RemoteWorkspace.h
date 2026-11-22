@@ -75,6 +75,9 @@ public:
     // with done true. 0, calling nothing, when the host cannot be asked.
     std::uint64_t search(Json request, std::function<void(std::vector<Json>&& answers, bool done)> answers);
     void cancelSearch(std::uint64_t req);
+    // Replace in Folder (the host's "replace"): the answer, the last batch
+    // done. 0, calling nothing, when the host does not write for pages.
+    std::uint64_t replace(Json request, std::function<void(std::vector<Json>&& answers, bool done)> answers);
 
     // For checks: folders listed through the host, its notices taken, Quick
     // Open lists and searches asked.

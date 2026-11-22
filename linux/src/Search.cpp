@@ -16,6 +16,7 @@
 #include "Utf8Offsets.h"
 
 #include <algorithm>
+#include <map>
 #include <memory>
 #include <set>
 #include <utility>
@@ -677,6 +678,7 @@ void SearchPanel::runSearch() {
     clearResults();
     found_.clear();
     dismissed_.clear();   // a new search shows every row again, as VS Code's does
+    hostDismissed_.clear();
     if (todos && scope_.empty()) {
         searching_ = false;
         setStatus("");
@@ -924,11 +926,11 @@ void SearchPanel::giveKeyboardBack() {
 // The query, replacement and options as they are now, or false (with the
 // bell and a word in the status line) when there is nothing to replace.
 bool SearchPanel::readyToReplace() {
-    if (hostSearch_) {
-        // The host's replace answers a page's rows with its own rules; joining
-        // it with the tabs' edits here is its own change (the Mac refuses too).
+    if (hostSearch_ && (!hostReplace_ || active(preserve_))) {
         gtk_widget_error_bell(window_);
-        setStatus("Replace in Folder does not work in a window over SSH yet: the files are on " + hostPlace_);
+        setStatus(!hostReplace_ ? "Replace in Folder does not work in a window over SSH here: the host on " +
+                                      hostPlace_ + " does not replace in its folder"
+                                : "Preserve Case does not work in Replace in Folder over SSH yet");
         return false;
     }
     if (mode_ != Mode::Find || replacing_ || scope_.empty()) {
@@ -983,6 +985,7 @@ SearchPanel::Hold SearchPanel::holdOf(const std::string& path, Document** here) 
 
 void SearchPanel::replaceAll() {
     if (!readyToReplace()) return;
+    if (hostSearch_) return replaceAllOnHost();
     replacing_ = true;
     setStatus("Counting matches…");
     auto* job = new PlanJob;
@@ -1008,6 +1011,157 @@ void SearchPanel::replaceAll() {
         g_task_return_boolean(t, TRUE);
     });
     g_object_unref(task);
+}
+
+// Replace All in a window over SSH: the rows the search showed, each file's
+// with the dismissed ones sent as left out, go to the host's "replace" (the
+// page's: SessionWeb's onReplace), which edits the documents it holds that
+// have no unsaved changes, rewrites the other files on its worker with its
+// save rules, and leaves the rest alone, saying why.
+void SearchPanel::replaceAllOnHost() {
+    struct Rows {
+        std::vector<const FolderSearchMatch*> rows;
+        std::vector<bool> on;
+        std::size_t matches = 0;
+    };
+    std::vector<std::string> order;
+    std::map<std::string, Rows> byFile;
+    auto add = [&](const FolderSearchMatch& m, bool on) {
+        auto it = byFile.find(m.relativePath);
+        if (it == byFile.end()) {
+            order.push_back(m.relativePath);
+            it = byFile.emplace(m.relativePath, Rows()).first;
+        }
+        it->second.rows.push_back(&m);
+        it->second.on.push_back(on);
+        if (on) it->second.matches += m.count;
+    };
+    // A file whose tab holds changes the host lacks is left alone, named,
+    // as the local Replace All does: it is not sent.
+    std::set<std::string> heldFiles;
+    std::vector<std::string> held;
+    for (const FolderSearchMatch& m : hits_) {
+        if (!heldFiles.count(m.relativePath) && holdOf(m.path, nullptr) == Hold::Conflict) {
+            heldFiles.insert(m.relativePath);
+            if (!dismissed_.excludesFile(m.path)) held.push_back(baseName(m.path));
+        }
+        add(m, !dismissed_.excludesFile(m.path) && !heldFiles.count(m.relativePath));
+    }
+    std::size_t dismissedMatches = 0;
+    for (const FolderSearchMatch& m : hostDismissed_) {
+        add(m, false);
+        dismissedMatches += m.count;
+    }
+    std::size_t matches = 0, files = 0;
+    for (const std::string& f : order)
+        if (byFile[f].matches) {
+            matches += byFile[f].matches;
+            files++;
+        }
+    if (!matches) {
+        setStatus(!held.empty() ? "Nothing replaced: the matches are in tabs with unsaved changes (" +
+                                      joined(held) + ")"
+                  : dismissedMatches ? "Nothing replaced: every match left is in a dismissed row"
+                                     : "Nothing to replace");
+        return;
+    }
+    const std::string with = replacement();
+    const std::string question = "Replace " + plural(matches, "match", "matches") + " in " +
+                                 plural(files, "file", "files") + "?";
+    std::string detail = "Each becomes \u201c" + with + "\u201d. Files open in a tab are changed there, "
+                         "unsaved, and can be undone there; the others are written to disk.";
+    if (!held.empty())
+        detail += " Left alone, since their tabs have unsaved changes: " + joined(held) + ".";
+    if (dismissedMatches)
+        detail += " " + plural(dismissedMatches, "match", "matches") + " in dismissed rows " +
+                  (dismissedMatches == 1 ? "is" : "are") + " left alone.";
+    Json ask = Json::object();
+    ask.set("query", Json(std::string(gtk_editable_get_text(GTK_EDITABLE(entry_)))));
+    const FolderSearchOptions o = options();
+    ask.set("caseSensitive", Json(o.caseSensitive));
+    ask.set("wholeWord", Json(o.wholeWord));
+    ask.set("regex", Json(o.regex));
+    ask.set("include", Json(o.include));
+    ask.set("exclude", Json(o.exclude));
+    ask.set("replacement", Json(with));
+    ask.set("hidden", Json(true));   // as the search read them
+    Json list = Json::array();
+    for (const std::string& f : order) {
+        if (heldFiles.count(f)) continue;   // named here; the host would name it too
+        const Rows& r = byFile[f];
+        Json rows = Json::array();
+        for (std::size_t i = 0; i < r.rows.size(); i++) {
+            Json row = Json::object();
+            row.set("line", Json((int64_t)r.rows[i]->line));
+            row.set("text", Json(r.rows[i]->text));
+            row.set("count", Json((int64_t)r.rows[i]->count));
+            row.set("on", Json((bool)r.on[i]));
+            rows.push(std::move(row));
+        }
+        Json g = Json::object();
+        g.set("path", Json(f));
+        g.set("rows", std::move(rows));
+        list.push(std::move(g));
+    }
+    ask.set("files", std::move(list));
+    replacing_ = true;
+    Question::Spec spec;
+    spec.message = question;
+    spec.detail = detail;
+    spec.buttons = {"Replace", "Cancel"};
+    spec.defaultButton = 0;
+    spec.cancelButton = 1;
+    std::weak_ptr<int> alive = life_;
+    auto request = std::make_shared<Json>(std::move(ask));
+    Question::ask(GTK_WINDOW(window_), spec, [this, alive, request, held](int answer) {
+        if (alive.expired()) return;
+        if (answer != 0) {
+            replacing_ = false;
+            setStatus("Nothing replaced");
+            return;
+        }
+        setStatus("Replacing\u2026");
+        const std::uint64_t req = hostReplace_(std::move(*request), [this, alive, held](std::vector<Json>&& a, bool done) {
+            if (alive.expired()) return;
+            hostReplaced(std::move(a), done, held);
+        });
+        if (!req) {
+            replacing_ = false;
+            setStatus("Cannot replace: the connection to " + hostPlace_ + " is lost");
+        }
+    });
+}
+
+void SearchPanel::hostReplaced(std::vector<Json>&& answers, bool done, const std::vector<std::string>& held) {
+    for (const Json& a : answers) {
+        if (!a["done"].asBool()) continue;
+        replacing_ = false;
+        const std::string error = a["error"].asString();
+        const std::size_t total = (std::size_t)a["replaced"].asNumber(0);
+        const std::size_t tabs = (std::size_t)a["edited"].asNumber(0);
+        const std::size_t files = (std::size_t)a["files"].asNumber(0) + tabs;
+        std::vector<std::string> skipped;
+        const std::string heldNote =
+            held.empty() ? std::string() : ". Left alone, with unsaved changes: " + joined(held);
+        for (const Json& s : a["skipped"].elements()) skipped.push_back(s["why"].asString());
+        std::string msg;
+        if (total == 0 && skipped.empty() && error.empty() && held.empty()) msg = "Nothing to replace";
+        else msg = "Replaced " + plural(total, "match", "matches") + " in " + plural(files, "file", "files");
+        if (tabs) msg += " (" + std::to_string(tabs) + " open in tabs, unsaved)";
+        msg += heldNote;
+        if (!skipped.empty()) msg += ". Left alone: " + joined(skipped, "; ");
+        if (!error.empty()) msg += ". " + error;
+        // The results as they are now, after this note.
+        afterNote_ = msg;
+        afterNoteError_ = !skipped.empty() || !error.empty();
+        runSearch();
+        if (!searching_) setStatus(msg);
+        return;
+    }
+    if (done && replacing_) {   // the link went before the answer
+        replacing_ = false;
+        setStatus("The replace was cut off: the connection to " + hostPlace_ + " is lost");
+    }
 }
 
 void SearchPanel::planned(PlanJob* job) {
@@ -1102,6 +1256,12 @@ void SearchPanel::planned(PlanJob* job) {
 }
 
 void SearchPanel::replaceMatchAt(guint row) {
+    if (hostSearch_ && row < hits_.size()) {
+        // The host replaces the matches of a row's line, as the page does.
+        gtk_widget_error_bell(window_);
+        setStatus("Replacing one match does not work in a window over SSH yet: use Replace All");
+        return;
+    }
     if (row >= hits_.size() || !readyToReplace()) return;
     replacing_ = true;
     const FolderSearchMatch hit = hits_[row];
@@ -1279,6 +1439,7 @@ void SearchPanel::dismissRow(guint row) {
     if (row >= hits_.size() || replacing_) return;
     const FolderSearchMatch m = hits_[row];
     if (mode_ == Mode::Find) dismissed_.dismissLine(m.path, m.line, m.text);
+    if (hostSearch_) hostDismissed_.push_back(m);
     removeRows([&m](const FolderSearchMatch& h) { return h.path == m.path && h.line == m.line; });
 }
 
@@ -1287,6 +1448,9 @@ void SearchPanel::dismissFileOf(guint row) {
     if (row >= hits_.size() || replacing_) return;
     const std::string path = hits_[row].path;
     if (mode_ == Mode::Find) dismissed_.dismissFile(path);
+    if (hostSearch_)
+        for (const FolderSearchMatch& h : hits_)
+            if (h.path == path) hostDismissed_.push_back(h);
     removeRows([&path](const FolderSearchMatch& h) { return h.path == path; });
 }
 

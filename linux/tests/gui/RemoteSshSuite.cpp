@@ -32,7 +32,10 @@
 //     host; New Folder is refused with its note; Ctrl+P lists the host's
 //     files without the ignored log and opens src/util.c; Find in Folder
 //     finds "2 matches in 2 files" with the log left out, a row opens
-//     src/main.c, and Replace All is refused, the file untouched; after
+//     src/main.c, and Replace All goes through the host's replace (a host
+//     without it refuses with a note; the closed file is rewritten, the clean
+//     tab shows the new text unsaved, a tab with changes is left alone and
+//     named, the question and the count in the local words); after
 //     Reconnect a file made on disk appears from the new host;
 //   - the window closes, and the host it ran ends with it;
 //   - a stand-in that fails as ssh does for a password, and one whose
@@ -474,18 +477,123 @@ MC_GUI_SUITE(remote_ssh) {
         MCGuiKey("enter");
     });
     MCGuiWait("src/main.c shown", 20, [] { return remoteWindow().editor->currentPath() == gFolder + "/src/main.c"; });
-    MCGuiStep("Replace All is refused", [] {
+    // ---- Replace All through the host (its "replace", as the browser page uses
+    // it): a host that does not take it refuses with a note; otherwise the
+    // closed file is rewritten on the host's disk, the clean tab shows the
+    // new text (the host's edit, unsaved), and the tab with unsaved changes is
+    // left alone and named.
+    MCGuiStep("a host without the replace refuses, with its note", [] {
         SearchPanel* p = remoteWindow().search;
+        p->setHostReplace(nullptr);
         p->showReplace();
         MCGuiSetKeyWindow(GTK_WINDOW(p->window()));
         MCGuiKey("ctrl+alt+enter");   // Replace All
     });
     MCGuiWait("its note", 10, [] {
-        return remoteWindow().search->statusText().find("Replace in Folder does not work in a window over SSH") == 0;
+        return remoteWindow().search->statusText().find("Replace in Folder does not work in a window over SSH here") == 0;
     });
-    MCGuiStep("the files untouched; the search closed", [] {
+    MCGuiStep("the files untouched; the replace back; util.c closed, fresh.c open with a change of its own", [] {
         GCHECK_EQ_STR(readFile(gFolder + "/src/main.c"), "int main() { return 0; }  /* needle one */\n");
         GCHECK_EQ_STR(readFile(gFolder + "/src/util.c"), "int util() { return 1; }  /* needle two */\n");
+        remoteWindow().search->setHostReplace([ws = remoteWindow().remoteWs](Json request, SearchPanel::HostBatch batch) {
+            return ws->replace(std::move(request), std::move(batch));
+        });
+        if (Document* u = tabOf(gFolder + "/src/util.c")) remoteWindow().editor->closeTab(u);
+        MCGuiWriteFile(gFolder + "/src/fresh.c", "needle held\n");
+        MCGuiSetKeyWindow(nullptr);
+        remoteWindow().editor->openFile(gFolder + "/src/fresh.c");
+    });
+    MCGuiWait("fresh.c read through the host", 20, [] {
+        return textOf(tabOf(gFolder + "/src/fresh.c")) == "needle held\n" &&
+               remoteWindow().editor->currentPath() == gFolder + "/src/fresh.c";
+    });
+    MCGuiStep("typed into fresh.c", [] {
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+home");
+        MCGuiType("edited ");
+    });
+    MCGuiWait("fresh.c unsaved", 10, [] {
+        Document* d = tabOf(gFolder + "/src/fresh.c");
+        return d && d->dirty() && textOf(d) == "edited needle held\n";
+    });
+    MCGuiStep("searched again: three files", [] {
+        SearchPanel* p = remoteWindow().search;
+        MCGuiSetKeyWindow(GTK_WINDOW(p->window()));
+        MCGuiClick(p->queryEntry());
+        MCGuiKey("ctrl+a");
+        MCGuiType("needle");
+    });
+    MCGuiWait("three matches in three files", 30, [] {
+        SearchPanel* p = remoteWindow().search;
+        return p && !p->searching() && p->matches().size() == 3 && p->statusText() == "3 matches in 3 files";
+    });
+    MCGuiStep("\"pin\" for the replacement; Replace All", [] {
+        SearchPanel* p = remoteWindow().search;
+        MCGuiClick(p->replaceEntry());
+        MCGuiKey("ctrl+a");
+        MCGuiType("pin");
+        MCGuiKey("ctrl+alt+enter");
+    });
+    MCGuiWait("it asks first: fresh.c, held by its tab, is out of the count", 10, [] {
+        return alertText().find("Replace 2 matches in 2 files?") != std::string::npos;
+    });
+    MCGuiStep("the question's words, as the local one's; Replace", [] {
+        const std::string t = alertText();
+        MCGuiNote("question: %s", t.c_str());
+        GCHECK(t.find("Each becomes “pin”. Files open in a tab are changed there, unsaved, and can be "
+                      "undone there; the others are written to disk. Left alone, since their tabs have unsaved "
+                      "changes: fresh.c.") != std::string::npos);
+        GtkWindow* top = MCGuiTopWindow();
+        MCGuiSetKeyWindow(top);
+        MCGuiClick(MCGuiFindButton(GTK_WIDGET(top), "Replace"));
+    });
+    MCGuiWait("replaced on the host", 30, [] {
+        SearchPanel* p = remoteWindow().search;
+        return !p->replacing() && readFile(gFolder + "/src/util.c") == "int util() { return 1; }  /* pin two */\n" &&
+               textOf(tabOf(gFolder + "/src/main.c")) == "int main() { return 0; }  /* pin one */\n";
+    });
+    MCGuiWait("the count said, with the held file named", 30, [] {
+        SearchPanel* p = remoteWindow().search;
+        return !p->searching() && p->statusText().rfind("Replaced 2 matches in 2 files (1 open in tabs, unsaved). "
+                                                        "Left alone, with unsaved changes: fresh.c. Now ", 0) == 0;
+    });
+    MCGuiStep("main.c: the tab changed, unsaved, the disk as it was; fresh.c left to its window", [] {
+        MCGuiNote("status: %s", remoteWindow().search->statusText().c_str());
+        Document* m = tabOf(gFolder + "/src/main.c");
+        GCHECK(m && m->dirty());
+        GCHECK_EQ_STR(readFile(gFolder + "/src/main.c"), "int main() { return 0; }  /* needle one */\n");
+        Document* f = tabOf(gFolder + "/src/fresh.c");
+        GCHECK_EQ_STR(textOf(f), "edited needle held\n");
+        GCHECK(f && f->dirty());
+        GCHECK_EQ_STR(readFile(gFolder + "/src/fresh.c"), "needle held\n");
+        // As it was for what follows: both tabs saved, then the files as they were.
+        MCGuiSetKeyWindow(nullptr);
+        remoteWindow().editor->openFile(gFolder + "/src/main.c");
+    });
+    MCGuiWait("main.c shown", 10, [] { return remoteWindow().editor->currentPath() == gFolder + "/src/main.c"; });
+    MCGuiStep("main.c saved", [] {
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("main.c on disk as the host wrote it", 10, [] {
+        Document* m = tabOf(gFolder + "/src/main.c");
+        return m && !m->dirty() && readFile(gFolder + "/src/main.c") == "int main() { return 0; }  /* pin one */\n";
+    });
+    MCGuiStep("fresh.c saved", [] { remoteWindow().editor->openFile(gFolder + "/src/fresh.c"); });
+    MCGuiWait("fresh.c shown", 10, [] { return remoteWindow().editor->currentPath() == gFolder + "/src/fresh.c"; });
+    MCGuiStep("fresh.c Ctrl+S", [] {
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("fresh.c saved", 10, [] {
+        Document* f = tabOf(gFolder + "/src/fresh.c");
+        return f && !f->dirty() && readFile(gFolder + "/src/fresh.c") == "edited needle held\n";
+    });
+    MCGuiStep("the files as they were; the search closed", [] {
+        if (Document* f = tabOf(gFolder + "/src/fresh.c")) remoteWindow().editor->closeTab(f);
+        MCGuiWriteFile(gFolder + "/src/main.c", "int main() { return 0; }  /* needle one */\n");
+        MCGuiWriteFile(gFolder + "/src/util.c", "int util() { return 1; }  /* needle two */\n");
+        MCGuiWriteFile(gFolder + "/src/fresh.c", "int fresh;\n");
         gtk_widget_set_visible(remoteWindow().search->window(), FALSE);
         MCGuiSetKeyWindow(nullptr);
         remoteWindow().editor->openFile(gFile);   // notes.txt for what follows

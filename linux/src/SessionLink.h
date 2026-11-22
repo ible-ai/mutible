@@ -181,6 +181,10 @@ public:
     // when the host does not take them.
     using StreamFn = std::function<void(std::vector<Json>&& answers, bool done)>;
     std::uint64_t stream(Json request, StreamFn answers);
+    // Replace in Folder (FsRead's "replace"), answered as a stream: 0,
+    // calling nothing, when the host does not write for pages. Sent behind
+    // the edits this window sent.
+    std::uint64_t replace(Json request, StreamFn answers);
     // Stops one: the host is told, nothing more is called for it.
     void cancelStream(std::uint64_t req);
     // What the host saw change on disk (Hello flag 32; `mutible host

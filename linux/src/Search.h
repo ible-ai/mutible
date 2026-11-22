@@ -95,7 +95,8 @@ public:
     void setOpenCallback(OpenCb cb, void* user) { openCb_ = cb; openUser_ = user; }
     // A window over SSH (stage 8): Find in Folder is the host's "search" read
     // (RemoteWorkspace::search), its rows shown as they come; the scope stays
-    // the folder, TODOs and Replace in Folder are refused with a sentence.
+    // the folder, TODOs are refused with a sentence; Replace All goes to the
+    // host's "replace" (setHostReplace), with the rows the search showed.
     // `search` returns the request's id (0: the host cannot be asked); `cancel`
     // stops one.
     using HostBatch = std::function<void(std::vector<Json>&& answers, bool done)>;
@@ -104,6 +105,12 @@ public:
         hostSearch_ = std::move(search);
         cancelHostSearch_ = std::move(cancel);
         hostPlace_ = place;
+    }
+    // The host's "replace" (RemoteWorkspace::replace): `replace` returns the
+    // request's id, 0 when the host does not take it. Without it, Replace in
+    // Folder in a window over SSH is refused with a sentence.
+    void setHostReplace(std::function<std::uint64_t(Json request, HostBatch batch)> replace) {
+        hostReplace_ = std::move(replace);
     }
     // A pane command (a registry id of kPaneCommands) pressed in this
     // window: the editor window runs it, taking the keyboard first.
@@ -262,7 +269,14 @@ private:
     std::string root_;
     std::function<std::uint64_t(Json, HostBatch)> hostSearch_;
     std::function<void(std::uint64_t)> cancelHostSearch_;
+    std::function<std::uint64_t(Json, HostBatch)> hostReplace_;
     std::string hostPlace_;
+    // The rows dismissed since the search, kept for Replace All over SSH: the
+    // host checks a file against every row it showed, the dismissed ones sent
+    // as left out.
+    std::vector<FolderSearchMatch> hostDismissed_;
+    void replaceAllOnHost();
+    void hostReplaced(std::vector<Json>&& answers, bool done, const std::vector<std::string>& held);
     std::uint64_t hostReq_ = 0;
     std::size_t hostRows_ = 0;
     void runHostSearch(const std::string& query, const FolderSearchOptions& opts, const std::string& note);
