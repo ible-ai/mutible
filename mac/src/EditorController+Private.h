@@ -842,7 +842,8 @@ extern NSUInteger MCDirtyFromHostMarks;
 // EditorController+Remote.mm: a window over SSH's folder through its host
 // (docs/notes/session-host.md, "The window's tree, Quick Open and Find in
 // Folder over SSH"): the tree's listings and the host's notices, Quick
-// Open's list, Find in Folder, New File, and what is refused there. Every
+// Open's list, Find in Folder and its Replace All, the tree's file
+// operations, New File, and what is refused there. Every
 // method does nothing (or NO) in a window on this Mac.
 @interface EditorController (RemotePrivate)
 // From useRemoteSessionLink: and moveToSessionLink: (Reconnect).
@@ -861,6 +862,22 @@ extern NSUInteger MCDirtyFromHostMarks;
 // A file the window opened that is not on the host yet, and opening one.
 - (BOOL)remotePathIsNew:(NSString *)path;
 - (void)openNewRemoteFile:(NSString *)path;
+// The tree's file operations on the host (Welcome flag 64): whether the
+// host does them; YES, with a status note, when `what` cannot be done for
+// want of them (a host too old, a lost connection); the tree's items
+// validated (YES when `item` is one of them, *enabled set); and each
+// operation, its refusal the host's sentence in an alert. Open tabs follow
+// a rename or move; a delete (asked first: no Trash there) leaves them
+// marked deleted.
+- (BOOL)remoteDoesFileOps;
+- (BOOL)refuseFileOpsOverSsh:(NSString *)what;
+- (BOOL)validateRemoteTreeItem:(NSMenuItem *)item enabled:(BOOL *)enabled;
+- (void)remoteRenamePath:(NSString *)path to:(NSString *)name;
+- (BOOL)remoteMovePaths:(NSArray<NSString *> *)paths into:(NSString *)dir;
+- (void)remoteDeletePath:(NSString *)path;
+- (void)remoteMakePath:(NSString *)path folder:(BOOL)folder;
+// The host moved `t`'s file (DocDirty's "moved"): the tab follows.
+- (void)remoteTab:(MCTab *)t movedTo:(NSString *)path;
 @end
 
 // EditorController+SessionBrowser.mm: what the window's record carries

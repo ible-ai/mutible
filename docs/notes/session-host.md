@@ -4356,12 +4356,80 @@ file's read was about one round trip before this too. Whatever else the
 owner's open spends on the Mac is outside these counts; remote_ssh's notes
 give a row's open time and its waits on CI's runner.
 
+#### The Mac window's tree changes files on the host (2026-11-21, sixth slice)
+
+The tree's file operations (#344, Welcome flag 64) and Replace All (the
+page's "replace", #307) in a Mac window over SSH, as GTK's Replace All
+(#343). No src/ change.
+
+- **The link** (`Link::fileOp`, `doesFileOps`): `Client::requestFileOp`
+  waited for on the main thread (20 s, as `locate`), its answer returned
+  whole; `Link::replace` is `requestReplace` kept as a stream, as GTK's.
+  `MCRemoteWorkspace` turns absolute paths into the folder's relative ones
+  (`renamePath:to:`, `movePath:into:`, `deletePath:` with "permanent",
+  `makePath:folder:`), each returning nil when done, else the host's
+  sentence (or that it did not answer, or is too old, or the connection
+  is lost), and counts `fileOps` and `replaces` for the checks.
+- **The window** (EditorController+Remote.mm, the tree's methods branching
+  to it after their prompts; docs/notes/tree.md has the tree's side): a
+  rename or move calls `pathMovedFrom:to:` for the open tabs (their text,
+  unsaved state and undo kept; `currentPath` sends DocPath, the path the
+  host has already), then `refreshTree:` and `revealPath:`. A tab's
+  document moved by someone else's operation follows DocDirty's
+  "moved": `hostWrote:json:` marks the MCSessionWrite `moved` (no text),
+  and `tab:writtenByHost:` hands it to `remoteTab:movedTo:` instead of
+  taking it as a save. A delete is asked first ("Delete “x”
+  permanently?", the informative text saying the host has no Trash, so
+  it cannot be put back), sent with "permanent", and each open tab at or
+  under the path is marked gone (and unsaved, for text) as
+  `tabWentMissing:` marks one: the host leaves documents an app's window
+  holds to that app, so the window marks them itself. New File asks the
+  host to make the file, then opens it; New Folder makes the folder. A
+  refusal is an alert ("“b.txt” was not renamed.", the host's sentence
+  under it). Without flag 64 (or with the connection lost) New Folder,
+  Rename and Delete are disabled in the menus and say why from their keys
+  (`refuseFileOpsOverSsh:`), and New File falls back to the untitled tab
+  its first save makes.
+- **Replace in Folder** (`SearchPanel hostReplace`, `hostReplaces`,
+  `hostPlace`, set by `replaceOnHost:` from `searchOnHost:`): Replace All
+  asks the local question, then sends the rows the search showed, by file
+  in the search's order, the dismissed ones (kept as `_hostDismissed`,
+  since the host checks a file against all its rows) as `"on": false`; a
+  file whose tab has unsaved changes (`replaceStateOfPath:`, over SSH the
+  tab's own `dirty` or `gone`, never this Mac's disk) is not sent and is
+  named. Replace in This File sends one file's rows, without the
+  question, as locally. The answer becomes the status ("Replaced 2
+  matches in 2 files (1 open in tabs, unsaved). Left alone, with unsaved
+  changes: r3.txt", the host's own sentences after "Left alone:"), and the
+  search runs again with it as its note (`runHostSearch:` now takes the
+  note, which it dropped before). Preserve Case (the host ignores it) and
+  Replace This Match (the host replaces a row's whole line) are refused
+  with a note; a host without flags 8 and 16, or a lost link, disables
+  Replace All with a tooltip saying so.
+- **Checks** (`remote_ssh`, on the stand-in's disk): Shift+Cmd+N in the
+  tree with its prompt typed into (`MCGuiTypeInPrompts`, new in the
+  harness) makes ops/made; New File makes ops/new.txt and opens it; F2's
+  Rename of a.txt with unsaved text in its tab renames it on disk
+  (unsaved text not written), the same tab now renamed.txt with its text,
+  the title following, and Cmd+S writing renamed.txt through the host;
+  renaming b.txt onto renamed.txt is refused ("renamed.txt already
+  exists." in the alert) with both files as they were; b.txt dragged onto
+  into/ (the drag's item `MCTreeRowPasteboardType`, validateDrop's Move,
+  a drag from outside the tree refused, acceptDrop) moves it, its tab
+  following; Delete with Cancel keeps gone.txt, then deletes it, the tab
+  staying, gone, unsaved, "(deleted)" in the title; Replace All of "swap"
+  rewrites r1.txt on disk, edits r2.txt's clean tab unsaved (the disk as
+  it was), leaves r3.txt's tab with typing alone and named, in the words
+  above. Not run here (the builder had no screen to use): CI runs it.
+- **Traps.** A local Move to Trash closes the clean tabs of what went; a
+  delete on the host leaves them, marked deleted, since nothing can bring
+  the file back but saving it. The prompts are NSAlerts with a text field,
+  which the harness answered with the field as it was, so a check could
+  not name anything until `MCGuiTypeInPrompts`.
+
 ### Still to do
 
-- **Stage 8, after the fourth slice** (in order of value): the host's file
-  operations for the tree (a folder made, a rename, a delete, a move: refused over SSH now)
-  and its Replace in Folder for the window (#307's op, joined with the
-  Mac's way of editing open tabs); open clean tabs following the remote
+- **Stage 8, after the fourth slice** (in order of value): open clean tabs following the remote
   disk (the host leaves a document an app's window holds to the window,
   which has no stamps of a remote file); the host's listing carrying
   sizes, dates and the execute bit for the tree's columns and icons;

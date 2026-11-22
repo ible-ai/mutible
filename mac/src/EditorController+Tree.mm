@@ -140,8 +140,13 @@ static NSString *const kShowHiddenFilesKey = @"MCShowHiddenFiles";
 - (id<NSPasteboardWriting>)outlineView:(NSOutlineView *)ov
                pasteboardWriterForItem:(id)item {
     // Over SSH a row is a file of the other machine: no file URL of this
-    // Mac's to drag (+Remote).
-    if ([self remoteWorkspace]) return nil;
+    // Mac's to drag, only the tree's own row, which its folders take as a
+    // move on the host (+Remote).
+    if ([self remoteWorkspace]) {
+        NSPasteboardItem *row = [NSPasteboardItem new];
+        [row setString:((FileItem *)item).path forType:MCTreeRowPasteboardType];
+        return row;
+    }
     return [NSURL fileURLWithPath:((FileItem *)item).path];
 }
 
@@ -199,8 +204,10 @@ static BOOL MCCanDropPath(NSString *src, NSString *dir) {
     // Always a drop onto a folder: a file stands for its folder, the space
     // between rows for the folder they are in, the empty space for the root
     // (none with several focused folders: it is in none of them).
-    // Over SSH nothing is moved or copied into the other machine's folder.
-    if ([self remoteWorkspace]) return NSDragOperationNone;
+    // Over SSH only the tree's own rows move, on the host (nothing of this
+    // Mac's is copied into the other machine's folder).
+    if ([self remoteWorkspace] && (info.draggingSource != ov || ![self remoteDoesFileOps]))
+        return NSDragOperationNone;
     FileItem *target = item;
     if (target && !target.isDir) target = [ov parentForItem:target];
     [ov setDropItem:target dropChildIndex:NSOutlineViewDropOnItemIndex];
@@ -216,11 +223,21 @@ static BOOL MCCanDropPath(NSString *src, NSString *dir) {
 
 - (BOOL)outlineView:(NSOutlineView *)ov acceptDrop:(id<NSDraggingInfo>)info
                item:(id)item childIndex:(NSInteger)index {
-    if ([self refuseOverSsh:@"Moving and copying files in the tree"]) return NO;
     FileItem *target = item;   // a folder or nil, as validateDrop set it
     NSString *dir = target ? target.path : [self treeTop].path;
     if (!dir) return NO;
     BOOL local = info.draggingSource == ov;
+    if ([self remoteWorkspace]) {
+        if (!local) {
+            [self refuseOverSsh:@"Copying files from this Mac into the tree"];
+            return NO;
+        }
+        if ([self refuseFileOpsOverSsh:@"Moving files in the tree"]) return NO;
+        NSMutableArray<NSString *> *move = [NSMutableArray array];
+        for (NSString *src in [self droppedPaths:info local:YES])
+            if (MCCanDropPath(src, dir)) [move addObject:src];
+        return [self remoteMovePaths:move into:dir];
+    }
     NSFileManager *fm = [NSFileManager defaultManager];
     NSMutableArray<NSString *> *problems = [NSMutableArray array];
     NSString *last = nil;
@@ -871,10 +888,12 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
     NSString *name = [self promptForName:@"New file name:" default:@""];
     if (!name) return;
     NSString *path = [[self targetDirectory] stringByAppendingPathComponent:name];
-    // Over SSH: a tab on the new file, which its first save makes there
-    // (+Remote); nothing is made on this Mac.
+    // Over SSH the host makes it (+Remote); on a host without file
+    // operations, a tab on the new file, which its first save makes there.
+    // Nothing is made on this Mac.
     if ([self remoteWorkspace]) {
-        [self openNewRemoteFile:path];
+        if ([self remoteDoesFileOps]) [self remoteMakePath:path folder:NO];
+        else [self openNewRemoteFile:path];
         return;
     }
     NSFileManager *fm = [NSFileManager defaultManager];
@@ -887,10 +906,14 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
 }
 
 - (void)newFolder:(id)sender {
-    if ([self refuseOverSsh:@"New Folder"]) return;
+    if ([self refuseFileOpsOverSsh:@"New Folder"]) return;
     NSString *name = [self promptForName:@"New folder name:" default:@""];
     if (!name) return;
     NSString *path = [[self targetDirectory] stringByAppendingPathComponent:name];
+    if ([self remoteWorkspace]) {   // made by the host (+Remote)
+        [self remoteMakePath:path folder:YES];
+        return;
+    }
     NSError *err = nil;
     if (![[NSFileManager defaultManager] createDirectoryAtPath:path
             withIntermediateDirectories:NO attributes:nil error:&err]) {
@@ -909,10 +932,14 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
 
 // Rename… from the tree and from a tab's menu.
 - (void)renamePath:(NSString *)path {
-    if ([self refuseOverSsh:@"Rename"]) return;
+    if ([self refuseFileOpsOverSsh:@"Rename"]) return;
     NSString *name = [self promptForName:@"Rename to:"
                                  default:path.lastPathComponent];
     if (!name) return;
+    if ([self remoteWorkspace]) {   // renamed by the host (+Remote)
+        [self remoteRenamePath:path to:name];
+        return;
+    }
     NSString *dst = [[path stringByDeletingLastPathComponent]
                         stringByAppendingPathComponent:name];
     NSError *err = nil;
@@ -934,7 +961,12 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
 
 // Move to Trash from the tree and from a tab's menu, after asking.
 - (void)trashPath:(NSString *)path {
-    if ([self refuseOverSsh:@"Move to Trash"]) return;
+    // Over SSH the host deletes it, permanently, after its own question
+    // (+Remote): it has no Trash.
+    if ([self remoteWorkspace]) {
+        if (![self refuseFileOpsOverSsh:@"Delete"]) [self remoteDeletePath:path];
+        return;
+    }
     NSAlert *a = [[NSAlert alloc] init];
     a.messageText = [NSString stringWithFormat:@"Move “%@” to the Trash?",
                      path.lastPathComponent];

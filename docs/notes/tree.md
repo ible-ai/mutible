@@ -481,9 +481,30 @@ found through that list.
   folder's source. Code in the tree that looks at the disk itself
   (`fileExistsAtPath:`, `MCTreeStat`, the folder sizer, the Worktrees
   node, Quick Look, drags) must ask the source, or pass over a row that
-  has one: `treeHasFileAt:` is the reveal's question for both. The tree's
-  file operations other than New File say they do not work over SSH yet
-  (`refuseOverSsh:`).
+  has one: `treeHasFileAt:` is the reveal's question for both.
+- **The tree's file operations over SSH** (2026-11-21, docs/notes/
+  session-host.md, "The Mac window's tree changes files on the host"):
+  in a window over SSH, New File, New Folder (Shift+Cmd+N in the tree
+  too), Rename (F2), a row dragged onto a folder, and Delete Permanently
+  (Move to Trash's item, retitled; Cmd+Delete) go to the host
+  (`MCRemoteWorkspace renamePath:`, `movePath:`, `deletePath:`,
+  `makePath:`, each waiting for the answer as a listing does), through
+  the same methods and prompts as locally (`newFile:`, `newFolder:`,
+  `renamePath:`, `trashPath:`, `acceptDrop:`, each branching to
+  `EditorController+Remote.mm` after its prompt). Then `pathMovedFrom:`
+  moves the tabs as for a local rename, `refreshTree:` lists again through
+  the host, and `revealPath:` selects the result. A refusal is an alert
+  whose informative text is the host's sentence. A delete asks "Delete
+  “x” permanently?" (the host has no Trash) and leaves the open tabs of
+  what went, marked deleted and unsaved, where a local Move to Trash
+  closes the clean ones. A dragged row is an `NSPasteboardItem` of
+  `MCTreeRowPasteboardType` (never a file URL of this Mac's); only the
+  tree's own rows drop (a Finder drag says it does not work over SSH).
+  Without the host's flag 64 the items are disabled
+  (`validateRemoteTreeItem:enabled:`), their keys say why
+  (`refuseFileOpsOverSsh:`), and New File opens the untitled tab its
+  first save makes, as before. Reveal in Finder and the TODO list still
+  say they do not work over SSH (`refuseOverSsh:`).
 
 ## The file tree (GTK) over SSH (2026-11-21)
 
@@ -520,4 +541,5 @@ text is in place in its section.
 - The file tree (GTK): Trap: a popover on the list that has the keyboard as it closes gives it back only at the window's next after-paint, to the popover's parent, and when the idle that unparents the popover runs first GTK finds no parent and tabs into the window from its start, so the list focuses row 0 and scrolls to its top (GtkListBase's tab behavior "all", then `set_focus_child`'s `scroll_to_item`); the name box's "closed" gives the list the keyboard itself, before the idle (its focus row, the row asked about: no scroll).
 - The file tree (GTK): Trap: the 300 ms that `keepRows` undoes a jump to the top for counted wall time, and on a loaded machine (several builds, load 50) the frame clock may draw no layout in 300 ms, so the jump came after the keep ended and `tree_edits` failed "the tree kept its place" about one run in nine; the keep lasts at least `kKeepFrames` layouts as well, and at most `kKeepMostUs`.
 - The file tree (Mac): Trap: a remote window's rows are another machine's paths, so anything in the tree that reads this Mac's disk at a row's path (a stat, a file URL, Quick Look, the folder sizer) shows some other file or nothing; ask the row's `source` or pass over a row that has one.
+- The file tree (Mac over SSH): Trap: the tab menu's Rename and Move to Trash were enabled by `fileExistsAtPath:` of the tab's path, which in a window over SSH asks this Mac's disk (the stand-in's folder is on it, so a check passes); a remote tab's items follow the tab (not deleted, not untitled) and the host's flag 64.
 - The file tree (GTK over SSH): Trap: a path in a remote window names a file of another machine, so any call on it that reads this disk (`g_file_test`, `lstat`, a monitor, `access`, a GFile that is opened) is wrong even when the scratch "remote" of a check passes it; the stand-in serves this machine's own folder, so such a call passes the checks and fails on a real remote (the listing's count of workspace reads and the ignored mark are what a check can see).

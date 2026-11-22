@@ -51,15 +51,20 @@ static NSString *const kKeepUnsavedDetail = @"Keep Unsaved leaves your changes u
     NSString *path = t.currentPath;
     if (path) {
         const BOOL inRoot = [self pathFromRoot:path] != nil;
-        const BOOL onDisk = [[NSFileManager defaultManager] fileExistsAtPath:path];
+        // Over SSH the file is the other machine's: never looked for on this
+        // Mac's disk, renamed and deleted (no Trash there) by its host.
+        const BOOL remote = [self remoteWorkspace] != nil;
+        const BOOL onDisk = remote ? !t.gone && !t.untitled
+                                   : [[NSFileManager defaultManager] fileExistsAtPath:path];
+        const BOOL changes = onDisk && (!remote || [self remoteDoesFileOps]);
         [m addItem:[NSMenuItem separatorItem]];
         add(@"Copy Path", @selector(copyTabPath:), YES);
         add(@"Copy Relative Path", @selector(copyTabRelativePath:), inRoot);
-        add(@"Reveal in Finder", @selector(revealTabInFinder:), onDisk);
+        add(@"Reveal in Finder", @selector(revealTabInFinder:), onDisk && !remote);
         add(@"Reveal in File Tree", @selector(revealTabInTree:), inRoot && onDisk);
         [m addItem:[NSMenuItem separatorItem]];
-        add(@"Rename…", @selector(renameTabFile:), onDisk);
-        add(@"Move to Trash", @selector(trashTabFile:), onDisk);
+        add(@"Rename…", @selector(renameTabFile:), changes);
+        add(remote ? @"Delete Permanently…" : @"Move to Trash", @selector(trashTabFile:), changes);
     }
     return m;
 }

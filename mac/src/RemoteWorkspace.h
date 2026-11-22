@@ -14,8 +14,12 @@
 //   - Quick Open's list of the folder's files (FsRead "files") and Find in
 //     Folder (FsRead "search"), both on the host's workers, answered as
 //     they go (SessionSearch.h);
+//   - the tree's file operations (rename, move, delete, a new file or
+//     folder), done by the host (Client::requestFileOp), and Replace in
+//     Folder's Replace All (the host's "replace");
 //   - the files the window opened that are not there yet (the address's
-//     new file, New File's), which their first save makes.
+//     new file, New File's on a host without file operations), which their
+//     first save makes.
 // Its link is the window's, moved by Reconnect (attachLink:). Main thread.
 #pragma once
 #import <Cocoa/Cocoa.h>
@@ -56,6 +60,24 @@
 - (uint64_t)search:(Json)request answers:(void (^)(const std::vector<Json> &answers, BOOL done))answers;
 - (void)cancelSearch:(uint64_t)req;
 
+// Replace in Folder on the host (SessionSearch.h's "replace", the rows the
+// search showed): its answer as a stream's. 0, calling nothing, when the
+// host cannot be asked or does not replace (replacesInFolder).
+- (BOOL)replacesInFolder;
+- (uint64_t)replace:(Json)request answers:(void (^)(const std::vector<Json> &answers, BOOL done))answers;
+
+// The tree's file operations on the host (Welcome flag 64; paths absolute,
+// under the folder). Each waits for the host's answer and returns nil when
+// it was done, else the sentence why not (the host's refusal, or that the
+// host did not answer). `reason` gets the host's reason ("exists", ...),
+// "" when done. The tree hears the change from the host (FsChanged).
+@property(nonatomic, readonly) BOOL doesFileOps;
+- (NSString *)renamePath:(NSString *)path to:(NSString *)name reason:(NSString **)reason;
+- (NSString *)movePath:(NSString *)path into:(NSString *)folder reason:(NSString **)reason;
+// Permanently: the host has no Trash, so the window asks first.
+- (NSString *)deletePath:(NSString *)path reason:(NSString **)reason;
+- (NSString *)makePath:(NSString *)path folder:(BOOL)folder reason:(NSString **)reason;
+
 // Files opened here that are not on the host yet: shown empty, made by
 // their first save.
 - (void)markNew:(NSString *)path;
@@ -63,5 +85,5 @@
 
 // For tests: folders listed through the host, its notices taken, Quick
 // Open lists and searches asked for.
-@property(nonatomic, readonly) NSUInteger listings, notices, fileLists, searches;
+@property(nonatomic, readonly) NSUInteger listings, notices, fileLists, searches, fileOps, replaces;
 @end

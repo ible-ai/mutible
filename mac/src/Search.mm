@@ -33,9 +33,7 @@ static NSString *SFromU16(const std::u16string &u) {
 
 // The most lines a search shows, as VS Code's (search.maxResults).
 static const std::size_t kMaxResults = 20000;
-static NSString *const kNoReplaceOverSsh =
-    @"Replace in Folder does not work in a window over SSH yet: its files are on the other machine. "
-    @"Replace in each file's tab, or in the terminal there.";
+static NSString *const kReplaceAllTip = @"Replace All (⌥⌘⏎)";
 
 static NSString *MCGrouped(unsigned long n) {
     return [NSNumberFormatter localizedStringFromNumber:@(n)
@@ -389,6 +387,9 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     // The rows dismissed since the last search, which Replace All and
     // Replace in This File leave alone (FolderReplaceExclusions).
     FolderReplaceExclusions _dismissed;
+    // Over SSH, the rows themselves: the host's replace is sent every row
+    // the search showed, these as left out.
+    NSMutableArray<SearchHit *> *_hostDismissed;
     id _settingsObserver;
 }
 @property(nonatomic, strong) NSWindow *window;
@@ -744,7 +745,8 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     else if (a == @selector(replaceSelectedMatch:))
         return !_replacing && !self.hostSearch && [self hitForAction] != nil;
     else if (a == @selector(replaceSelectedFile:))
-        return !_replacing && !self.hostSearch && [self.outline itemAtRow:[self rowForAction]] != nil;
+        return !_replacing && (!self.hostSearch || self.hostReplace) &&
+               [self.outline itemAtRow:[self rowForAction]] != nil;
     else if (a == @selector(dismissSelected:))
         return !_replacing && [self.outline itemAtRow:[self rowForAction]] != nil;
     else return YES;
@@ -898,8 +900,9 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     }
     [self.outline reloadData];
     [self.outline expandItem:nil expandChildren:YES];
-    _replaceAll.enabled = _hits.count > 0 && !_todos && !self.hostSearch;
-    if (self.hostSearch) _replaceAll.toolTip = kNoReplaceOverSsh;
+    const BOOL replaces = !self.hostSearch || [self hostTakesReplace];
+    _replaceAll.enabled = _hits.count > 0 && !_todos && replaces;
+    _replaceAll.toolTip = replaces ? kReplaceAllTip : [self noReplaceOverSsh];
 }
 
 - (NSInteger)outlineView:(NSOutlineView *)ov numberOfChildrenOfItem:(id)item {
@@ -1127,6 +1130,7 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     [self setResults:@[]];
     [self setSkippedNote:nil tooltip:nil];
     _dismissed.clear();   // a new search shows every row again, as VS Code's does
+    [_hostDismissed removeAllObjects];
     if (!FolderSearch::isSearchable(SStd(query), options)) {
         NSString *trimmed = [query stringByTrimmingCharactersInSet:
                              [NSCharacterSet whitespaceCharacterSet]];
@@ -1137,7 +1141,7 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     [self setStatus:@"Searching…" error:NO];
     NSUInteger gen = _searchGeneration;
     if (self.hostSearch) {
-        [self runHostSearch:query options:options generation:gen];
+        [self runHostSearch:query options:options generation:gen note:note noteError:noteError];
         return;
     }
     const std::string root = _scope.fileSystemRepresentation;
@@ -1228,7 +1232,11 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
 // Over SSH: the host searches its folder (SessionSearch.h's "search", the
 // Mac's options) and its rows come in batches as it goes, each shown as it
 // arrives; the last says what it counted and whether it stopped.
-- (void)runHostSearch:(NSString *)query options:(const FolderSearchOptions &)o generation:(NSUInteger)gen {
+- (void)runHostSearch:(NSString *)query
+              options:(const FolderSearchOptions &)o
+           generation:(NSUInteger)gen
+                 note:(NSString *)note
+            noteError:(BOOL)noteError {
     Json ask = Json::object();
     ask.set("query", Json(SStd(query)));
     ask.set("caseSensitive", Json(o.caseSensitive));
@@ -1284,7 +1292,7 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
         [s showFound:found.count files:files.count total:total truncated:(*last)["truncated"].asBool()
              tooSlow:(*last)["tooSlow"].asBool()
              stopped:(*last)["timedOut"].asBool() ? @"The other machine stopped searching after 30 seconds" : nil
-               error:error.empty() ? nil : SNS(error) note:nil noteError:NO];
+               error:error.empty() ? nil : SNS(error) note:note noteError:noteError];
     });
     if (!_hostReq) [self setStatus:@"The other machine cannot be asked: Reconnect, then search again" error:YES];
 }
@@ -1407,6 +1415,10 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     (void)sender;
     NSString *path = [self pathForAction];
     if (!path || ![self readyToReplace]) return;
+    if (self.hostSearch) {
+        [self replaceOnHostIn:path ask:NO];
+        return;
+    }
     _replacing = YES;
     [self replaceInPaths:@[path] hit:nil held:@[]];
 }
@@ -1419,6 +1431,10 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     if ([item isKindOfClass:[SearchHit class]]) {
         [self replaceMatchAtRow:(NSInteger)[_hits indexOfObjectIdenticalTo:item]];
     } else if ([item isKindOfClass:[SearchFile class]] && [self readyToReplace]) {
+        if (self.hostSearch) {
+            [self replaceOnHostIn:((SearchFile *)item).path ask:NO];
+            return;
+        }
         _replacing = YES;
         [self replaceInPaths:@[((SearchFile *)item).path] hit:nil held:@[]];
     }
@@ -1435,14 +1451,17 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
 - (void)dismissItem:(id)item {
     if (_replacing) return;
     NSMutableArray<SearchHit *> *left = [_hits mutableCopy];
+    if (!_hostDismissed) _hostDismissed = [NSMutableArray array];
     if ([item isKindOfClass:[SearchFile class]]) {
         SearchFile *f = item;
         [left removeObjectsInArray:f.hits];
         _dismissed.dismissFile(SStd(f.path));
+        if (self.hostSearch) [_hostDismissed addObjectsFromArray:f.hits];
     } else if ([item isKindOfClass:[SearchHit class]]) {
         SearchHit *h = item;
         [left removeObjectIdenticalTo:h];
         if (!_todos) _dismissed.dismissLine(SStd(h.path), (int)h.line, SStd(h.text));
+        if (self.hostSearch) [_hostDismissed addObject:h];
     } else {
         return;
     }
@@ -1529,11 +1548,13 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
         NSBeep();
         return NO;
     }
-    // Over SSH the files are the other machine's, and this window does not
-    // replace in them yet (docs/notes/session-host.md).
-    if (self.hostSearch) {
+    // Over SSH the host replaces (replaceOnHostIn:ask:), when it can, and
+    // without Preserve Case, which it ignores.
+    if (self.hostSearch && (![self hostTakesReplace] || self.preserveCase)) {
         NSBeep();
-        [self setStatus:kNoReplaceOverSsh error:YES];
+        [self setStatus:![self hostTakesReplace] ? [self noReplaceOverSsh]
+                                                 : @"Preserve Case does not work in Replace in Folder over SSH yet"
+                  error:YES];
         return NO;
     }
     const FolderSearchOptions o = [self options];
@@ -1553,6 +1574,10 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
 
 - (void)replaceAll:(id)sender {
     if (![self readyToReplace]) return;
+    if (self.hostSearch) {
+        [self replaceOnHostIn:nil ask:YES];
+        return;
+    }
     _replacing = YES;
     [self setStatus:@"Counting matches…" error:NO];
     const std::string root = _scope.fileSystemRepresentation;
@@ -1684,15 +1709,197 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
 
 - (void)replaceFileAtRow:(NSInteger)row {
     if (row < 0 || row >= (NSInteger)_hits.count || ![self readyToReplace]) return;
+    if (self.hostSearch) {
+        [self replaceOnHostIn:_hits[(NSUInteger)row].path ask:NO];
+        return;
+    }
     _replacing = YES;
     [self replaceInPaths:@[_hits[(NSUInteger)row].path] hit:nil held:@[]];
 }
 
 - (void)replaceMatchAtRow:(NSInteger)row {
+    if (self.hostSearch && row >= 0 && row < (NSInteger)_hits.count) {
+        // The host replaces every match of a row's line, as a page's does.
+        NSBeep();
+        [self setStatus:@"Replacing one match does not work in a window over SSH yet: use Replace in This File "
+                        @"or Replace All"
+                  error:YES];
+        return;
+    }
     if (row < 0 || row >= (NSInteger)_hits.count || ![self readyToReplace]) return;
     _replacing = YES;
     SearchHit *h = _hits[(NSUInteger)row];
     [self replaceInPaths:@[h.path] hit:h held:@[]];
+}
+
+// ------------------------------------------------- Replace in Folder over SSH
+
+- (BOOL)hostTakesReplace {
+    return self.hostReplace && (!self.hostReplaces || self.hostReplaces());
+}
+
+- (NSString *)noReplaceOverSsh {
+    return [NSString stringWithFormat:@"Replace in Folder does not work in this window over SSH: mutible on %@ is "
+                                      @"too old to replace in its folder, or the connection is lost",
+                                      self.hostPlace ?: @"the other machine"];
+}
+
+// The rows the search showed, to the host's replace (SessionSearch.h): each
+// file's rows in the search's order, those dismissed since as left out
+// ("on" false: the host checks a file against all its rows, so a row is
+// never simply dropped), and a file whose tab holds unsaved changes not
+// sent but named. `only`: one file's (Replace in This File), else every
+// file's, after the question Replace All asks locally.
+- (void)replaceOnHostIn:(NSString *)only ask:(BOOL)ask {
+    NSMutableArray<NSString *> *order = [NSMutableArray array];
+    NSMutableDictionary<NSString *, NSMutableArray<NSArray *> *> *byFile = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSNumber *> *matchesOf = [NSMutableDictionary dictionary];
+    void (^add)(SearchHit *, BOOL) = ^(SearchHit *h, BOOL on) {
+        NSMutableArray<NSArray *> *rows = byFile[h.path];
+        if (!rows) {
+            rows = [NSMutableArray array];
+            byFile[h.path] = rows;
+            [order addObject:h.path];
+        }
+        [rows addObject:@[h, @(on)]];
+        if (on) matchesOf[h.path] = @(matchesOf[h.path].unsignedLongValue + MAX((NSUInteger)1, h.count));
+    };
+    NSMutableSet<NSString *> *heldFiles = [NSMutableSet set];
+    NSMutableArray<NSString *> *held = [NSMutableArray array];
+    for (SearchHit *h in _hits) {
+        if (only && ![h.path isEqualToString:only]) continue;
+        if (![heldFiles containsObject:h.path] && self.openState && self.openState(h.path) == MCOpenFileConflict) {
+            [heldFiles addObject:h.path];
+            [held addObject:h.path.lastPathComponent];
+        }
+        add(h, ![heldFiles containsObject:h.path]);
+    }
+    size_t dismissedMatches = 0;
+    for (SearchHit *h in _hostDismissed) {
+        if (only && ![h.path isEqualToString:only]) continue;
+        add(h, NO);
+        dismissedMatches += MAX((NSUInteger)1, h.count);
+    }
+    size_t matches = 0, files = 0;
+    for (NSString *f in order)
+        if (matchesOf[f].unsignedLongValue) {
+            matches += matchesOf[f].unsignedLongValue;
+            files++;
+        }
+    if (!matches) {
+        [self setStatus:held.count ? [NSString stringWithFormat:@"Nothing replaced: the matches are in tabs with "
+                                                                 @"unsaved changes (%@)",
+                                                                 [held componentsJoinedByString:@", "]]
+                        : dismissedMatches ? @"Nothing replaced: every match left is in a dismissed row"
+                                           : @"Nothing to replace"
+                  error:NO];
+        return;
+    }
+    NSString *with = self.replaceField.stringValue ?: @"";
+    if (ask) {
+        NSAlert *alert = [NSAlert new];
+        alert.messageText = [NSString stringWithFormat:@"Replace %zu %@ in %zu %@?", matches,
+                                                       matches == 1 ? @"match" : @"matches", files,
+                                                       files == 1 ? @"file" : @"files"];
+        NSMutableString *info = [NSMutableString stringWithFormat:
+            @"Each becomes “%@”. Files open in a tab are changed there, unsaved, and can be undone there; the "
+            @"others are written to disk.", with];
+        if (held.count)
+            [info appendFormat:@" Left alone, since their tabs have unsaved changes: %@.",
+                               [held componentsJoinedByString:@", "]];
+        if (dismissedMatches)
+            [info appendFormat:@" %zu %@ in dismissed rows %@ left alone.", dismissedMatches,
+                               dismissedMatches == 1 ? @"match" : @"matches", dismissedMatches == 1 ? @"is" : @"are"];
+        alert.informativeText = info;
+        [alert addButtonWithTitle:@"Replace"];
+        [alert addButtonWithTitle:@"Cancel"];
+        [NSApp discardEventsMatchingMask:NSEventMaskKeyDown | NSEventMaskKeyUp beforeEvent:nil];
+        if ([alert runModal] != NSAlertFirstButtonReturn) {
+            [self setStatus:@"Nothing replaced" error:NO];
+            return;
+        }
+    }
+    const FolderSearchOptions o = [self options];
+    Json request = Json::object();
+    request.set("query", Json(SStd(self.field.stringValue)));
+    request.set("caseSensitive", Json(o.caseSensitive));
+    request.set("wholeWord", Json(o.wholeWord));
+    request.set("regex", Json(o.regex));
+    request.set("replacement", Json(SStd(with)));
+    request.set("hidden", Json(true));   // as the search read them
+    NSString *prefix = [_root hasSuffix:@"/"] ? _root : [_root stringByAppendingString:@"/"];
+    Json list = Json::array();
+    for (NSString *f in order) {
+        if ([heldFiles containsObject:f] || ![f hasPrefix:prefix]) continue;   // named here, not sent
+        Json rows = Json::array();
+        for (NSArray *r in byFile[f]) {
+            SearchHit *h = r[0];
+            Json row = Json::object();
+            row.set("line", Json((int64_t)h.line));
+            row.set("text", Json(SStd(h.text)));
+            row.set("count", Json((int64_t)MAX((NSUInteger)1, h.count)));
+            row.set("on", Json((bool)[r[1] boolValue]));
+            rows.push(std::move(row));
+        }
+        Json g = Json::object();
+        g.set("path", Json(SStd([f substringFromIndex:prefix.length])));
+        g.set("rows", std::move(rows));
+        list.push(std::move(g));
+    }
+    request.set("files", std::move(list));
+    _replacing = YES;
+    [self setStatus:@"Replacing…" error:NO];
+    __weak SearchPanel *weakSelf = self;
+    NSArray<NSString *> *heldNames = [held copy];
+    const uint64_t req = self.hostReplace(std::move(request), ^(const std::vector<Json> &answers, BOOL done) {
+        [weakSelf hostReplaced:answers done:done held:heldNames];
+    });
+    if (!req) {
+        _replacing = NO;
+        [self setStatus:[NSString stringWithFormat:@"Cannot replace: the connection to %@ is lost",
+                                                   self.hostPlace ?: @"the other machine"]
+                  error:YES];
+    }
+}
+
+// The host's answer: its counts, the files open in tabs it edited, and
+// what it left alone with its own sentences; then the search again.
+- (void)hostReplaced:(const std::vector<Json> &)answers done:(BOOL)done held:(NSArray<NSString *> *)held {
+    for (const Json &a : answers) {
+        if (!a["done"].asBool()) continue;
+        _replacing = NO;
+        const std::string error = a["error"].asString();
+        const size_t total = (size_t)a["replaced"].asNumber(0);
+        const size_t tabs = (size_t)a["edited"].asNumber(0);
+        const size_t files = (size_t)a["files"].asNumber(0) + tabs;
+        NSMutableArray<NSString *> *skipped = [NSMutableArray array];
+        for (const Json &k : a["skipped"].elements()) {
+            NSString *why = SNS(k["why"].asString());
+            if (why.length) [skipped addObject:why];
+        }
+        NSMutableString *msg = [NSMutableString string];
+        if (total == 0 && !skipped.count && error.empty() && !held.count) [msg appendString:@"Nothing to replace"];
+        else
+            [msg appendFormat:@"Replaced %zu %@ in %zu %@", total, total == 1 ? @"match" : @"matches", files,
+                              files == 1 ? @"file" : @"files"];
+        if (tabs) [msg appendFormat:@" (%zu open in tabs, unsaved)", tabs];
+        if (held.count)
+            [msg appendFormat:@". Left alone, with unsaved changes: %@", [held componentsJoinedByString:@", "]];
+        if (skipped.count) [msg appendFormat:@". Left alone: %@", [skipped componentsJoinedByString:@"; "]];
+        if (!error.empty()) [msg appendFormat:@". %@", SNS(error)];
+        // The results as they are now, after this note.
+        _afterNote = msg;
+        _afterNoteError = skipped.count > 0 || !error.empty();
+        [self runSearch:self];
+        if (!self.busy) [self setStatus:msg error:_afterNoteError];
+        return;
+    }
+    if (done && _replacing) {   // the link went before the answer
+        _replacing = NO;
+        [self setStatus:[NSString stringWithFormat:@"The replace was cut off: the connection to %@ is lost",
+                                                   self.hostPlace ?: @"the other machine"]
+                  error:YES];
+    }
 }
 
 // Replace every match in these files, or only `hit`'s. Tabs first (on the

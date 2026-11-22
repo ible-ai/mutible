@@ -85,11 +85,26 @@ typedef NS_ENUM(NSInteger, MCOpenFileState) {
 // sends the request (the query, its toggles, files to include and
 // exclude) and hands back each batch of answers as it comes, the last with
 // `done`; it returns the number `cancelHostSearch` stops (0: not sent).
-// Its rows are shown as the Mac's own search shows them. Replace in Folder
-// is not offered with it (the replace row says why).
+// Its rows are shown as the Mac's own search shows them.
 @property(nonatomic, copy) uint64_t (^hostSearch)(Json request,
                                                   void (^answers)(const std::vector<Json> &answers, BOOL done));
 @property(nonatomic, copy) void (^cancelHostSearch)(uint64_t req);
+// And Replace in Folder on the host (SessionSearch.h's "replace", as a
+// browser page's): Replace All and Replace in This File send the rows the
+// search showed, a dismissed row as left out, and a file whose tab here has
+// unsaved changes not at all (named, as locally). The host edits a
+// document it holds with no unsaved changes (the window's tab shows it,
+// unsaved, undoable) and rewrites the other files with its save rules.
+// `hostReplaces` says whether the host takes it now (a host too old, or a
+// lost connection, does not: Replace All says so); `hostReplace` sends one,
+// its answer as a stream's (0: not sent); `hostPlace` names the folder
+// there ("host:path"). Preserve Case and Replace This Match are refused
+// over SSH with a note (the host replaces a row's whole line, and ignores
+// case preserving).
+@property(nonatomic, copy) BOOL (^hostReplaces)(void);
+@property(nonatomic, copy) uint64_t (^hostReplace)(Json request,
+                                                   void (^answers)(const std::vector<Json> &answers, BOOL done));
+@property(nonatomic, copy) NSString *hostPlace;
 
 // The query, from the editor's selection (Find in Folder with text
 // selected); searched at once.

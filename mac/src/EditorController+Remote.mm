@@ -3,11 +3,14 @@
 // Open and Find in Folder over SSH"). The tree lists through the host
 // (MCRemoteWorkspace as the root's MCTreeSource) and follows the host's
 // notices in place of FSEvents; Quick Open ranks the host's list of files;
-// Find in Folder searches on the host; New File opens a tab its first save
-// makes there; what would change or read this Mac's disk at the folder's
-// path (New Folder, Rename, Move to Trash, drags, Reveal in Finder, Quick
-// Look, the TODO list, Replace in Folder) says it does not work over SSH
-// yet. Every method does nothing (or NO) in a window on this Mac. The
+// Find in Folder searches on the host and its Replace All replaces there;
+// the tree's rename, move by drag, delete (permanent: the host has no
+// Trash), New File and New Folder are the host's file operations (Welcome
+// flag 64; on an older host they are unavailable, but New File, which
+// opens a tab its first save makes there); what would read this Mac's disk
+// at the folder's path (Reveal in Finder, drags out, Quick Look, the TODO
+// list) says it does not work over SSH yet. Every method does nothing (or
+// NO) in a window on this Mac. The
 // window's state is the MCRemoteWorkspace, an associated object, so the
 // controller gains no instance variables.
 #import "EditorController+Private.h"
@@ -106,6 +109,178 @@ static char kRemoteWorkspaceKey;
         return [weakWs search:std::move(request) answers:answers];
     };
     panel.cancelHostSearch = ^(uint64_t req) { [weakWs cancelSearch:req]; };
+    [self replaceOnHost:panel];
+}
+
+// ------------------------------------------------------------ the tree's file operations
+// docs/notes/session-host.md, "The Mac window's tree changes files on the
+// host": each waits for the host's answer (as the tree's listings do), and
+// open tabs follow it as they follow a local rename or move.
+
+- (BOOL)remoteDoesFileOps {
+    return [self remoteWorkspace].doesFileOps;
+}
+
+- (BOOL)refuseFileOpsOverSsh:(NSString *)what {
+    MCRemoteWorkspace *ws = [self remoteWorkspace];
+    if (!ws || ws.doesFileOps) return NO;
+    NSBeep();
+    MCSessionLinkRef *link = [self sessionRemoteLink];
+    if (!link.link || link.link->lost())
+        [self showStatusNote:[NSString stringWithFormat:@"%@ waits for the connection to %@: Reconnect, then try "
+                                                        @"again.",
+                                                        what, self.sessionRemoteLabel]];
+    else
+        [self showStatusNote:[NSString stringWithFormat:@"%@ does not work over SSH with this host: mutible on %@ "
+                                                        @"is too old for it. Upgrade it there.",
+                                                        what, self.sessionRemoteLabel]];
+    return YES;
+}
+
+// The tree's file items in a window over SSH: available when the host does
+// file operations; Move to Trash is Delete Permanently there.
+- (BOOL)validateRemoteTreeItem:(NSMenuItem *)item enabled:(BOOL *)enabled {
+    SEL a = item.action;
+    MCRemoteWorkspace *ws = [self remoteWorkspace];
+    if (a == @selector(deleteSelected:)) item.title = ws ? @"Delete Permanently…" : @"Move to Trash";
+    if (!ws) return NO;
+    if (a == @selector(newFolder:) || a == @selector(renameSelected:) || a == @selector(deleteSelected:)) {
+        *enabled = ws.doesFileOps;
+        return YES;
+    }
+    return NO;
+}
+
+// The host refused, or did not answer: its sentence, in an alert.
+- (void)remoteFileOpFailed:(NSString *)what why:(NSString *)why {
+    NSAlert *a = [NSAlert new];
+    a.messageText = what;
+    a.informativeText = why ?: @"";
+    [a addButtonWithTitle:@"OK"];
+    [a runModal];
+}
+
+- (void)remoteRenamePath:(NSString *)path to:(NSString *)name {
+    MCRemoteWorkspace *ws = [self remoteWorkspace];
+    if (!ws || !path.length || !name.length) return;
+    if ([name isEqualToString:path.lastPathComponent]) return;   // the same name: nothing to do
+    NSString *why = [ws renamePath:path to:name reason:nil];
+    if (why) {
+        [self remoteFileOpFailed:[NSString stringWithFormat:@"“%@” was not renamed.", path.lastPathComponent]
+                             why:why];
+        return;
+    }
+    NSString *dst = [path.stringByDeletingLastPathComponent stringByAppendingPathComponent:name];
+    [self pathMovedFrom:path to:dst];   // open tabs follow, a folder's too, their text kept
+    [self refreshTree:nil];
+    [self revealPath:dst andOpen:NO];
+}
+
+- (BOOL)remoteMovePaths:(NSArray<NSString *> *)paths into:(NSString *)dir {
+    MCRemoteWorkspace *ws = [self remoteWorkspace];
+    if (!ws || !dir.length) return NO;
+    NSMutableArray<NSString *> *problems = [NSMutableArray array];
+    NSString *last = nil;
+    for (NSString *src in paths) {
+        NSString *why = [ws movePath:src into:dir reason:nil];
+        if (why) {
+            [problems addObject:why];
+            continue;
+        }
+        NSString *dst = [dir stringByAppendingPathComponent:src.lastPathComponent];
+        [self pathMovedFrom:src to:dst];
+        last = dst;
+    }
+    [self refreshTree:nil];
+    if (last) [self revealPath:last andOpen:NO];
+    // Not a modal alert inside the drop, as on this Mac.
+    if (problems.count) {
+        NSString *why = [problems componentsJoinedByString:@"\n"];
+        __weak EditorController *weakSelf = self;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf remoteFileOpFailed:problems.count == paths.count ? @"Nothing was moved." : @"Some were not moved."
+                                     why:why];
+        });
+    }
+    return last != nil;
+}
+
+// After asking: the host has no Trash, so what goes is gone. Open tabs of
+// what went stay, marked deleted and unsaved, as when a file is deleted on
+// disk: saving one writes it again.
+- (void)remoteDeletePath:(NSString *)path {
+    MCRemoteWorkspace *ws = [self remoteWorkspace];
+    if (!ws || !path.length) return;
+    BOOL dir = NO;
+    for (MCTreeEntry *e in [ws treeListFolder:path.stringByDeletingLastPathComponent hidden:YES] ?: @[])
+        if ([e.path isEqualToString:path]) dir = e.isDir && !e.isLink;
+    NSAlert *a = [NSAlert new];
+    a.messageText = [NSString stringWithFormat:@"Delete “%@” permanently?", path.lastPathComponent];
+    a.informativeText =
+        dir ? [NSString stringWithFormat:@"The folder and everything in it are on %@, which has no Trash: "
+                                         @"they cannot be put back.",
+                                         self.sessionRemoteLabel]
+            : [NSString stringWithFormat:@"It is on %@, which has no Trash: it cannot be put back.",
+                                         self.sessionRemoteLabel];
+    [a addButtonWithTitle:@"Delete Permanently"];
+    [a addButtonWithTitle:@"Cancel"];
+    if ([a runModal] != NSAlertFirstButtonReturn) return;
+    NSString *why = [ws deletePath:path reason:nil];
+    if (why) {
+        [self remoteFileOpFailed:[NSString stringWithFormat:@"“%@” was not deleted.", path.lastPathComponent]
+                             why:why];
+        return;
+    }
+    NSString *prefix = [path stringByAppendingString:@"/"];
+    BOOL any = NO;
+    for (MCTab *t in [self tabs]) {
+        if (!t.currentPath || t.untitled || t.gone) continue;
+        if (![t.currentPath isEqualToString:path] && ![t.currentPath hasPrefix:prefix]) continue;
+        t.gone = YES;
+        // Only text has anything to save.
+        if (!t.isImage && !t.isPDF && !t.isMedia && !t.isDiff && !t.showingMessage && t.loaded) t.dirty = YES;
+        any = YES;
+    }
+    if (any) {
+        [self reloadTabStrip];
+        [self updateTitle];
+    }
+    [self refreshTree:nil];
+}
+
+- (void)remoteMakePath:(NSString *)path folder:(BOOL)folder {
+    MCRemoteWorkspace *ws = [self remoteWorkspace];
+    if (!ws || !path.length) return;
+    NSString *why = [ws makePath:path folder:folder reason:nil];
+    if (why) {
+        [self remoteFileOpFailed:[NSString stringWithFormat:folder ? @"The folder “%@” was not made."
+                                                                   : @"The file “%@” was not made.",
+                                                            path.lastPathComponent]
+                             why:why];
+        return;
+    }
+    [self refreshTree:nil];
+    [self revealPath:path andOpen:!folder];   // a new file opens, read through the host
+}
+
+// The host moved a tab's file (DocDirty's "moved": a rename or move, this
+// window's or another renderer's): the tab follows, its text kept.
+- (void)remoteTab:(MCTab *)t movedTo:(NSString *)path {
+    if (![self remoteWorkspace] || !t.currentPath || !path.length || [t.currentPath isEqualToString:path]) return;
+    [self pathMovedFrom:t.currentPath to:path];
+}
+
+// ------------------------------------------------------------ Replace in Folder
+
+- (void)replaceOnHost:(SearchPanel *)panel {
+    MCRemoteWorkspace *ws = [self remoteWorkspace];
+    if (!ws || !panel) return;
+    __weak MCRemoteWorkspace *weakWs = ws;
+    panel.hostReplaces = ^BOOL { return [weakWs replacesInFolder]; };
+    panel.hostReplace = ^uint64_t(Json request, void (^answers)(const std::vector<Json> &, BOOL)) {
+        return [weakWs replace:std::move(request) answers:answers];
+    };
+    panel.hostPlace = self.sessionRemoteLabel;
 }
 
 // ------------------------------------------------------------ new files
