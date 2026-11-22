@@ -12,6 +12,9 @@
     std::vector<std::string> _watchPaths;
     BOOL _watchHidden, _watchAsked;
     NSMutableSet<NSString *> *_new;
+    // treePrefetchFolders:'s answers, by hidden and path, each taken once
+    // by the next treeListFolder: of it, and let go at the turn's end.
+    NSMutableDictionary<NSString *, NSArray<MCTreeEntry *> *> *_prefetched;
 }
 
 - (instancetype)initWithFolder:(NSString *)folder {
@@ -95,7 +98,16 @@
     return out;
 }
 
+static NSString *PrefetchKey(NSString *path, BOOL hidden) {
+    return [(hidden ? @"h:" : @"-:") stringByAppendingString:path];
+}
+
 - (NSArray<MCTreeEntry *> *)treeListFolder:(NSString *)path hidden:(BOOL)hidden {
+    NSString *key = PrefetchKey(path, hidden);
+    if (NSArray<MCTreeEntry *> *ready = _prefetched[key]) {
+        [_prefetched removeObjectForKey:key];
+        return ready;
+    }
     std::string rel;
     MCSession::Link *l = [self live];
     if (!l || ![self relative:path out:&rel]) return nil;
@@ -107,6 +119,38 @@
     if (answer.isNull()) return nil;   // no answer: what the tree has stays
     _listings++;
     return [self entriesOf:answer];
+}
+
+- (void)treePrefetchFolders:(NSArray<NSString *> *)paths hidden:(BOOL)hidden {
+    MCSession::Link *l = [self live];
+    if (!l || paths.count < 2) return;   // one folder gains nothing: it is listed as it comes
+    std::vector<Json> asks;
+    NSMutableArray<NSString *> *asked = [NSMutableArray array];
+    for (NSString *p in paths) {
+        std::string rel;
+        if (![self relative:p out:&rel]) continue;
+        Json ask = Json::object();
+        ask.set("op", Json("list"));
+        ask.set("path", Json(rel));
+        ask.set("hidden", Json((bool)hidden));
+        asks.push_back(std::move(ask));
+        [asked addObject:p];
+    }
+    const std::vector<Json> answers = l->client().readAll(0, std::move(asks), 20000);
+    if (!_prefetched) _prefetched = [NSMutableDictionary dictionary];
+    for (NSUInteger i = 0; i < asked.count && i < answers.size(); i++) {
+        if (answers[i].isNull()) continue;   // no answer: listed as it comes, as before
+        NSArray<MCTreeEntry *> *entries = [self entriesOf:answers[i]];
+        if (!entries) continue;
+        _listings++;
+        _prefetched[PrefetchKey(asked[i], hidden)] = entries;
+    }
+    // Only for the listings that follow at once: never a stale one later.
+    __weak MCRemoteWorkspace *weakSelf = self;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MCRemoteWorkspace *s = weakSelf;
+        if (s) [s->_prefetched removeAllObjects];
+    });
 }
 
 - (void)tookNotice:(const Json &)changed {

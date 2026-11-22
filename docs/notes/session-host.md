@@ -3580,7 +3580,8 @@ through its host, so this is mostly a transport.
   shared, not forked. Every tab of it has a document on the remote host
   whatever editor.session-host says (MCTabOwner's `tabNeedsSession:`).
   Its files are read through the host (`Link::readText`: FsRead "read" in
-  4 MB pieces, 64 MB at most, decoded as `MCReadDiskText` decodes) in
+  4 MB pieces, 64 MB at most, decoded as `MCReadDiskText` decodes; since
+  "Opening a file over SSH: one round trip", below, `Client::readFile`) in
   `loadActiveTab`, and saved by it (stage 7's `writeTextThroughHost:`).
   Nothing of its folder is looked for on the Mac: no stamps
   (`recordStamp:ofTab:` keeps none, so `checkExternalChange` and the
@@ -4295,6 +4296,64 @@ connection and come back to the same host. The GTK port:
   look right; `remote_ssh` checks `MCTreeListedFolders()` never names it
   and that the rows carry the host's `ignored` mark, which only a host
   sets.
+- **Every wait on the host is a round trip on the main thread.** Over SSH
+  that is the network's (8 ms on the owner's LAN, 200 ms and more when
+  Wi-Fi loses a packet). Wait for a request's own answer (`Client::read`,
+  `readAll`, `readFile`), never `settle()` behind it: the Ping adds a
+  message each way and a wait on the slower of the two. Reads that go
+  together go together (`readAll`, the tree's `treePrefetchFolders:`), and
+  a new wait on the way to opening a file shows in remote_ssh's counts of
+  `Client::waits()`.
+
+#### Opening a file over SSH: one round trip (2026-11-21)
+
+The owner on 1.6.19: opening a file in `mutible ssh://thinkpad/~/minicode`,
+from the tree or Cmd+P, "takes a second" on a LAN of 8 ms round trips.
+What an open waited for on the main thread, measured through a stand-in
+for ssh that delays each direction 10 ms (25 ms a round trip with the
+stand-in's own cost) and stalls 3% of its chunks 200 ms, with a driver on
+the core's client and `mutible host --stdio` (the numbers are the PR's):
+
+- **The read.** `Link::readText` asked FsRead "read" a 4 MB piece at a
+  time and waited with `settle()` after each: a Ping behind the read, so
+  two messages each way and the wait for the later one. A source file was
+  one piece, about one round trip (29 ms here, the read and its Ping
+  travelling together) and 110 ms on average with the stalls; a 12 MB file
+  four round trips in turn (470 ms, 1.3 s with stalls). Now
+  `Client::readFile` waits only for the read's own answer: one message
+  each way, one round trip under 4 MB (29 ms, 80 ms with stalls), and past
+  that, its size known from the first answer, the pieces left asked four
+  at a time (the 12 MB file in two waits, 370 ms, 820 ms with stalls; 64
+  MB in five, not sixteen). The GTK port's `readText` uses it too.
+- **Cmd+P into folders the tree has not listed.** Revealing the file
+  (`treeOpenFoldersTo:widen:`) listed each folder on the way in turn,
+  `FsRead "list"` waited for, before the read: a file two folders down
+  was three round trips. Now the folders on the way not listed yet are
+  asked together first (`treePrefetchFolders:hidden:`, MCTreeSource's
+  optional method, `Client::readAll`), each answer taken once by the
+  listing that follows in the same turn, the rest let go at its end: two
+  round trips for any depth.
+- **`Link::locate`** (an address an open window may hold) waited with
+  `settle()` behind its read too; now `Client::read`.
+- Not on the way: the client never polls (`waitFor` sleeps on a condition
+  until the reader thread delivers), the host answers a read on its own
+  thread at once, DocOpen and the window's tab report do not wait, and
+  the palette's file list streams (`files`, 1,463 files of this checkout
+  in two dispatches, 50 ms). The DocOpen still sends the file's text back
+  up (the host opens its document from the renderer's text), which costs
+  bandwidth, not a wait.
+- `Client::waits()` counts every wait (`waitFor`); `remote_ssh` bounds
+  them: a tree row's file opened with one wait at most, Quick Open's with
+  one, and Quick Open's into two folders not listed (`lib/inner/deep.c`,
+  made on disk mid-suite) with two, the folders listed by the prefetch.
+  The core's `hostserver:read-file` counts them for readFile (one, two
+  for three pieces, three for six, one for a file over the limit) and
+  readAll (one for three listings), with the host's refusals.
+
+The stand-in reproduces the network, not a full second at 8 ms: a small
+file's read was about one round trip before this too. Whatever else the
+owner's open spends on the Mac is outside these counts; remote_ssh's notes
+give a row's open time and its waits on CI's runner.
 
 ### Still to do
 

@@ -375,32 +375,12 @@ Link::RemoteText Link::readText(const std::string& path) {
                        path[folder_.size()] == '/';
     if (lost() || folder_.empty() || !under) return out;
     const std::string rel = path.substr(folder_.size() + 1);
-    // 64 MB at most, as the host follows a file (SessionFiles.h's kMaxFollowed).
-    const std::size_t limit = std::size_t(64) << 20;
-    std::string bytes;
-    for (;;) {
-        Json ask = Json::object();
-        ask.set("op", Json("read"));
-        ask.set("path", Json(rel));
-        ask.set("offset", Json((double)bytes.size()));
-        ask.set("length", Json((double)Shared::kMaxReadBytes));
-        ask.set("hidden", Json(true));
-        std::string piece;
-        const std::uint64_t req = client_->requestRead(0, std::move(ask));
-        Json answer;
-        if (!req || !client_->settle(20000) || !client_->readAnswer(req, &answer, &piece)) {
-            if (req) client_->forgetRead(req);
-            return out;
-        }
-        if (!answer["error"].isNull()) return out;
-        const double size = answer["size"].asNumber(0);
-        if (size > (double)limit) {
-            out.tooLarge = true;
-            return out;
-        }
-        bytes += piece;
-        if (piece.empty() || (double)bytes.size() >= size) break;
-    }
+    // 64 MB at most, as the host follows a file (SessionFiles.h's kMaxFollowed);
+    // one round trip under 4 MB (Client::readFile).
+    Shared::Client::FileRead read = client_->readFile(0, rel, std::size_t(64) << 20);
+    out.tooLarge = read.tooLarge;
+    if (!read.ok) return out;
+    std::string bytes = std::move(read.bytes);
     if (!FolderSearch::decodeFileText(&bytes, &out.encoding, &out.bom)) return out;
     if (!g_utf8_validate(bytes.data(), (gssize)bytes.size(), nullptr)) return out;
     out.text = std::move(bytes);
@@ -414,12 +394,9 @@ bool Link::locate(const std::string& asked, Located* out, int timeoutMs) {
     Json ask = Json::object();
     ask.set("op", Json("locate"));
     ask.set("path", Json(asked));
-    const std::uint64_t req = client_->requestRead(0, std::move(ask));
-    Json answer;
-    if (!req || !client_->settle(timeoutMs) || !client_->readAnswer(req, &answer)) {
-        if (req) client_->forgetRead(req);
-        return false;
-    }
+    // Its own answer waited for, no Ping behind it: one round trip.
+    const Json answer = client_->read(0, std::move(ask), timeoutMs);
+    if (answer.isNull()) return false;
     // A host from before the read answers its error: nothing known.
     if (!answer["error"].isNull() || answer["op"].asString() != "locate") return false;
     out->inside = answer["inside"].asBool();

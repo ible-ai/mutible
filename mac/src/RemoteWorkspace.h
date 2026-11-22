@@ -4,7 +4,9 @@
 // this Mac's disk:
 //   - the tree's listings (MCTreeSource: FsRead "list", waited for, as the
 //     Mac's own tree lists a folder as it opens), with the host's marks
-//     (what the ignore files ignore, a link out of the folder);
+//     (what the ignore files ignore, a link out of the folder); the
+//     folders on the way to a file revealed (Quick Open) asked together,
+//     one round trip for them all (treePrefetchFolders:hidden:);
 //   - the folders the tree has listed, told to the host (FsRead "watch"),
 //     whose listings come back by themselves when they change there
 //     (FsChanged, onListings): the remote disk's notices in place of
