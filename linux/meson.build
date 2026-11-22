@@ -82,6 +82,7 @@ core_sources = [
   core_dir / 'JsonOutline.cpp',
   core_dir / 'Notebook.cpp',
   core_dir / 'FileSniff.cpp',
+  core_dir / 'RemoteCache.cpp',
   core_dir / 'HtmlPage.cpp',
   core_dir / 'LspClient.cpp',
   core_dir / 'LspProtocol.cpp',

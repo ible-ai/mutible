@@ -287,6 +287,30 @@ found through that list.
   file with no `-wal` beside it opens with `immutable=1` (read-only cannot
   make the WAL files); a failure is shown in the tab. A reopen keeps the
   table or query on show. NULL is `NSNull` in the rows (`isNullAtRow:`).
+- **Over SSH** (2026-11-21, `EditorController+RemoteViewers.mm`,
+  `RemoteFileCache.{h,mm}`, core `RemoteCache.h`, `remotecache:*`,
+  `remote_ssh`; docs/notes/session-host.md, "Viewers over SSH"): a window
+  over SSH reads a file through its host once (`Link::readBytes`, 64 MB
+  at most) and `RemoteCache::showFor` decides as `loadActiveTab` does
+  here: pictures, PDFs and players by extension, SQLite and Quick Look by
+  the head, a table over `MCCsvEditableBytes`, bytes that do not decode;
+  those are written to the window's folder of copies and the viewer is
+  given the copy (`viewerPathOf:`, which `showViewer:` and
+  `showActiveTab` use), the tab keeping the remote path. Text goes on as
+  before, with the viewers over or beside it (CSV, JSON, notebooks)
+  allowed (`MCViewerKindForHead`, the bytes already read); an HTML page
+  shows its source, since its page loads the file itself, and LaTeX opens
+  as text (its preview writes beside the file). Over the limit: the
+  placeholder (`RemoteCache::tooLargeMessage`, a message, not an alert).
+  The copy on show is read again when the host's notice names its folder
+  (`refreshRemoteCopyOf:`, `Link::fetchBytes`, no wait) and shown again
+  through the same show methods `checkExternalChange` uses when its
+  fingerprint differs; one in another tab is stale and read again by
+  `showActiveTab`. **Trap**: every viewer here takes a path and reads it
+  itself, so in a window over SSH any path handed to a viewer must be the
+  copy's (`viewerPathOf:`), never the tab's: the GUI check's stand-in
+  serves this Mac's disk, so the tab's path would pass there and show
+  nothing (or another file) on a real remote.
 - **Diffs and pages**: git diffs and commits in `diffScroll`; the side-by-side
   diff is `CompareView` (`showComparison:preview:`, `MCComparison`, panes
   scrolling together); an `EditorPage` (`showPage:`) is a read-only view in a
@@ -325,4 +349,5 @@ text is in place in its section.
 - Video and audio: **Trap** (2026-11-20, the taskbench's MP4 at 750 to 1,100 ms, the step after it as long again): the time was AVKit's, after the frame was up, not ours (the main thread's own part is about 50 ms cold: the view, the item, `playable`).
 - CSV and TSV: **Trap (round 9)**: the grid's `validateMenuItem:` ended in `[super validateMenuItem:]`, which NSTableView does not have (it validates through `validateUserInterfaceItem:`), so validating any menu item the grid was the target of threw, AppKit dropped the key, and no menu key worked while the grid had the keyboard: Shift+Cmd+P "did nothing".
 - JSON outline: Trap: an attributed string's own default paragraph style word-wraps and overrides the field's `lineBreakMode`, so a long value (or one with line breaks) wrapped inside its fixed-height row and drew over the rows below; `previews` checks every row's field sits in its row and needs one line (`cellSizeForBounds:`).
+- Over SSH: **Trap**: every viewer here takes a path and reads it itself, so in a window over SSH any path handed to a viewer must be the copy's (`viewerPathOf:`), never the tab's: the GUI check's stand-in serves this Mac's disk, so the tab's path would pass there and show nothing (or another file) on a real remote.
 - Viewers in the editor's slot (Mac): Trap: laying both panes out to size them took 1.5 s on the main thread for 50,000 lines a side; every row has one fixed height (a paragraph style), so sizes and row rects are arithmetic and layout is non-contiguous.

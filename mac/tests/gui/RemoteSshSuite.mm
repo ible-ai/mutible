@@ -36,6 +36,15 @@
 //     no Ping behind it). Quick Open's open of a file two folders down
 //     that the tree has not listed waits twice: both folders' listings
 //     asked together, then the read.
+//   - Viewers through copies (RemoteCache.h, RemoteFileCache.h): a PNG and
+//     a PDF made on disk there open from the tree in the picture and PDF
+//     viewers (its pixel size, its page count), read with one wait on the
+//     host, from copies in the window's private folder (0700, the copy
+//     0600), while the tab, the title and the tree's selection keep the
+//     remote path; the PNG rewritten there at another size is shown again
+//     by the host's notice; a file over 64 MB shows the placeholder, no
+//     alert and no copy; the folder of copies is gone once the window
+//     closes.
 //   - The tree's file operations, done by the host (Welcome flag 64) and
 //     checked on the stand-in's disk: Shift+Cmd+N in the tree makes a
 //     folder and New File a file (opened in a tab); Rename (its prompt
@@ -87,13 +96,16 @@
 #import "FileTree.h"
 #import "PalettePanel.h"
 #import "RemoteConnect.h"
+#import "RemoteFileCache.h"
 #import "RemoteWorkspace.h"
+#import <Quartz/Quartz.h>
 #import "Search.h"
 #import "SessionLink.h"
 #import "SessionWindow.h"
 #import "Terminal.h"
 #import "TerminalGridView.h"
 
+#include <fcntl.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -127,6 +139,9 @@ NSString *gShellPid;         // that shell's pid, as it said it
 unsigned long long gTermId;  // the terminal's id on the host
 NSUInteger gTriesBefore;
 NSUInteger gWindowsBefore;   // the windows before an address the open one holds
+NSString *gPng, *gPdf, *gHuge;   // files the viewers show through copies
+NSString *gCopies;               // the window's folder of copies
+NSUInteger gRefreshes;           // its copies refreshed before a change there
 
 NSString *RealPath(NSString *path) {
     char buf[PATH_MAX];
@@ -218,6 +233,39 @@ NSString *ScreenWord(NSString *prefix) {
         }
         within = NSMakeRange(0, r.location);
     }
+}
+
+// A picture of `w` by `h` pixels, written as a PNG (through a temporary
+// file renamed over it, as an editor saves).
+BOOL WritePng(NSString *path, NSInteger w, NSInteger h) {
+    NSBitmapImageRep *rep = [[NSBitmapImageRep alloc] initWithBitmapDataPlanes:NULL pixelsWide:w pixelsHigh:h
+                                                                 bitsPerSample:8 samplesPerPixel:4 hasAlpha:YES
+                                                                      isPlanar:NO colorSpaceName:NSDeviceRGBColorSpace
+                                                                   bytesPerRow:0 bitsPerPixel:0];
+    NSData *png = [rep representationUsingType:NSBitmapImageFileTypePNG properties:@{}];
+    return png && [png writeToFile:path atomically:YES];
+}
+
+// A PDF of `pages` pages.
+BOOL WritePdf(NSString *path, size_t pages) {
+    NSMutableData *data = [NSMutableData data];
+    CGDataConsumerRef consumer = CGDataConsumerCreateWithCFData((__bridge CFMutableDataRef)data);
+    CGRect box = CGRectMake(0, 0, 200, 300);
+    CGContextRef ctx = CGPDFContextCreate(consumer, &box, NULL);
+    for (size_t i = 0; i < pages; i++) {
+        CGPDFContextBeginPage(ctx, NULL);
+        CGContextFillRect(ctx, CGRectMake(10, 10, 20 + 10 * i, 20));
+        CGPDFContextEndPage(ctx);
+    }
+    CGPDFContextClose(ctx);
+    CGContextRelease(ctx);
+    CGDataConsumerRelease(consumer);
+    return data.length > 0 && [data writeToFile:path atomically:YES];
+}
+
+int ModeOf(NSString *path) {
+    struct stat st;
+    return path && stat(path.fileSystemRepresentation, &st) == 0 ? (int)(st.st_mode & 0777) : -1;
 }
 
 // The stand-in's pid, as it wrote it (the process group ssh's spawn made).
@@ -564,6 +612,92 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(t != nil && t.session != nil);
         GCHECK_EQ_STR(t.currentText, @"int needle = 1;\n");
         GCHECK(t.fileModDate == nil);
+    });
+    // ---- viewers through copies read from the host
+    MCGuiStep(@"a PNG, a PDF and a file over 64 MB, made on disk there", ^{
+        gPng = [gFolder stringByAppendingPathComponent:@"shot.png"];
+        gPdf = [gFolder stringByAppendingPathComponent:@"paper.pdf"];
+        gHuge = [gFolder stringByAppendingPathComponent:@"huge.mov"];
+        GCHECK(WritePng(gPng, 37, 23));
+        GCHECK(WritePdf(gPdf, 3));
+        // Sparse: 65 MB that take no room.
+        const int fd = open(gHuge.fileSystemRepresentation, O_CREAT | O_WRONLY | O_TRUNC, 0644);
+        GCHECK(fd >= 0 && ftruncate(fd, (off_t)65 << 20) == 0);
+        if (fd >= 0) close(fd);
+    });
+    MCGuiWait(@"they come into the tree by the host's notices", 15, ^BOOL {
+        return TreeRow(gC, gPng) && TreeRow(gC, gPdf) && TreeRow(gC, gHuge);
+    });
+    MCGuiStep(@"the PNG from the tree: the picture viewer, from a copy; the tab on the remote path", ^{
+        GCHECK(SelectRow(gC, gPng));
+        const NSInteger row = [gC.outline rowForItem:TreeRow(gC, gPng)];
+        const unsigned long long before = HostWaits(gC);
+        if (row >= 0) [gC activateRow:row];   // Return in the tree
+        GCHECK(HostWaits(gC) - before <= 1);  // one read decides: text or a copy
+        MCTab *t = TabFor(gC, gPng);
+        GCHECK(t != nil && t.isImage);
+        GCHECK_EQ_STR(gC.currentPath, gPng);
+        GCHECK(NSEqualSizes(gC.imagePixels, NSMakeSize(37, 23)));
+        if (!NSEqualSizes(gC.imagePixels, NSMakeSize(37, 23)))
+            MCGuiNote(@"the picture: %@", NSStringFromSize(gC.imagePixels));
+        MCRemoteFileCache *cache = [gC remoteFileCache];
+        gCopies = cache.folder;
+        NSString *copy = [cache localPathOf:gPng];
+        MCGuiNote(@"the window's copies: %@", gCopies);
+        GCHECK(gCopies.length > 0 && [gCopies hasPrefix:[MCRemoteFileCache root]]);
+        GCHECK([copy hasPrefix:gCopies] && Exists(copy));
+        GCHECK(![gPng hasPrefix:gCopies]);
+        // Private: the folders 0700, the copy 0600.
+        GCHECK(ModeOf(gCopies) == 0700);
+        GCHECK(ModeOf([MCRemoteFileCache root]) == 0700);
+        GCHECK(ModeOf(copy) == 0600);
+        // The title and the tree name the remote file, never the copy.
+        GCHECK([gC.window.title containsString:@"shot.png"]);
+        GCHECK(![gC.window.title containsString:gCopies]);
+        const NSInteger sel = gC.outline.selectedRow;
+        id item = sel >= 0 ? [gC.outline itemAtRow:sel] : nil;
+        GCHECK([item isKindOfClass:FileItem.class] && [((FileItem *)item).path isEqualToString:gPng]);
+        GCHECK(t.fileModDate == nil);   // no stamp of this Mac's
+    });
+    MCGuiStep(@"the PNG changes there", ^{
+        gRefreshes = [gC remoteFileCache].refreshes;
+        GCHECK(WritePng(gPng, 50, 40));
+    });
+    MCGuiWait(@"the picture shown again at its new size, by the host's notice", 15, ^BOOL {
+        return NSEqualSizes(gC.imagePixels, NSMakeSize(50, 40));
+    });
+    MCGuiStep(@"refreshed from a fresh copy, the tab as it was", ^{
+        GCHECK([gC remoteFileCache].refreshes > gRefreshes);
+        GCHECK_EQ_STR(gC.currentPath, gPng);
+        GCHECK(TabFor(gC, gPng).isImage);
+    });
+    MCGuiStep(@"the PDF from the tree: three pages, from a copy", ^{
+        GCHECK(SelectRow(gC, gPdf));
+        const NSInteger row = [gC.outline rowForItem:TreeRow(gC, gPdf)];
+        if (row >= 0) [gC activateRow:row];
+        MCTab *t = TabFor(gC, gPdf);
+        GCHECK(t != nil && t.isPDF);
+        GCHECK_EQ_STR(gC.currentPath, gPdf);
+        PDFView *v = [gC valueForKey:@"pdfView"];
+        GCHECK(v.document.pageCount == 3);
+        GCHECK([v.document.documentURL.path hasPrefix:gCopies]);
+        GCHECK([gC.window.title containsString:@"paper.pdf"]);
+    });
+    MCGuiStep(@"back to the PNG's tab: its copy shows again", ^{
+        GCHECK([gC showFile:gPng]);
+        GCHECK(NSEqualSizes(gC.imagePixels, NSMakeSize(50, 40)));
+    });
+    MCGuiStep(@"a file over 64 MB: the placeholder, no alert and no copy", ^{
+        gAlertsAt = MCGuiAlertsShown().count;
+        GCHECK([gC showFile:gHuge]);
+        MCTab *t = TabFor(gC, gHuge);
+        GCHECK(t != nil && t.showingMessage && !t.isMedia);
+        NSTextView *tv = [gC valueForKey:@"textView"];
+        GCHECK([tv.string containsString:@"too large to open over SSH"]);
+        if (![tv.string containsString:@"too large to open over SSH"]) MCGuiNote(@"shown: %@", tv.string);
+        GCHECK(AlertsSinceStep().count == 0);
+        GCHECK(!Exists([[gC remoteFileCache].folder stringByAppendingPathComponent:@"huge.mov"]));
+        [NSFileManager.defaultManager removeItemAtPath:gHuge error:nil];   // nothing later reads 65 MB
     });
     // ---- the tree's file operations, done by the host
     MCGuiStep(@"files for the tree's operations, made on disk there", ^{
@@ -1113,6 +1247,9 @@ MC_GUI_SUITE(remote_ssh) {
         gC = nil;
     });
     MCGuiWait(@"gone", 10, ^BOOL { return RemoteWindow() == nil; });
+    MCGuiStep(@"its folder of copies gone with it", ^{
+        GCHECK(gCopies.length > 0 && !Exists(gCopies));
+    });
     MCGuiWait(@"its relay ends with it", 15, ^BOOL { return Gone(gHostB); });
     MCGuiWait(@"the lasting host ends after its idle time, nothing left in it", 30, ^BOOL { return Gone(gLasting); });
     MCGuiStep(@"nothing left", ^{

@@ -880,6 +880,35 @@ extern NSUInteger MCDirtyFromHostMarks;
 - (void)remoteTab:(MCTab *)t movedTo:(NSString *)path;
 @end
 
+// EditorController+RemoteViewers.mm: a window over SSH's files in the
+// viewers, through copies read from its host (docs/notes/session-host.md,
+// "Viewers over SSH"). Every method does nothing (nil, NO) on this Mac.
+@class MCRemoteFileCache;
+@interface EditorController (RemoteViewersPrivate)
+// The window's folder of copies (made on first use), nil on this Mac.
+- (MCRemoteFileCache *)remoteFileCache;
+// From loadActiveTab over SSH: the file read through the host once. YES
+// when it is shown (in a viewer, from its copy, or the placeholder for a
+// file over the limit); NO with *text its text (nil text when it could not
+// be read or is not text) and *viewer the viewer over or beside that text.
+- (BOOL)loadRemoteFile:(MCDiskText **)text viewer:(MCViewerKind *)viewer;
+// The file a tab's viewer reads: its copy over SSH, its path on this Mac.
+- (NSString *)viewerPathOf:(MCTab *)t;
+// The host said the tab's copy may have changed while another tab showed:
+// it is read again when the tab comes back.
+- (BOOL)remoteCopyIsStaleFor:(MCTab *)t;
+// The host's notice (the folders whose listings changed): the copy on show
+// read again, and shown again when it changed.
+- (void)remoteFoldersChanged:(NSArray<NSString *> *)folders;
+// The folders of the files copied, which the host watches too.
+- (NSArray<NSString *> *)remoteCopiedFolders;
+// A picture a Markdown page names, from its copy (nil, *waiting YES, while
+// it is read; nil for anything outside the folder or of this Mac's disk).
+- (NSImage *)remoteMarkdownPicture:(NSString *)src waiting:(BOOL *)waiting;
+// The window closes: its copies go.
+- (void)removeRemoteCopies;
+@end
+
 // EditorController+SessionBrowser.mm: what the window's record carries
 // besides its tabs (SessionWindow.h).
 @interface EditorController (SessionBrowserRecord)

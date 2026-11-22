@@ -3519,7 +3519,9 @@ through its host, so this is mostly a transport.
 - **Left out of this stage.** Port forwarding for the browser pane (a
   dev server on the remote's localhost), dragging a file from Finder to
   the remote, the Mac's Quick Look (and its image, PDF and media viewers)
-  on remote files.
+  on remote files (since the seventh slice, "Viewers over SSH", they show
+  copies read through the host; Space's Quick Look panel in the tree
+  still passes over a host's rows).
 
 #### As built (2026-11-21)
 
@@ -3586,7 +3588,8 @@ through its host, so this is mostly a transport.
   Nothing of its folder is looked for on the Mac: no stamps
   (`recordStamp:ofTab:` keeps none, so `checkExternalChange` and the
   questions before a save pass it by), no FSEvents stream, no restored
-  session, no local language server, no viewer that reads the disk, the
+  session, no local language server, no viewer that reads the disk (since
+  the seventh slice they read copies the host's reads made), the
   auto-save loop's disk check skipped, the large-file question skipped,
   and the window's own write refused (`writeText:toTab:`). Its title is "file — host:path — mutible"
   (WindowTitle's `remote`, with " (reconnecting)" while it tries again and
@@ -4427,6 +4430,106 @@ page's "replace", #307) in a Mac window over SSH, as GTK's Replace All
   which the harness answered with the field as it was, so a check could
   not name anything until `MCGuiTypeInPrompts`.
 
+#### Viewers over SSH (2026-11-21, seventh slice)
+
+Before this, a picture, PDF, audio or video file, SQLite database, or
+anything else the Mac shows in a viewer that reads its file itself either
+failed in a remote window ("Cannot display", the bytes not being text) or,
+worse, would have read the Mac's disk at the remote path. Now they show
+from copies read through the host. Core: `src/RemoteCache.{h,cpp}`
+(`remotecache:*`); the Mac: `EditorController+RemoteViewers.mm` (no
+ivars: its state is an associated `MCRemoteFileCache`),
+`RemoteFileCache.{h,mm}`, and `Link::readBytes` and `Link::fetchBytes`.
+
+- **One read decides.** `loadActiveTab` in a remote window (not for a
+  held or restored buffer) calls `loadRemoteFile:viewer:`, which reads the
+  file once (`Link::readBytes`, `Client::readFile`, 64 MB at most,
+  `RemoteCache::kMaxBytes`, the host's own `kMaxFollowed`) and asks
+  `RemoteCache::showFor` (name first, then the head, then whether the
+  bytes decode, as `loadActiveTab` decides on this Mac). Text goes on to
+  the text path with those bytes already decoded (no second read, so a
+  row's open still waits once), and the viewers over or beside text are
+  allowed now (CSV and TSV tables, the JSON outline, notebooks:
+  `MCViewerKindForHead`); an HTML page is left as source, since its page
+  loads the file itself. Anything else is written to the window's folder
+  of copies and shown by the same show methods a local file uses
+  (`showImageAtPath:`, `showPDFAtPath:`, `showMediaAtPath:`,
+  `showViewer:`), given the copy; one that does not decode falls to the
+  text path as on this Mac.
+- **The copies.** `<NSTemporaryDirectory()>/mutible-ssh-copies/w<pid>-<n>`
+  (`RemoteCache::windowFolderName`), made 0700 with `mkdir` (never one
+  there already), the folder of folders 0700 too; each copy at its path
+  from the remote folder (`RemoteCache::placeOf`: the name and extension
+  kept, so the viewers choose as they would, and two files of one name
+  never share a copy), written 0600 through `mkstemp` and renamed over,
+  so a viewer never reads half a file. The tab's `currentPath`, the title
+  and the tree's selection stay the remote path; `viewerPathOf:` is the
+  one way to the copy (`showViewer:` and `showActiveTab` use it). The
+  folder goes in `closeOnRemoteHost` (`removeRemoteCopies`) and with the
+  cache object; `+[MCRemoteFileCache removeLeftovers]`, on a utility
+  queue from `applicationDidFinishLaunching:`, removes the folders whose
+  process is not running (`RemoteCache::ownerOfFolder`, `kill(pid, 0)`),
+  never anything else there.
+- **Too large.** Over 64 MB the host says so after its first piece and
+  nothing more is read: `RemoteCache::tooLargeMessage` in the editor's
+  slot (`setPlainMessage:`, shown again with the tab), not an alert.
+  Before, a text file that size said "Cannot display".
+- **Following the host's disk.** The copied files' folders join the
+  tree's in the watch (`remoteCopiedFolders`, from
+  `remoteTreeFoldersChanged`); the workspace's `onListings` now also calls
+  `remoteFoldersChanged:` with the folders the notice named. Copies there
+  are marked stale (`RemoteCache::mayHaveChanged`: the file's own
+  folder); the one on show is read again without waiting
+  (`Link::fetchBytes`, the pieces past 4 MB asked in turn from
+  `pumpFetches`, inside the link's dispatch) and, when its fingerprint
+  (`RemoteCache::fingerprint`) differs, written and shown again through
+  the show methods `checkExternalChange` uses (a PDF keeps its page and
+  zoom). A copy in a tab not on show is read again by `showActiveTab`
+  (through `loadActiveTab`) when it comes back. One read at a time for a
+  path (`fetching`); a notice that comes while it reads (`takeAgain`)
+  reads it again once it ends, since an editor's save is a write and a
+  rename, and a read between the two finds the old bytes.
+- **Markdown pictures.** A remote window's Markdown preview never calls
+  `MCMarkdownLoadImage` on a path: `remoteMarkdownPicture:waiting:` turns
+  the `src` into a file of the remote folder (`RemoteCache::markdownPicture`:
+  relative, or absolute inside the folder, `..` by name; nothing outside,
+  no `~`, no file://), fetches it without waiting into the same folder of
+  copies while its alt text stands in (it joins `_awaitedWebImages`, and
+  `MCMarkdownWebImageNotification` brings the render, as for a web
+  picture), and shows a stale copy while it reads it again, drawing the
+  page again only when it changed. A picture that could not be read is
+  not asked again until its folder changes. data: pictures show as
+  before; video and audio a Markdown file names play only from a web
+  address over SSH (a file URL would be this Mac's).
+- **Read-only, for now.** A copy is never written back. Nothing the
+  viewers offer edits a copy today: SQLite and notebooks are read-only
+  everywhere, the large table too, and CSV edits are the tab's text,
+  saved through the host as any text. A database's copy has no -wal
+  beside it, so it opens immutable, without the changes still in the
+  writer's WAL there. The LaTeX preview is not offered over SSH: it
+  writes its scratch copy and output beside the file, so a .tex opens as
+  text (`isLatex` off) with a status note naming the host; Export PDF and
+  SyncTeX go with it.
+- **Checks.** `make test`: `remotecache:folders`, `:place`, `:show`,
+  `:message`, `:refresh`, `:markdown`. `remote_ssh` (not run here; CI
+  runs it): a PNG, a PDF and a sparse 65 MB file made on the stand-in's
+  disk come into the tree; the PNG opened from its row with one wait,
+  shown at 37 by 23 pixels from a copy under `+root` (the folders 0700,
+  the copy 0600), the tab, the title and the tree's selection on the
+  remote path, no stamp; the PNG rewritten at 50 by 40 there shown again
+  by the host's notice (`refreshes` counted); the PDF's three pages from a
+  copy; the PNG's tab shown again from its copy; the large file's
+  placeholder with no alert and no copy; the folder of copies gone once
+  the window closed. Not checked by a suite: a Markdown page's pictures
+  over SSH, the SQLite and Quick Look viewers over SSH, the launch's
+  removal of a dead process's folder, and the look of the placeholder,
+  which needs the owner's eyes.
+- **Traps.** The stand-in's folder is this Mac's, so a viewer handed the
+  tab's path would show the right file in the GUI check and nothing (or
+  another file) on a real remote: every path a viewer gets goes through
+  `viewerPathOf:`. A method named `copy...` is in ARC's copy family (its
+  result taken as retained), hence `localPathOf:` and `localCopyOf:`.
+
 ### Still to do
 
 - **Stage 8, after the fourth slice** (in order of value): open clean tabs following the remote
@@ -4435,8 +4538,9 @@ page's "replace", #307) in a Mac window over SSH, as GTK's Replace All
   sizes, dates and the execute bit for the tree's columns and icons;
   connecting off the main thread with a progress line; the shell
   integration's marks on the remote (the remote mutible's own integration
-  file, a nonce from the Mac); viewers for remote pictures, PDFs and media
-  through FsRead "read"; a new window over SSH taking up what a crashed
+  file, a nonce from the Mac); an HTML page and the LaTeX
+  preview over SSH (viewers for pictures, PDFs, media, SQLite and Quick
+  Look are in, "Viewers over SSH"); a new window over SSH taking up what a crashed
   app, or a window closed while disconnected, left on the lasting host
   (closing a connected window closes what it had there, but those leave it
   until the idle time, or for good while it is unsaved or running); the first connection and Reconnect off the main

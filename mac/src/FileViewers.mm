@@ -8,6 +8,7 @@
 #include "FileSniff.h"
 #include "JsonOutline.h"
 #include "Notebook.h"
+#include <algorithm>
 #include <string>
 
 const unsigned long long MCCsvEditableBytes = 50ull * 1000 * 1000;
@@ -28,8 +29,13 @@ MCViewerKind MCViewerKindForFile(NSString *path) {
     if (!fh) return MCViewerNone;   // unreadable: the text path says why
     NSData *head = [fh readDataUpToLength:FileSniff::kHeadBytes error:nil];
     [fh closeFile];
-    std::string bytes((const char *)head.bytes, head.length);
-    const BOOL large = attrs.fileSize > MCCsvEditableBytes;
+    return MCViewerKindForHead(path, (const char *)head.bytes, head.length, attrs.fileSize);
+}
+
+MCViewerKind MCViewerKindForHead(NSString *path, const char *data, size_t len, unsigned long long size) {
+    if (!path) return MCViewerNone;
+    std::string bytes(data ? data : "", data ? std::min(len, FileSniff::kHeadBytes) : 0);
+    const BOOL large = size > MCCsvEditableBytes;
     // The large table reads the file's bytes as UTF-8 itself: a UTF-16 one
     // that size opens as text instead (in large-file mode).
     const MCViewerKind bigTable = FileSniff::isUtf16Text(bytes) ? MCViewerNone : MCViewerCsvLarge;

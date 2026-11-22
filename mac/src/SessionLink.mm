@@ -334,6 +334,8 @@ void Link::dispatch() {
         }
     }
     pumpStreams();
+    pumpFetches();
+    if (!client_) return;
     for (const std::string &e : client_->takeErrors())
         os_log_error(SessionLog(), "the session's host%{public}s%{public}s: %{public}s",
                      folder_.empty() ? "" : " for ", folder_.c_str(), e.c_str());
@@ -675,15 +677,26 @@ bool Link::takeWelcome(std::string *why) {
     return true;
 }
 
+bool Link::readBytes(const std::string &path, std::size_t limit, std::string *bytes, bool *tooLarge) {
+    bytes->clear();
+    *tooLarge = false;
+    if (lost() || folder_.empty() || !Under(path, folder_) || path.size() <= folder_.size() + 1) return false;
+    const std::string rel = path.substr(folder_.size() + 1);
+    Shared::Client::FileRead read = client_->readFile(0, rel, limit);
+    *tooLarge = read.tooLarge;
+    if (!read.ok) return false;
+    *bytes = std::move(read.bytes);
+    return true;
+}
+
 MCDiskText *Link::readText(const std::string &path) {
     MCDiskText *d = [MCDiskText new];
-    if (lost() || folder_.empty() || !Under(path, folder_) || path.size() <= folder_.size() + 1) return d;
-    const std::string rel = path.substr(folder_.size() + 1);
     // 64 MB at most, as the host follows a file (SessionFiles.h's kMaxFollowed).
-    Shared::Client::FileRead read = client_->readFile(0, rel, std::size_t(64) << 20);
-    if (read.tooLarge) d.tooLarge = YES;
-    if (!read.ok) return d;
-    std::string bytes = std::move(read.bytes);
+    std::string bytes;
+    bool tooLarge = false;
+    const bool ok = readBytes(path, std::size_t(64) << 20, &bytes, &tooLarge);
+    if (tooLarge) d.tooLarge = YES;
+    if (!ok) return d;
     FolderSearch::TextEncoding encoding = FolderSearch::TextEncoding::Utf8;
     bool bom = false;
     if (!FolderSearch::decodeFileText(&bytes, &encoding, &bom)) return d;
@@ -691,6 +704,78 @@ MCDiskText *Link::readText(const std::string &path) {
     d.encoding = (MCTextEncoding)encoding;
     d.text = [[NSString alloc] initWithBytes:bytes.data() length:bytes.size() encoding:NSUTF8StringEncoding];
     return d;
+}
+
+std::uint64_t Link::askPiece(const std::string &rel, std::uint64_t offset) {
+    Json j = Json::object();
+    j.set("op", Json("read"));
+    j.set("path", Json(rel));
+    j.set("offset", Json((double)offset));
+    j.set("length", Json((double)Shared::kMaxReadBytes));
+    j.set("hidden", Json(true));
+    return client_->requestRead(0, std::move(j));
+}
+
+std::uint64_t Link::fetchBytes(const std::string &path, std::size_t limit,
+                               std::function<void(bool, bool, std::string &&)> done) {
+    if (!client_ || lost() || folder_.empty() || !Under(path, folder_) || path.size() <= folder_.size() + 1)
+        return 0;
+    Fetch f;
+    f.rel = path.substr(folder_.size() + 1);
+    f.limit = limit;
+    f.done = std::move(done);
+    f.req = askPiece(f.rel, 0);
+    if (!f.req) return 0;
+    const std::uint64_t id = ++nextFetch_;
+    fetches_[id] = std::move(f);
+    return id;
+}
+
+void Link::cancelFetch(std::uint64_t id) {
+    auto it = fetches_.find(id);
+    if (it == fetches_.end()) return;
+    if (client_) client_->forgetRead(it->second.req);
+    fetches_.erase(it);
+}
+
+// Each fetch whose piece came: the next piece asked, or its `done` told
+// (taken out first, so `done` may start another).
+void Link::pumpFetches() {
+    if (fetches_.empty()) return;
+    std::vector<std::uint64_t> ids;
+    for (const auto &[id, f] : fetches_) ids.push_back(id);
+    for (std::uint64_t id : ids) {
+        auto it = fetches_.find(id);
+        if (it == fetches_.end()) continue;   // cancelled by a done before it
+        Fetch &f = it->second;
+        Json answer;
+        std::string piece;
+        bool finished = false, ok = false, tooLarge = false;
+        if (client_->readAnswer(f.req, &answer, &piece)) {
+            const double size = answer["size"].asNumber(-1);
+            if (!answer["error"].isNull() || size < 0) {
+                finished = true;
+            } else if (size > (double)f.limit) {
+                finished = tooLarge = true;
+            } else {
+                // A piece that does not start where the bytes end (the file
+                // changed size meanwhile): asked again from there.
+                if (answer["offset"].asNumber(-1) == (double)f.bytes.size()) f.bytes += piece;
+                if ((double)f.bytes.size() >= size || piece.empty()) {
+                    finished = ok = true;
+                } else if (!(f.req = askPiece(f.rel, f.bytes.size()))) {
+                    finished = true;
+                }
+            }
+        } else if (client_->lost()) {
+            finished = true;
+        }
+        if (!finished) continue;
+        auto done = std::move(f.done);
+        std::string bytes = ok ? std::move(f.bytes) : std::string();
+        fetches_.erase(it);
+        if (done) done(ok, tooLarge, std::move(bytes));
+    }
 }
 
 bool Link::locate(const std::string &asked, Located *out, int timeoutMs) {

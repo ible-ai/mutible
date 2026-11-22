@@ -167,6 +167,20 @@ public:
     // read as text (MCDiskText's rules), tooLarge past 64 MB. Never a
     // stamp: the file is on the other machine. Waits on the host.
     MCDiskText *readText(const std::string &path);
+    // The same file's bytes, undecoded, at most `limit` (Client::readFile):
+    // false when it cannot be read, *tooLarge (nothing read) past the
+    // limit. What a window over SSH opens a file with: one read decides
+    // between the text and a viewer (RemoteCache::showFor). Waits on the
+    // host.
+    bool readBytes(const std::string &path, std::size_t limit, std::string *bytes, bool *tooLarge);
+    // The same without waiting: `done` once, on the main queue inside
+    // dispatch(), with every byte (ok), or none (tooLarge past `limit`, or
+    // the host refused, went, or the path is not the folder's). The pieces
+    // of a file past one read (kMaxReadBytes) are asked in turn. 0, and
+    // `done` never called, when it cannot be asked; cancelFetch drops one.
+    std::uint64_t fetchBytes(const std::string &path, std::size_t limit,
+                             std::function<void(bool ok, bool tooLarge, std::string &&bytes)> done);
+    void cancelFetch(std::uint64_t id);
     // The address named a file not there yet (the Welcome's "new"): the
     // window opens it empty, and its first save makes it.
     bool askedFileNew() const { return askedFileNew_; }
@@ -302,6 +316,18 @@ private:
     std::map<std::uint64_t, std::function<void(std::vector<Json> &&, bool)>> streams_;
     int nextListener_ = 0;
     void pumpStreams();
+    // fetchBytes's reads under way, by their own number.
+    struct Fetch {
+        std::string rel;
+        std::size_t limit = 0;
+        std::string bytes;
+        std::uint64_t req = 0;   // the piece asked for now
+        std::function<void(bool, bool, std::string &&)> done;
+    };
+    std::map<std::uint64_t, Fetch> fetches_;
+    std::uint64_t nextFetch_ = 0;
+    std::uint64_t askPiece(const std::string &rel, std::uint64_t offset);
+    void pumpFetches();
     std::set<std::uint64_t> live_;                 // open windows' ids
     std::map<std::uint64_t, std::string> sent_;   // each one's record as sent
 };

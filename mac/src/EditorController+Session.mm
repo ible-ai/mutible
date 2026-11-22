@@ -553,6 +553,7 @@ NSUInteger MCDirtyFromHostMarks = 0;
     if (!w.link.link->lost()) w.link.link->client().settle(5000);
     [w.reconnectButton removeFromSuperview];
     w.link.link->detach();
+    [self removeRemoteCopies];   // the viewers' copies of its files (+RemoteViewers)
 }
 
 // ---------------------------------------------------- the host gone, and back

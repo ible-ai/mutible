@@ -498,6 +498,7 @@ static void MCAddBlock(NSMutableArray<NSTextBlock *> *blocks, NSTextBlock *b) {
             a[kMarkdownMath] = @[key, @(++_mathMarks)];
         }
     }
+    const BOOL remote = (r.media || r.image) && [self sessionIsRemote];
     if (r.media) {
         // A player: a local file, or an https one under the same switch as
         // web pictures. Anything else shows its name, muted, as a missing
@@ -505,6 +506,9 @@ static void MCAddBlock(NSMutableArray<NSTextBlock *> *blocks, NSTextBlock *b) {
         NSString *src = [NSString stringWithUTF8String:r.src.c_str()] ?: @"";
         NSURL *url = MCMarkdownMediaURL(src, self.currentPath.stringByDeletingLastPathComponent,
                                         cfg.settings.webImages());
+        // Over SSH a file named here is on the other machine, never this
+        // Mac's: only a web address plays (+RemoteViewers copies pictures).
+        if (remote && url.isFileURL) url = nil;
         if (url) {
             const NSSize wanted = NSMakeSize(r.width.percent ? 0 : MCZoomed(r.width.value),
                                              r.height.percent ? 0 : MCZoomed(r.height.value));
@@ -515,7 +519,8 @@ static void MCAddBlock(NSMutableArray<NSTextBlock *> *blocks, NSTextBlock *b) {
             // one only when it is in memory already, and under the switch).
             if (!r.poster.empty()) {
                 NSString *p = [NSString stringWithUTF8String:r.poster.c_str()] ?: @"";
-                att.poster = MCMarkdownLoadImage(p, self.currentPath.stringByDeletingLastPathComponent);
+                att.poster = remote ? [self remoteMarkdownPicture:p waiting:NULL]
+                                    : MCMarkdownLoadImage(p, self.currentPath.stringByDeletingLastPathComponent);
                 if (!att.poster && cfg.settings.webImages() && MCMarkdownWebImageIsReady(p))
                     att.poster = MCMarkdownWebImage(p, NULL);
             }
@@ -532,13 +537,16 @@ static void MCAddBlock(NSMutableArray<NSTextBlock *> *blocks, NSTextBlock *b) {
     }
     if (r.image) {
         NSString *src = [NSString stringWithUTF8String:r.src.c_str()];
-        NSImage *picture = MCMarkdownLoadImage(src,
-            self.currentPath.stringByDeletingLastPathComponent);
+        // Over SSH a picture the page names comes through the host into the
+        // window's folder of copies (+RemoteViewers), never from this Mac's
+        // disk; while it is on its way it is awaited as a web picture is.
+        BOOL waiting = NO;
+        NSImage *picture = remote ? [self remoteMarkdownPicture:src waiting:&waiting]
+                                  : MCMarkdownLoadImage(src, self.currentPath.stringByDeletingLastPathComponent);
         // An https picture comes from the cache, or is fetched in the
         // background while its alt text stands in; the page is rendered
         // again when it arrives (markdownWebImageArrived:).
-        BOOL waiting = NO;
-        if (!picture && MCMarkdownIsWebImage(src) && cfg.settings.webImages())
+        if (!picture && !waiting && MCMarkdownIsWebImage(src) && cfg.settings.webImages())
             picture = MCMarkdownWebImage(src, &waiting);
         if (waiting) {
             [_awaitedWebImages addObject:src];
