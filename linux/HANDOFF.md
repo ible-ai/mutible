@@ -9463,3 +9463,27 @@ side's; two are fixed, one left alone on purpose.
 - **Not done.** The look (never seen on a screen). The Mac has no Stop for
   a Reconnect; GTK adds it (and Esc). A failure's alert is not a sheet on the
   connecting window (it closes first). Real ssh never run.
+
+### 160. The window over SSH, viewers (stage 8; November 2026)
+
+- **What it is.** The Mac's #348 on GTK. In a window over SSH, a picture,
+  PDF, audio or video file and a SQLite database open in their viewers from
+  copies read through the host (`readTextAsync`, 64 MB, never blocking the
+  main loop) into the window's private folder (`RemoteCopies`: `<runtime
+  dir or tmp>/mutible-ssh-copies-<uid>/w<pid>-<n>`, 0700, copies 0600,
+  removed when the window closes and, for a dead process's, at launch); the
+  tab, title and tree keep the remote path (`Document::viewerPath`). CSV,
+  JSON and notebooks already worked from the text. A remote change (the
+  host's disk notices; the copies' folders join the watch through
+  `RemoteWorkspace::watchAlso`) reads the copy again and the viewers reload
+  it. Over 64 MB the tab says it is too large to open over SSH. Markdown
+  pictures (the preview and the side preview) are fetched into the same
+  folder, inside the window's folder only, the page drawn again when one
+  arrives. Read-only. Design: docs/notes/session-host.md, "The GTK window
+  over SSH, viewers". No src/ change.
+- **Where.** `linux/src/RemoteCopies.{h,cpp}`, `EditorRemoteViewers.cpp`,
+  `DocumentHost::documentBytesRead` (called from `Document::beginLoading`'s
+  read), `Markdown::Hooks::remotePicture`, `RemoteWorkspace::watchAlso` and
+  `onFiles`.
+- **Not done.** Real ssh never run; the Mac's Quick Look-only documents have
+  no GTK viewer; video and audio named by a Markdown page do not play.

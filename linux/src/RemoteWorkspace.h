@@ -73,9 +73,14 @@ public:
     // Sent when it differs from what was sent last, once per turn of the main
     // loop, and again to a new host.
     void watchFolders(std::vector<std::string> paths);
+    // Folders watched besides the tree's (the folders of the files copied
+    // for a viewer: RemoteCopies.h), told with them.
+    void watchAlso(std::vector<std::string> paths);
     // Each change the host saw: the folders (absolute) whose listing it
     // sent again, on a turn of the main loop.
     std::function<void(const std::vector<std::string>& folders)> onChanged;
+    // The same notices, for the editor (the tree owns onChanged).
+    std::function<void(const std::vector<std::string>& folders)> onFiles;
 
     // Quick Open's list: the folder's files ('/'-separated from it).
     // `done` once (empty when the host cannot be asked).
@@ -94,12 +99,14 @@ public:
 
 private:
     void sendWatch();
+    void askWatch();
     void tookNotice(const Json& changed);
 
     std::string folder_;
     std::shared_ptr<SessionLink::Link> link_;
     int diskToken_ = 0;
     std::vector<std::string> watchPaths_;   // relative, sorted
+    std::vector<std::string> treeRels_, alsoRels_;
     bool watchAsked_ = false;
     std::string watchSent_;
     unsigned watchIdle_ = 0;

@@ -29,6 +29,9 @@
 #include "LargeFileView.h"
 #include "Utf8Offsets.h"
 #include "MediaView.h"
+#include "RemoteCache.h"
+#include "RemoteCopies.h"
+#include "RemoteWorkspace.h"
 #include "CsvTable.h"
 #include "HtmlView.h"
 #include "SqliteView.h"
@@ -333,6 +336,7 @@ Editor::Editor(std::shared_ptr<SessionLink::Link> link) : link_(std::move(link))
 // (main.cpp deletes the editor from GtkApplication's window-removed), so
 // every handler that names this object comes off before GTK disposes them.
 Editor::~Editor() {
+    if (remoteWs_) remoteWs_->onFiles = nullptr;
 #ifdef MUTIBLE_ENABLE_BROWSER
     delete html_;
     html_ = nullptr;
@@ -822,7 +826,14 @@ void Editor::showActive() {
         break;
     case Document::Kind::Media:
         setViewBuffer(d->buffer(), true, false);
-        if (!media_->show(d->path())) {
+        if (!media_->show(d->viewerPath())) {
+            if (d->showsCopy()) {
+                // Over SSH nothing is read from this machine's disk at the
+                // remote path: the tab says so.
+                d->setMessage(d->path(), "\n  Cannot display “" + std::string(g_path_get_basename(d->path().c_str())) + "”.\n\n  (It could not be decoded.)");
+                showActive();
+                return;
+            }
             // It no longer decodes: what the text path makes of it.
             loadText(d, d->path());
             showActive();
@@ -836,7 +847,7 @@ void Editor::showActive() {
         break;
     case Document::Kind::Database:
         setViewBuffer(d->buffer(), true, false);
-        sqlite_->show(d->path());
+        sqlite_->show(d->viewerPath());
         gtk_stack_set_visible_child(GTK_STACK(slot_), sqlite_->widget());
         break;
     case Document::Kind::Diff:
@@ -975,6 +986,14 @@ void Editor::syncSide() {
     side_->getText = [d] { return d->text(); };
     side_->getDetails = [d] { return d->detailsOpen(); };
     char* dir = g_path_get_dirname(d->path().c_str());
+    if (remote()) {
+        const std::weak_ptr<int> alive = alive_;
+        side_->remotePicture = [this, alive, folder = std::string(dir ? dir : ".")](const std::string& src) {
+            return alive.expired() ? std::string() : remotePicture(src, folder);
+        };
+    } else {
+        side_->remotePicture = nullptr;
+    }
     const bool moved = side_->setContext(dir ? dir : ".", settings_.webImages() && WebImages::available(),
                                          settings_.mermaid() && Mermaid::available(), settings_.isDark(),
                                          settings_.math() && Math::available(), mathColor());
@@ -2293,6 +2312,12 @@ void Editor::renderPreview() {
     hooks.mathColor = mathColor();
     hooks.detailsOpen = d->detailsOpen();
     std::weak_ptr<int> alive = alive_;
+    if (remote()) {   // a window over SSH: its pictures are the host's, through copies
+        const std::string folder = hooks.folder;
+        hooks.remotePicture = [this, alive, folder](const std::string& src) {
+            return alive.expired() ? std::string() : remotePicture(src, folder);
+        };
+    }
     hooks.link = [this, alive](const std::string& url) {
         if (!alive.expired()) openMarkdownLink(url);
     };

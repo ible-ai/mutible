@@ -73,6 +73,11 @@ struct Page {
 
 struct Hooks {
     std::string folder;   // the Markdown file's folder, for relative pictures
+    // A window over SSH: the pictures are the host's. Given a picture's src,
+    // the local file holding its copy, or "" (not yet read, or not a file of
+    // the host's folder); nothing of this machine's disk is looked at then
+    // (Editor::remotePicture, RemoteCopies.h).
+    std::function<std::string(const std::string& src)> remotePicture;
     // Pictures from https:// addresses are shown (markdown.web-images).
     bool webImages = false;
     // ```mermaid blocks are drawn by mmdc (Mermaid.h): the pictures kept are

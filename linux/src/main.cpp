@@ -64,6 +64,7 @@
 #include "SessionLink.h"
 #include "ConnectWindow.h"
 #include "RemoteWorkspace.h"
+#include "RemoteCopies.h"
 #include "SessionWeb.h"   // the session browser's report of the panes
 #include "SessionWebGit.h"   // the report of its worktree pages
 #include "TermDockRecord.h"
@@ -6090,6 +6091,7 @@ static App* newWindow(const std::string& root, const std::string& file,
     }
     StartupLog::mark("window: the session's host");
     app->editor = new Editor(app->link);
+    if (app->remoteWs) app->editor->setRemoteWorkspace(app->remoteWs);   // viewers over SSH
 #ifdef MUTIBLE_ENABLE_PDF
     // Every typeset of a tab's LaTeX preview goes to the page, when served.
     app->editor->typesetHook = [app](const std::string& path, GBytes* pdf, const std::string& error) {
@@ -7330,6 +7332,7 @@ int main(int argc, char** argv) {
     // What minicode kept, copied to mutible's folders once, before anything
     // reads settings or sessions (MigrationLinux.h).
     MigrationLinux::migrateFromOldName();
+    RemoteCopies::removeLeftovers();   // the copies a window over SSH left when its process ended
     // MUTIBLE_STARTUP_LOG=1: each phase's time on stderr. After the fork,
     // so its clock is this process's main thread's.
     StartupLog::begin();

@@ -213,6 +213,8 @@ gui_sources = [
   'src/SessionLink.cpp',
   'src/ConnectWindow.cpp',
   'src/RemoteWorkspace.cpp',
+  'src/RemoteCopies.cpp',
+  'src/EditorRemoteViewers.cpp',
   'src/SessionBrowser.cpp',
   'src/Groups.cpp',
   'src/TabStrip.cpp',

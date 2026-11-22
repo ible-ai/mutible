@@ -566,6 +566,9 @@ void Document::beginLoading(const std::string& path) {
     const bool asked = link_->readTextAsync(path, job->stop, [job, work, answer](SessionLink::Link::RemoteBytes&& r) {
         if (job->cancelled) return;
         if (r.ok) {
+            // A picture, PDF, player or database is shown from a copy (the
+            // editor takes the document over); the rest is decoded as text.
+            if (job->doc->host_->documentBytesRead(job->doc, r.bytes)) return;
             job->bytes = std::move(r.bytes);
             std::thread(work).detach();
         } else {
@@ -632,6 +635,7 @@ void Document::finishLoading() {
     diskKnown_ = true;
     encoding_ = job->encoding;
     saved_ = std::move(L->content);
+    if (remote()) sniffCsv(saved_);   // a table, an outline, a notebook (a file read here is not sniffed)
     savedChars_ = (long)job->chars;
     diskQuestion_ = false;
     diskStamp_ = job->stamp;

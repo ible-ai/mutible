@@ -78,6 +78,9 @@
 #include "EnvLock.h"
 #include "FileTree.h"
 #include "PalettePanel.h"
+#include "Markdown.h"
+#include "MediaView.h"
+#include "RemoteCopies.h"
 #include "RemoteWorkspace.h"
 #include "Search.h"
 #include "SessionLink.h"
@@ -86,7 +89,7 @@
 namespace {
 
 std::string gFolder, gFile, gSsh, gArgs, gPidFile, gBin, gBlock;
-std::string gBig;
+std::string gBig, gCopies;   // gCopies: the window's folder of copies
 size_t gBigSize = 0;
 double gBlockingMs = 0, gMaxGapMs = 0;
 gint64 gLastTick = 0;
@@ -262,6 +265,45 @@ void selectRow(const std::string& rel) {
         MCGuiSetKeyWindow(nullptr);
     });
     MCGuiWait("selected", 10, [rel] { return remoteWindow().tree->selectedPath() == gFolder + rel; });
+}
+
+
+// A PNG of w by h pixels at `path`.
+void writePng(const std::string& path, int w, int h) {
+    GdkPixbuf* pb = gdk_pixbuf_new(GDK_COLORSPACE_RGB, FALSE, 8, w, h);
+    gdk_pixbuf_fill(pb, 0x336699ff);
+    gdk_pixbuf_save(pb, path.c_str(), "png", nullptr, nullptr);
+    g_object_unref(pb);
+}
+
+// A PDF of `pages` empty pages, its cross-reference table made as it goes.
+std::string pdfOf(int pages) {
+    std::string out = "%PDF-1.4\n";
+    std::vector<size_t> at;
+    auto object = [&](const std::string& body) {
+        at.push_back(out.size());
+        out += std::to_string(at.size()) + " 0 obj\n" + body + "\nendobj\n";
+    };
+    object("<< /Type /Catalog /Pages 2 0 R >>");
+    std::string kids;
+    for (int i = 0; i < pages; i++) kids += std::to_string(3 + i) + " 0 R ";
+    object("<< /Type /Pages /Kids [" + kids + "] /Count " + std::to_string(pages) + " >>");
+    for (int i = 0; i < pages; i++) object("<< /Type /Page /Parent 2 0 R /MediaBox [0 0 200 100] >>");
+    const size_t xref = out.size();
+    out += "xref\n0 " + std::to_string(at.size() + 1) + "\n0000000000 65535 f \n";
+    for (size_t o : at) {
+        char line[32];
+        snprintf(line, sizeof line, "%010zu 00000 n \n", o);
+        out += line;
+    }
+    out += "trailer\n<< /Size " + std::to_string(at.size() + 1) + " /Root 1 0 R >>\nstartxref\n" +
+           std::to_string(xref) + "\n%%EOF\n";
+    return out;
+}
+
+bool modeIs(const std::string& path, mode_t mode) {
+    struct stat st;
+    return stat(path.c_str(), &st) == 0 && (st.st_mode & 0777) == mode;
 }
 
 void writeScript(const std::string& path, const std::string& body) {
@@ -1126,6 +1168,136 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiWait("notes.txt shown again after the big file", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
 
+    // ---- viewers over SSH: copies read through the host (the Mac's #348)
+    MCGuiStep("a picture in a folder, a PDF, a CSV, a JSON, a page with pictures, a database, a sound, a huge file", [] {
+        g_mkdir_with_parents((gFolder + "/pics").c_str(), 0755);
+        writePng(gFolder + "/pics/pic.png", 37, 23);
+        std::ofstream(gFolder + "/doc.pdf", std::ios::binary) << pdfOf(3);
+        std::ofstream(gFolder + "/table.csv") << "name,qty\napple,3\npear,5\n";
+        std::ofstream(gFolder + "/data.json") << "{\"a\": [1, 2, 3], \"b\": {\"c\": true}}\n";
+        writePng(gFolder + "/pics/shown.png", 20, 10);
+        writePng(rp(gFolder) + "-outside.png", 8, 8);
+        std::ofstream(gFolder + "/page.md") << "# A page\n\n![inside](pics/shown.png)\n\n![outside](" << rp(gFolder)
+                                           << "-outside.png)\n\n![away](../nothing.png)\n";
+        std::ofstream(gFolder + "/x.db", std::ios::binary) << std::string("SQLite format 3\0", 16) << std::string(4080, '\0');
+        std::ofstream(gFolder + "/a.mp3", std::ios::binary) << std::string(2048, 'x');
+        if (FILE* f = fopen((gFolder + "/huge.dat").c_str(), "wb")) {
+            fclose(f);
+            GCHECK(truncate((gFolder + "/huge.dat").c_str(), (off_t)65 * 1024 * 1024 + 10) == 0);
+        }
+        remoteWindow().editor->openFile(gFolder + "/pics/pic.png");
+        GCHECK(tabOf(gFolder + "/pics/pic.png") != nullptr);
+    });
+    MCGuiWait("the picture shown from a copy: 37 by 23, the tab on the remote path", 30, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        Document* d = tabOf(gFolder + "/pics/pic.png");
+        return d && !d->loading() && d->kind() == Document::Kind::Media && w.editor->media() &&
+               w.editor->media()->kind() == MediaView::Kind::Image && w.editor->media()->imageWidth() == 37;
+    });
+    MCGuiStep("the copy: 0600 in a 0700 folder of the window's; the tab, title and no stamp stay remote", [] {
+        const MCGuiAppWindow w = remoteWindow();
+        Document* d = tabOf(gFolder + "/pics/pic.png");
+        RemoteCopies* c = w.editor->remoteCopies();
+        GCHECK(c != nullptr);
+        if (!c || !d) return;
+        gCopies = c->folder();
+        GCHECK(!gCopies.empty());
+        GCHECK(gCopies.rfind(RemoteCopies::root() + "/w", 0) == 0);
+        GCHECK(modeIs(RemoteCopies::root(), 0700));
+        GCHECK(modeIs(gCopies, 0700));
+        GCHECK(w.editor->media()->imageHeight() == 23);
+        GCHECK(d->showsCopy());
+        GCHECK(d->viewerPath().rfind(gCopies + "/", 0) == 0);
+        GCHECK(d->viewerPath() != d->path());
+        GCHECK(g_str_has_suffix(d->viewerPath().c_str(), "/pic.png"));
+        GCHECK(modeIs(d->viewerPath(), 0600));
+        GCHECK(modeIs(gCopies + "/pics", 0700));
+        GCHECK_EQ_STR(d->path(), gFolder + "/pics/pic.png");
+        GCHECK(!d->diskStamp().exists);
+        GCHECK(titleOf(w).find("pic.png") != std::string::npos);
+        GCHECK(alertText().empty());
+        GCHECK(c->refreshes == 0);
+    });
+    MCGuiStep("the picture rewritten on the host at 50 by 40", [] {
+        writePng(gFolder + "/pics/pic.png", 50, 40);
+    });
+    MCGuiWait("shown again from the host's notice", 30, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        return w.editor->remoteCopies() && w.editor->remoteCopies()->refreshes >= 1 && w.editor->media() &&
+               w.editor->media()->imageWidth() == 50 && w.editor->media()->imageHeight() == 40;
+    });
+    MCGuiStep("the PDF opened", [] { remoteWindow().editor->openFile(gFolder + "/doc.pdf"); });
+    MCGuiWait("three pages from a copy", 30, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        Document* d = tabOf(gFolder + "/doc.pdf");
+        return d && !d->loading() && d->kind() == Document::Kind::Media && w.editor->media() &&
+               w.editor->media()->kind() == MediaView::Kind::Pdf && w.editor->media()->pageCount() == 3;
+    });
+    MCGuiStep("the CSV opened", [] { remoteWindow().editor->openFile(gFolder + "/table.csv"); });
+    MCGuiWait("its table", 30, [] {
+        Document* d = tabOf(gFolder + "/table.csv");
+        return d && !d->loading() && d->kind() == Document::Kind::Text && remoteWindow().editor->showsTable();
+    });
+    MCGuiStep("the JSON opened", [] { remoteWindow().editor->openFile(gFolder + "/data.json"); });
+    MCGuiWait("its outline", 30, [] {
+        Document* d = tabOf(gFolder + "/data.json");
+        return d && !d->loading() && d->kind() == Document::Kind::Text && remoteWindow().editor->showsOutline();
+    });
+    MCGuiStep("the Markdown page opened", [] { remoteWindow().editor->openFile(gFolder + "/page.md"); });
+    MCGuiWait("its picture inside the folder shown, from a copy, once it was fetched", 30, [] {
+        Document* d = tabOf(gFolder + "/page.md");
+        if (!d || d->loading() || !d->showsPreview() || !remoteWindow().editor->inPreview()) return false;
+        for (const Markdown::Embed& e : d->pageInfo().embeds)
+            if (e.widget && e.width == 20 && e.height == 10) return true;
+        return false;
+    });
+    MCGuiStep("only that picture: the one outside the folder and the one by .. stay their alt text", [] {
+        Document* d = tabOf(gFolder + "/page.md");
+        int pictures = 0;
+        if (d)
+            for (const Markdown::Embed& e : d->pageInfo().embeds)
+                if (e.widget) pictures++;
+        GCHECK(pictures == 1);
+        RemoteCopies* c = remoteWindow().editor->remoteCopies();
+        GCHECK(c && c->hasCopyOf(gFolder + "/pics/shown.png"));
+        if (c) GCHECK(c->localPathOf(gFolder + "/pics/shown.png").rfind(gCopies + "/", 0) == 0);
+        GCHECK(c && !c->hasCopyOf(rp(gFolder) + "-outside.png"));
+    });
+    MCGuiStep("the database, the sound and the huge file opened", [] {
+        remoteWindow().editor->openFile(gFolder + "/x.db");
+        remoteWindow().editor->openFile(gFolder + "/a.mp3");
+        remoteWindow().editor->openFile(gFolder + "/huge.dat");
+    });
+    MCGuiWait("the three read", 60, [] {
+        for (const char* n : {"/x.db", "/a.mp3", "/huge.dat"}) {
+            Document* d = tabOf(gFolder + n);
+            if (!d || d->loading()) return false;
+        }
+        return true;
+    });
+    MCGuiStep("the database in its viewer from a copy, the sound opened without an alert, the huge file's note and no copy", [] {
+        Document* db = tabOf(gFolder + "/x.db");
+        GCHECK(db && db->kind() == Document::Kind::Database && db->showsCopy());
+        Document* snd = tabOf(gFolder + "/a.mp3");
+        GCHECK(snd && (snd->kind() == Document::Kind::Media || snd->kind() == Document::Kind::Message));
+        Document* big = tabOf(gFolder + "/huge.dat");
+        GCHECK(big && big->kind() == Document::Kind::Message);
+        if (big) {
+            GCHECK(textOf(big).find("too large to open over SSH") != std::string::npos);
+            GCHECK(!big->showsCopy());
+        }
+        RemoteCopies* c = remoteWindow().editor->remoteCopies();
+        GCHECK(c && !c->hasCopyOf(gFolder + "/huge.dat"));
+        GCHECK(alertText().empty());
+    });
+    MCGuiStep("the viewers' tabs closed", [] {
+        Editor* e = remoteWindow().editor;
+        for (const char* n : {"/pics/pic.png", "/doc.pdf", "/table.csv", "/data.json", "/page.md", "/x.db", "/a.mp3", "/huge.dat"})
+            if (Document* d = tabOf(gFolder + n)) e->closeTab(d);
+        e->openFile(gFile);
+    });
+    MCGuiWait("notes.txt shown again after the viewers", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
+
     // ---- a terminal in the host's shell
     MCGuiStep("a terminal", [] {
         Terminal* t = remoteWindow().terminal;
@@ -1375,6 +1547,7 @@ MC_GUI_SUITE(remote_ssh) {
         return gone(gShell) && gone(gLasting);
     });
     MCGuiStep("nothing left", [] {
+        GCHECK(!gCopies.empty() && !g_file_test(gCopies.c_str(), G_FILE_TEST_EXISTS));   // the window's folder of copies went with it
         if (gHostB > 0 && !gone(gHostB)) kill(-gHostB, SIGKILL);   // the suite's own, by its recorded pid
         if (gLasting > 0 && !gone(gLasting)) kill(gLasting, SIGTERM);
         if (gShell > 0 && !gone(gShell)) kill(gShell, SIGKILL);
