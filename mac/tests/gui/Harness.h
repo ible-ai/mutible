@@ -163,6 +163,10 @@ NSWindow *MCGuiWindowMadeKey(void);
 void MCGuiAnswerAlerts(NSArray<NSNumber *> *answers);
 NSArray<NSString *> *MCGuiAlertsShown(void); // their message texts, so far
 NSString *MCGuiLastAlertInformative(void);   // the last one's informative text
+// Text typed into the next alerts that ask for a name (an NSTextField as
+// their accessory view, as the tree's New Folder and Rename prompts), in
+// order, before they are answered.
+void MCGuiTypeInPrompts(NSArray<NSString *> *texts);
 // Those of them begun as sheets (beginSheetModalForWindow:, answered as
 // runModal is, the handler a turn later), with the window each was for.
 NSArray<NSString *> *MCGuiSheetsShown(void);

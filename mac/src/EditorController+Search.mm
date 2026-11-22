@@ -134,6 +134,13 @@
 // leaves the file alone; a tab here holding the disk's text is edited
 // there; otherwise the file is written (other windows' clean tabs reload).
 - (MCOpenFileState)replaceStateOfPath:(NSString *)path {
+    // Over SSH the file is the other machine's and its host replaces (it
+    // edits a clean tab's document itself): only a tab of this window with
+    // unsaved changes leaves the file alone. Nothing reads this Mac's disk.
+    if ([self sessionIsRemote]) {
+        MCTab *t = [self tabForPath:path];
+        return t && (t.dirty || t.gone) ? MCOpenFileConflict : MCOpenFileNone;
+    }
     NSString *disk = nil;
     MCOpenFileState state = MCOpenFileNone;
     for (NSWindow *w in NSApp.windows) {

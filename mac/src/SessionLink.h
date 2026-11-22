@@ -208,6 +208,22 @@ public:
     std::uint64_t stream(Json request, std::function<void(std::vector<Json> &&answers, bool done)> answers);
     // Stops one: nothing more is told for it.
     void cancelStream(std::uint64_t req);
+    // Replace in Folder on the host (SessionSearch.h's "replace": the rows a
+    // search showed, sent behind this window's edits): its one answer to
+    // `answers` as a stream's. 0, calling nothing, when the host does not
+    // replace (replacesInFolder) or is gone.
+    std::uint64_t replace(Json request, std::function<void(std::vector<Json> &&answers, bool done)> answers);
+    bool replacesInFolder() const {
+        return client_ && !lost() && client_->hostWritesForPages() && client_->hostSearches();
+    }
+    // The tree's file operations on the host (Welcome flag 64,
+    // Client::requestFileOp: "rename", "move", "delete", "newFile",
+    // "newFolder", paths from the folder). False when the host is gone,
+    // does not do them, or did not answer within `timeoutMs`; else its
+    // answer ({"ok": true, ...} or {"error", "reason"}). Waits on the host,
+    // as the tree's listings do.
+    bool doesFileOps() const { return client_ && !lost() && client_->hostDoesFileOps(); }
+    bool fileOp(Json request, Json *answer, int timeoutMs = 20000);
 
     // Told once, on the main queue, when the host goes; the number takes it
     // off again.
@@ -382,8 +398,9 @@ struct MCHostSave {
 };
 
 // The host wrote a tab's file for another renderer (a page's save): what is
-// on disk now. `text` is the text written when the tab's text was the
-// host's at that version (nil when it was not: the window reads the file).
+// on disk now, or moved it (`moved`). `text` is the text written when the
+// tab's text was the host's at that version (nil when it was not: the
+// window reads the file).
 @interface MCSessionWrite : NSObject
 @property(nonatomic, copy) NSString *text;
 @property(nonatomic, copy) NSString *path;
@@ -391,6 +408,9 @@ struct MCHostSave {
 @property(nonatomic, assign) FolderSearch::TextEncoding encoding;
 @property(nonatomic, assign) BOOL bom;
 @property(nonatomic, assign) FolderSearch::FileStamp stamp;
+// Not a write: the host moved the file (a rename or move in a window over
+// SSH, DocDirty's "moved"), and `path` is where it is now.
+@property(nonatomic, assign) BOOL moved;
 @end
 
 // One tab's document on the host (made by MCTab when its text is first set

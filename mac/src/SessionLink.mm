@@ -374,6 +374,24 @@ std::uint64_t Link::stream(Json request, std::function<void(std::vector<Json> &&
     return req;
 }
 
+std::uint64_t Link::replace(Json request, std::function<void(std::vector<Json> &&, bool)> answers) {
+    if (!replacesInFolder()) return 0;
+    const std::uint64_t req = client_->requestReplace(0, std::move(request));
+    if (req) streams_[req] = std::move(answers);
+    return req;
+}
+
+bool Link::fileOp(Json request, Json *answer, int timeoutMs) {
+    *answer = Json();
+    if (!doesFileOps()) return false;
+    const std::uint64_t req = client_->requestFileOp(0, std::move(request));
+    if (!req || !client_->settle(timeoutMs) || !client_->readAnswer(req, answer)) {
+        if (req) client_->forgetRead(req);
+        return false;
+    }
+    return true;
+}
+
 void Link::cancelStream(std::uint64_t req) {
     if (!streams_.erase(req) || !client_) return;
     client_->cancelStream(req, 0);
@@ -1446,6 +1464,8 @@ static MCSessionLinkRef *LinkForTab(MCTab *tab) {
     w.encoding = e;
     w.bom = b;
     w.stamp = Shared::stampFromJson(json["stamp"]);
+    w.moved = json["moved"].asBool();
+    if (w.moved) w.text = nil;   // nothing was written
     __weak MCTab *weakTab = tab;
     dispatch_async(dispatch_get_main_queue(), ^{
         MCTab *t = weakTab;

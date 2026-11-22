@@ -23,6 +23,10 @@
 @property(nonatomic, assign) BOOL outside;
 @end
 
+// A tree row dragged in a window over SSH: its path, a file of the other
+// machine (no file URL of this Mac's), which only the tree's folders take.
+extern NSString *const MCTreeRowPasteboardType;
+
 // ---------------------------------------------------------------------------
 // MCTreeSource: where a tree's listings come from. A window's own folder is
 // this Mac's disk (no source: MCTreeList, and FSEvents for what changes); a

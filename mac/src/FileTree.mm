@@ -7,6 +7,8 @@
 
 BOOL gShowHidden = NO;
 
+NSString *const MCTreeRowPasteboardType = @"ai.ible.mutible.tree-row";
+
 @implementation MCTreeEntry
 @end
 

@@ -82,7 +82,7 @@
     // move (onto the tree's own folders) or copy: the terminal types its
     // path and the editor opens it, and both take only a copy (a mask of
     // Move alone had the terminal refuse every row dropped on it).
-    [self.outline registerForDraggedTypes:@[NSPasteboardTypeFileURL]];
+    [self.outline registerForDraggedTypes:@[NSPasteboardTypeFileURL, MCTreeRowPasteboardType]];
     [self.outline setDraggingSourceOperationMask:NSDragOperationMove | NSDragOperationCopy |
                                                  NSDragOperationGeneric
                                         forLocal:YES];

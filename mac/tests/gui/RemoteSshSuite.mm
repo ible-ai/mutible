@@ -36,9 +36,21 @@
 //     no Ping behind it). Quick Open's open of a file two folders down
 //     that the tree has not listed waits twice: both folders' listings
 //     asked together, then the read.
+//   - The tree's file operations, done by the host (Welcome flag 64) and
+//     checked on the stand-in's disk: Shift+Cmd+N in the tree makes a
+//     folder and New File a file (opened in a tab); Rename (its prompt
+//     answered) renames a file whose tab has unsaved text, which follows
+//     it, its text kept, and saves to the new name; renaming onto a name
+//     there already is refused with the host's sentence in an alert; a row
+//     dragged onto a folder (validateDrop's Move, acceptDrop) moves it, its
+//     tab following, and no file URL of this Mac's is on the drag; Delete
+//     asks "Delete ... permanently?" (no Trash there: Cancel keeps it), then
+//     deletes, the tab staying, marked deleted.
 //   - Cmd+P lists the host's files (the ignored one left out) and opens one;
-//     Find in Folder searches on the host, its rows open their files, and
-//     Replace All says it does not work over SSH; New Folder says so too.
+//     Find in Folder searches on the host and its rows open their files;
+//     Replace All replaces on the host: a closed file rewritten on disk, a
+//     clean tab edited there (unsaved, the disk as it was), a tab with
+//     unsaved text left alone and named, in the local question's words.
 //   - Addresses the open window's folder holds, as its host resolves them:
 //     src/util.c's opens in that window through its host (no new window, no
 //     ssh run), main.c's through a link to the folder and by ".." lands on
@@ -67,6 +79,7 @@
 //   - The window closes: its relay ends, and the lasting host, its
 //     terminal and document closed with the window, ends after its idle
 //     time (MUTIBLE_HOST_IDLE_MINUTES, a few seconds here).
+#import <Carbon/Carbon.h>
 #import "Harness.h"
 #import "EditorController.h"
 #import "EditorController+Private.h"
@@ -89,9 +102,19 @@
 #include <climits>
 #include <string>
 
+// A drag of the tree's own rows, as validateDrop: and acceptDrop: read it
+// (its source; a drag from the tree reads no pasteboard).
+@interface MCRemoteTreeDrag : NSObject
+@property(nonatomic, weak) id draggingSource;
+@end
+@implementation MCRemoteTreeDrag
+@end
+
 namespace {
 
 NSString *gFolder, *gFile, *gSsh, *gArgs, *gPidFile, *gBlock, *gTries, *gSlow;
+NSString *gOps;              // the folder the tree's file operations work in
+NSUInteger gAlertsAt;        // the alerts before a step's own
 MCRemoteConnect *gConnect;   // a connect under way
 NSTimer *gTicker;            // fires while it connects: the main thread turns
 NSUInteger gTicks, gTicksAtStart;
@@ -201,6 +224,33 @@ NSString *ScreenWord(NSString *prefix) {
 pid_t StandInPid() { return (pid_t)Read(gPidFile).intValue; }
 
 BOOL Gone(pid_t pid) { return pid > 0 && kill(pid, 0) != 0 && errno == ESRCH; }
+
+// The drag's session, which the tree's delegate methods do not read.
+NSDraggingSession *NoSession() {
+    static NSDraggingSession *none;
+    return none;
+}
+
+BOOL IsDir(NSString *path) {
+    BOOL dir = NO;
+    return [NSFileManager.defaultManager fileExistsAtPath:path isDirectory:&dir] && dir;
+}
+BOOL Exists(NSString *path) { return [NSFileManager.defaultManager fileExistsAtPath:path]; }
+NSString *Op(NSString *name) { return [gOps stringByAppendingPathComponent:name]; }
+
+// The tree's row for `path` selected, as a click leaves it.
+BOOL SelectRow(EditorController *c, NSString *path) {
+    const NSInteger row = [c.outline rowForItem:TreeRow(c, path)];
+    if (row < 0) return NO;
+    [c.outline selectRowIndexes:[NSIndexSet indexSetWithIndex:(NSUInteger)row] byExtendingSelection:NO];
+    return YES;
+}
+
+// The alerts shown since `gAlertsAt`.
+NSArray<NSString *> *AlertsSinceStep() {
+    NSArray<NSString *> *all = MCGuiAlertsShown();
+    return all.count > gAlertsAt ? [all subarrayWithRange:NSMakeRange(gAlertsAt, all.count - gAlertsAt)] : @[];
+}
 
 // The alerts shown since this suite began: MCGuiAlertsShown is every alert
 // of the run so far, the suites before this one's included (CI, #314's
@@ -514,11 +564,152 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(t != nil && t.session != nil);
         GCHECK_EQ_STR(t.currentText, @"int needle = 1;\n");
         GCHECK(t.fileModDate == nil);
-        // What would change this Mac's disk at the folder's path says why not.
-        [gC newFolder:nil];
-        NSString *note = [[gC valueForKey:@"settingsLabel"] stringValue];
-        MCGuiNote(@"New Folder: %@", note);
-        GCHECK([note hasPrefix:@"New Folder does not work in a window over SSH yet"]);
+    });
+    // ---- the tree's file operations, done by the host
+    MCGuiStep(@"files for the tree's operations, made on disk there", ^{
+        GCHECK([gC remoteDoesFileOps]);
+        gOps = [gFolder stringByAppendingPathComponent:@"ops"];
+        [NSFileManager.defaultManager createDirectoryAtPath:[gOps stringByAppendingPathComponent:@"into"]
+                                withIntermediateDirectories:YES attributes:nil error:nil];
+        MCGuiWriteFile(Op(@"a.txt"), @"alpha\n");
+        MCGuiWriteFile(Op(@"b.txt"), @"beta\n");
+        MCGuiWriteFile(Op(@"gone.txt"), @"going\n");
+    });
+    MCGuiWait(@"ops in the tree", 15, ^BOOL { return TreeRow(gC, gOps) != nil; });
+    MCGuiStep(@"Shift+Cmd+N in the tree: a folder made by the host", ^{
+        FileItem *ops = TreeRow(gC, gOps);
+        if (ops) [gC.outline expandItem:ops];
+        GCHECK(SelectRow(gC, gOps));
+        MCGuiSetKeyWindow(gC.window);
+        [gC.window makeFirstResponder:gC.outline];
+        const NSUInteger before = [gC remoteWorkspace].fileOps;
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiTypeInPrompts(@[ @"made" ]);
+        MCGuiSendKeyToApp(gC.window, kVK_ANSI_N, NSEventModifierFlagCommand | NSEventModifierFlagShift, @"N", @"n");
+        MCGuiNote(@"alerts: %@", AlertsSinceStep());
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"New folder name:" ]]);
+        GCHECK([gC remoteWorkspace].fileOps == before + 1);
+        GCHECK(IsDir(Op(@"made")));
+        GCHECK(TreeRow(gC, Op(@"made")) != nil);
+        // New File, in the folder selected: made by the host, then opened.
+        GCHECK(SelectRow(gC, gOps));
+        MCGuiTypeInPrompts(@[ @"new.txt" ]);
+        [gC newFile:nil];
+        GCHECK(Exists(Op(@"new.txt")) && !IsDir(Op(@"new.txt")));
+        GCHECK_EQ_STR(Read(Op(@"new.txt")), @"");
+        GCHECK_EQ_STR(gC.currentPath, Op(@"new.txt"));
+        MCTab *t = TabFor(gC, Op(@"new.txt"));
+        GCHECK(t != nil && !t.untitled && !t.dirty);
+        GCHECK(TreeRow(gC, Op(@"new.txt")) != nil);
+        MCGuiSetKeyWindow(nil);
+    });
+    MCGuiStep(@"Rename: the host renames a file whose tab has unsaved text, and the tab follows", ^{
+        GCHECK([gC showFile:Op(@"a.txt")]);
+        MCTab *t = TabFor(gC, Op(@"a.txt"));
+        TypeAtEnd(gC, @"typed\n");
+        GCHECK(t.dirty);
+        // The tree's items are there (the host does file operations), Move
+        // to Trash is Delete Permanently.
+        NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:@"Move to Trash" action:@selector(deleteSelected:)
+                                               keyEquivalent:@""];
+        GCHECK([gC validateMenuItem:item]);
+        GCHECK_EQ_STR(item.title, @"Delete Permanently…");
+        item = [[NSMenuItem alloc] initWithTitle:@"New Folder…" action:@selector(newFolder:) keyEquivalent:@""];
+        GCHECK([gC validateMenuItem:item]);
+        GCHECK(SelectRow(gC, Op(@"a.txt")));
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiTypeInPrompts(@[ @"renamed.txt" ]);
+        [gC renameSelected:nil];
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"Rename to:" ]]);
+        GCHECK(!Exists(Op(@"a.txt")));
+        GCHECK_EQ_STR(Read(Op(@"renamed.txt")), @"alpha\n");   // renamed, not saved
+        GCHECK(TabFor(gC, Op(@"a.txt")) == nil);
+        GCHECK(TabFor(gC, Op(@"renamed.txt")) == t);
+        GCHECK_EQ_STR(t.currentText, @"alpha\ntyped\n");
+        GCHECK(t.dirty);
+        GCHECK_EQ_STR(gC.currentPath, Op(@"renamed.txt"));
+        GCHECK([gC.window.title containsString:@"renamed.txt — standin:"]);
+        GCHECK(TreeRow(gC, Op(@"renamed.txt")) != nil && TreeRow(gC, Op(@"a.txt")) == nil);
+        // Its document on the host has the new path: Cmd+S writes there.
+        [gC saveCurrentFile:nil];
+    });
+    MCGuiWait(@"saved to the new name, by the host", 10, ^BOOL {
+        return [Read(Op(@"renamed.txt")) isEqualToString:@"alpha\ntyped\n"] && !TabFor(gC, Op(@"renamed.txt")).dirty;
+    });
+    MCGuiStep(@"renaming onto a name there already: the host refuses, and says why", ^{
+        GCHECK(!Exists(Op(@"a.txt")));
+        GCHECK(SelectRow(gC, Op(@"b.txt")));
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiTypeInPrompts(@[ @"renamed.txt" ]);
+        [gC renameSelected:nil];
+        MCGuiNote(@"alerts: %@ (%@)", AlertsSinceStep(), MCGuiLastAlertInformative());
+        GCHECK([AlertsSinceStep() isEqualToArray:(@[ @"Rename to:", @"“b.txt” was not renamed." ])]);
+        GCHECK_EQ_STR(MCGuiLastAlertInformative(), @"renamed.txt already exists.");
+        GCHECK_EQ_STR(Read(Op(@"b.txt")), @"beta\n");
+        GCHECK_EQ_STR(Read(Op(@"renamed.txt")), @"alpha\ntyped\n");
+    });
+    MCGuiStep(@"a row dragged onto a folder: moved by the host, its tab following", ^{
+        GCHECK([gC showFile:Op(@"b.txt")]);
+        MCTab *t = TabFor(gC, Op(@"b.txt"));
+        GCHECK(t != nil && !t.dirty);
+        FileItem *b = TreeRow(gC, Op(@"b.txt")), *into = TreeRow(gC, Op(@"into"));
+        GCHECK(b != nil && into != nil);
+        if (!b || !into) return;
+        // What the drag carries: the tree's own row, no file URL of this Mac's.
+        id<NSPasteboardWriting> writer = [(id<NSOutlineViewDataSource>)gC outlineView:gC.outline pasteboardWriterForItem:b];
+        GCHECK([(id)writer isKindOfClass:NSPasteboardItem.class]);
+        GCHECK([[(NSPasteboardItem *)writer types] isEqualToArray:@[ MCTreeRowPasteboardType ]]);
+        [(id<NSOutlineViewDataSource>)gC outlineView:gC.outline draggingSession:NoSession()
+                                  willBeginAtPoint:NSZeroPoint forItems:@[ b ]];
+        MCRemoteTreeDrag *drag = [MCRemoteTreeDrag new];
+        drag.draggingSource = gC.outline;
+        id<NSDraggingInfo> info = (id<NSDraggingInfo>)drag;
+        id<NSOutlineViewDataSource> ds = (id<NSOutlineViewDataSource>)gC;
+        GCHECK([ds outlineView:gC.outline validateDrop:info proposedItem:into proposedChildIndex:-1] ==
+               NSDragOperationMove);
+        // From anywhere but the tree (Finder), nothing goes into the other machine's folder.
+        MCRemoteTreeDrag *outside = [MCRemoteTreeDrag new];
+        GCHECK([ds outlineView:gC.outline validateDrop:(id<NSDraggingInfo>)outside proposedItem:into
+                proposedChildIndex:-1] == NSDragOperationNone);
+        GCHECK([ds outlineView:gC.outline acceptDrop:info item:into childIndex:-1]);
+        [(id<NSOutlineViewDataSource>)gC outlineView:gC.outline draggingSession:NoSession()
+                                      endedAtPoint:NSZeroPoint operation:NSDragOperationMove];
+        GCHECK(!Exists(Op(@"b.txt")));
+        GCHECK_EQ_STR(Read(Op(@"into/b.txt")), @"beta\n");
+        GCHECK(TabFor(gC, Op(@"into/b.txt")) == t && !t.dirty);
+        GCHECK_EQ_STR(t.currentText, @"beta\n");
+        GCHECK(TreeRow(gC, Op(@"into/b.txt")) != nil && TreeRow(gC, Op(@"b.txt")) == nil);
+    });
+    MCGuiStep(@"Delete asks first (no Trash there): Cancel keeps it", ^{
+        GCHECK([gC showFile:Op(@"gone.txt")]);
+        GCHECK(SelectRow(gC, Op(@"gone.txt")));
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiAnswerAlerts(@[ @(NSAlertSecondButtonReturn) ]);
+        [gC deleteSelected:nil];
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"Delete “gone.txt” permanently?" ]]);
+        MCGuiNote(@"informative: %@", MCGuiLastAlertInformative());
+        GCHECK([MCGuiLastAlertInformative() containsString:@"which has no Trash"]);
+        GCHECK_EQ_STR(Read(Op(@"gone.txt")), @"going\n");
+        GCHECK(!TabFor(gC, Op(@"gone.txt")).gone);
+    });
+    MCGuiStep(@"Delete Permanently: gone from the host's disk, its tab marked deleted", ^{
+        GCHECK(SelectRow(gC, Op(@"gone.txt")));
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiAnswerAlerts(@[ @(NSAlertFirstButtonReturn) ]);
+        [gC deleteSelected:nil];
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"Delete “gone.txt” permanently?" ]]);
+        GCHECK(!Exists(Op(@"gone.txt")));
+        MCTab *t = TabFor(gC, Op(@"gone.txt"));
+        GCHECK(t != nil && t.gone && t.dirty);
+        GCHECK_EQ_STR(t.currentText, @"going\n");
+        GCHECK(TreeRow(gC, Op(@"gone.txt")) == nil);
+        MCGuiNote(@"title: %@", gC.window.title);
+        GCHECK([gC.window.title containsString:@"gone.txt (deleted)"]);
+        // Closed unsaved, so the host keeps nothing of it.
+        if (t) GCHECK([gC closeTab:t prompt:NO]);
+        // The questions of these steps are this suite's own: the later steps
+        // count from here.
+        gAlertsBefore = MCGuiAlertsShown().count;
     });
     // ---- Quick Open and Find in Folder on the host
     MCGuiStep(@"Cmd+P lists the host's files", ^{
@@ -582,13 +773,68 @@ MC_GUI_SUITE(remote_ssh) {
             [NSApp sendAction:t.doubleAction to:t.target from:t];
         }
         GCHECK([gC.currentPath hasSuffix:@"/src/main.c"]);
-        // Replace in Folder is not offered over SSH, and says why.
-        p.replaceField.stringValue = @"pin";
+    });
+    // ---- Replace All on the host: r1 closed, r2 open and clean, r3 open
+    // with unsaved text.
+    MCGuiStep(@"files to replace in: one closed, one in a clean tab, one in a tab with unsaved text", ^{
+        MCGuiWriteFile(Op(@"r1.txt"), @"swap one\n");
+        MCGuiWriteFile(Op(@"r2.txt"), @"swap two\n");
+        MCGuiWriteFile(Op(@"r3.txt"), @"swap three\n");
+        GCHECK([gC showFile:Op(@"r2.txt")]);
+        GCHECK(!TabFor(gC, Op(@"r2.txt")).dirty);
+        GCHECK([gC showFile:Op(@"r3.txt")]);
+        TypeAtEnd(gC, @"more\n");
+        GCHECK(TabFor(gC, Op(@"r3.txt")).dirty);
+        SearchPanel *p = gC.searchPanel;
+        GCHECK(p.hostReplace != nil);
+        p.field.stringValue = @"swap";
+        [p runSearch:nil];
+    });
+    MCGuiWait(@"the rows to replace", 15, ^BOOL {
+        SearchPanel *p = gC.searchPanel;
+        return !p.busy && [p.status.stringValue containsString:@"match"];
+    });
+    MCGuiStep(@"Replace All asks as locally, and the host replaces", ^{
+        SearchPanel *p = gC.searchPanel;
+        GCHECK_EQ_STR(p.status.stringValue, @"3 matches in 3 files");
+        p.replaceField.stringValue = @"traded";
+        p.preserveCase = NO;   // the host ignores it: refused over SSH
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiAnswerAlerts(@[ @(NSAlertFirstButtonReturn) ]);
         [p replaceAll:nil];
-        MCGuiNote(@"Replace All: %@", p.status.stringValue);
-        GCHECK([p.status.stringValue hasPrefix:@"Replace in Folder does not work in a window over SSH yet"]);
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"Replace 2 matches in 2 files?" ]]);
+        MCGuiNote(@"informative: %@", MCGuiLastAlertInformative());
+        GCHECK([MCGuiLastAlertInformative() hasPrefix:@"Each becomes “traded”."]);
+        GCHECK([MCGuiLastAlertInformative()
+            containsString:@"Left alone, since their tabs have unsaved changes: r3.txt."]);
+        GCHECK([gC remoteWorkspace].replaces > 0);
+    });
+    MCGuiWait(@"replaced, and searched again", 15, ^BOOL {
+        SearchPanel *p = gC.searchPanel;
+        return !p.busy && [p.status.stringValue hasPrefix:@"Replaced"];
+    });
+    MCGuiStep(@"the closed file rewritten, the clean tab edited unsaved, the other left alone", ^{
+        SearchPanel *p = gC.searchPanel;
+        MCGuiNote(@"status: %@", p.status.stringValue);
+        GCHECK([p.status.stringValue hasPrefix:@"Replaced 2 matches in 2 files (1 open in tabs, unsaved). "
+                                               @"Left alone, with unsaved changes: r3.txt"]);
+        GCHECK_EQ_STR(Read(Op(@"r1.txt")), @"traded one\n");
+        GCHECK_EQ_STR(Read(Op(@"r2.txt")), @"swap two\n");
+        MCTab *r2 = TabFor(gC, Op(@"r2.txt"));
+        GCHECK_EQ_STR(r2.currentText, @"traded two\n");
+        GCHECK(r2.dirty);
+        GCHECK_EQ_STR(Read(Op(@"r3.txt")), @"swap three\n");
+        GCHECK_EQ_STR(TabFor(gC, Op(@"r3.txt")).currentText, @"swap three\nmore\n");
         GCHECK_EQ_STR(Read([gFolder stringByAppendingPathComponent:@"src/main.c"]), @"int needle = 1;\n");
         [p.window orderOut:nil];
+        // r3 closed unsaved, r2 saved: nothing unsaved is left on the host.
+        if (MCTab *r3 = TabFor(gC, Op(@"r3.txt"))) GCHECK([gC closeTab:r3 prompt:NO]);
+        GCHECK([gC showFile:Op(@"r2.txt")]);
+        [gC saveCurrentFile:nil];
+        gAlertsBefore = MCGuiAlertsShown().count;
+    });
+    MCGuiWait(@"r2 saved by the host", 10, ^BOOL {
+        return [Read(Op(@"r2.txt")) isEqualToString:@"traded two\n"] && !TabFor(gC, Op(@"r2.txt")).dirty;
     });
     // ---- addresses an open window's folder holds. As a local file goes
     // to the window whose folder holds it, a file's address on the same

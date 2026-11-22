@@ -182,6 +182,7 @@ MC_TAB_PROPERTY(BOOL, diffIsCommit, setDiffIsCommit)
     if ([self validateLineHistoryItem:item enabled:&enabled]) return enabled;
     if ([self validateGroupItem:item enabled:&enabled]) return enabled;
     if ([self validateTreeFocusItem:item enabled:&enabled]) return enabled;
+    if ([self validateRemoteTreeItem:item enabled:&enabled]) return enabled;
     if (item.action == @selector(sortTreeBy:)) {
         item.state = item.tag == (NSInteger)_treeSort.key ? NSControlStateValueOn
                                                           : NSControlStateValueOff;

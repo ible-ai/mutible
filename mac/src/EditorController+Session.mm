@@ -168,7 +168,14 @@ static char kSessionWindowKey;
 // dot agree, and its next save is not taken for a change made outside.
 - (void)tab:(MCTab *)t writtenByHost:(id)write {
     MCSessionWrite *w = write;
-    if (![self holdsTab:t] || !t.loaded || ![self tabHasTextToWrite:t]) return;
+    if (![self holdsTab:t]) return;
+    // Not a write: a window over SSH's file renamed or moved on the host
+    // (+Remote), which the tab follows.
+    if (w.moved) {
+        if ([self sessionIsRemote]) [self remoteTab:t movedTo:w.path];
+        return;
+    }
+    if (!t.loaded || ![self tabHasTextToWrite:t]) return;
     if ([self sessionIsRemote]) return;   // no stamps here of a file on another machine
     if (w.path && ![w.path isEqualToString:t.currentPath ?: @""]) return;   // renamed since
     // Written over again since: a change made outside, as the disk checks

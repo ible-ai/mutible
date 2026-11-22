@@ -67,6 +67,7 @@ static int gSuitePass, gSuiteFail;
 static NSString *gSuite;
 static NSString *gStep;
 static NSMutableArray<NSNumber *> *gAnswers;
+static NSMutableArray<NSString *> *gPromptTexts;
 static NSMutableArray<NSString *> *gAlerts;
 static NSMutableArray<NSString *> *gSheets;
 static NSMutableArray<NSURL *> *gOpenedURLs;
@@ -300,6 +301,10 @@ NSWindow *MCGuiWindowMadeKey(void) { return gMadeKey; }
 void MCGuiAnswerAlerts(NSArray<NSNumber *> *answers) {
     if (!gAnswers) gAnswers = [NSMutableArray array];
     [gAnswers addObjectsFromArray:answers];
+}
+void MCGuiTypeInPrompts(NSArray<NSString *> *texts) {
+    if (!gPromptTexts) gPromptTexts = [NSMutableArray array];
+    [gPromptTexts addObjectsFromArray:texts];
 }
 NSArray<NSString *> *MCGuiAlertsShown(void) { return [gAlerts copy] ?: @[]; }
 NSArray<NSString *> *MCGuiSheetsShown(void) { return [gSheets copy] ?: @[]; }
@@ -607,6 +612,12 @@ static void CheckWhatSuiteLeft(NSString *suite) {
                                                (unsigned long)gAnswers.count,
                                                [shown componentsJoinedByString:@"\", \""]]);
         if (putBack) [gAnswers removeAllObjects];
+    }
+    if (gPromptTexts.count) {
+        Leak(suite, [NSString stringWithFormat:@"left %lu prompt text(s) unused, which would be typed into a later "
+                                               @"suite's prompts",
+                                               (unsigned long)gPromptTexts.count]);
+        if (putBack) [gPromptTexts removeAllObjects];
     }
     World now = LookAtWorld(), was = gWorldAtStart;
     if (now.windows != was.windows)
@@ -1114,6 +1125,10 @@ static void InstallSwizzles(void) {
         if (!gAlerts) gAlerts = [NSMutableArray array];
         [gAlerts addObject:a.messageText ?: @""];
         gLastInformative = [a.informativeText copy];
+        if (gPromptTexts.count && [a.accessoryView isKindOfClass:NSTextField.class]) {
+            ((NSTextField *)a.accessoryView).stringValue = gPromptTexts.firstObject;
+            [gPromptTexts removeObjectAtIndex:0];
+        }
         if (gAnswers.count) {
             NSModalResponse r = gAnswers.firstObject.integerValue;
             [gAnswers removeObjectAtIndex:0];

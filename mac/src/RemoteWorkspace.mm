@@ -232,6 +232,87 @@ static NSString *PrefetchKey(NSString *path, BOOL hidden) {
     if (req && _link.link) _link.link->cancelStream(req);
 }
 
+- (BOOL)replacesInFolder {
+    MCSession::Link *l = [self live];
+    return l && l->replacesInFolder();
+}
+
+- (uint64_t)replace:(Json)request answers:(void (^)(const std::vector<Json> &, BOOL))answers {
+    MCSession::Link *l = [self live];
+    if (!l) return 0;
+    void (^take)(const std::vector<Json> &, BOOL) = [answers copy];
+    const std::uint64_t req =
+        l->replace(std::move(request), [take](std::vector<Json> &&got, bool last) { take(got, last); });
+    if (req) _replaces++;
+    return req;
+}
+
+// ------------------------------------------------------------ file operations
+
+- (BOOL)doesFileOps {
+    MCSession::Link *l = [self live];
+    return l && l->doesFileOps();
+}
+
+// One operation, its paths already relative: nil when the host did it.
+- (NSString *)fileOp:(Json)request reason:(NSString **)reason {
+    if (reason) *reason = @"";
+    MCSession::Link *l = [self live];
+    if (!l) return @"The connection to the other machine is lost: Reconnect, then try again.";
+    if (!l->doesFileOps())
+        return @"mutible on the other machine is too old to change files from here: upgrade it there.";
+    Json answer;
+    _fileOps++;
+    if (!l->fileOp(std::move(request), &answer)) {
+        if (reason) *reason = @"noanswer";
+        return @"The other machine did not answer.";
+    }
+    if (answer["ok"].asBool()) return nil;
+    if (reason) *reason = [NSString stringWithUTF8String:answer["reason"].asString().c_str()] ?: @"";
+    NSString *why = [NSString stringWithUTF8String:answer["error"].asString().c_str()];
+    return why.length ? why : @"The other machine could not do it.";
+}
+
+- (NSString *)renamePath:(NSString *)path to:(NSString *)name reason:(NSString **)reason {
+    std::string rel;
+    if (![self relative:path out:&rel] || rel.empty()) return @"That is not in the folder.";
+    Json ask = Json::object();
+    ask.set("op", Json("rename"));
+    ask.set("path", Json(rel));
+    ask.set("name", Json(std::string(name.UTF8String ?: "")));
+    return [self fileOp:std::move(ask) reason:reason];
+}
+
+- (NSString *)movePath:(NSString *)path into:(NSString *)folder reason:(NSString **)reason {
+    std::string rel, to;
+    if (![self relative:path out:&rel] || rel.empty() || ![self relative:folder out:&to])
+        return @"That is not in the folder.";
+    Json ask = Json::object();
+    ask.set("op", Json("move"));
+    ask.set("path", Json(rel));
+    ask.set("to", Json(to));   // "" for the folder itself
+    return [self fileOp:std::move(ask) reason:reason];
+}
+
+- (NSString *)deletePath:(NSString *)path reason:(NSString **)reason {
+    std::string rel;
+    if (![self relative:path out:&rel] || rel.empty()) return @"That is not in the folder.";
+    Json ask = Json::object();
+    ask.set("op", Json("delete"));
+    ask.set("path", Json(rel));
+    ask.set("permanent", Json(true));   // asked first: the host has no Trash
+    return [self fileOp:std::move(ask) reason:reason];
+}
+
+- (NSString *)makePath:(NSString *)path folder:(BOOL)folder reason:(NSString **)reason {
+    std::string rel;
+    if (![self relative:path out:&rel] || rel.empty()) return @"That is not in the folder.";
+    Json ask = Json::object();
+    ask.set("op", Json(folder ? "newFolder" : "newFile"));
+    ask.set("path", Json(rel));
+    return [self fileOp:std::move(ask) reason:reason];
+}
+
 // ------------------------------------------------------------ new files
 
 - (void)markNew:(NSString *)path {
