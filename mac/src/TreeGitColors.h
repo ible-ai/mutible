@@ -12,6 +12,7 @@
 // runs through MCGitRunSync, so it never writes the index (no FSEvents
 // loop) and stops at the read limit.
 #import <Cocoa/Cocoa.h>
+#import "GitPanel.h"
 #include "GitStatus.h"
 
 @interface MCTreeGitColors : NSObject
@@ -25,8 +26,16 @@
 // The window's folder, as the tree spells it (nil: none). Forgets the old
 // folder's colors and looks at once.
 - (void)setRoot:(NSString *)root;
+// A window over SSH (GitPanel.h's MCGitRunner), before setRoot:: git runs
+// on the other machine, and the folder is taken as the host spells it
+// (resolved there), never resolved on this Mac's disk. changedOnDisk:
+// then comes from the host's notices.
+- (void)useGitRunner:(MCGitRunner)runner;
 // FSEvents named these folders (as the disk spells them).
 - (void)changedOnDisk:(NSArray<NSString *> *)paths;
+// The host said git may have changed (over SSH): a status half a second
+// from now, as for a change on disk.
+- (void)lookSoon;
 // A row's color, by its path as the tree spells it. None outside the
 // repository, under the folder's .claude/worktrees (other repositories),
 // and before the first status.

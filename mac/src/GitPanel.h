@@ -57,6 +57,21 @@ NSTimeInterval MCGitTimeoutFor(NSArray<NSString *> *args);
 // The same with `input` on git's stdin (a patch for `git apply -`).
 MCGitResult *MCGitRunSyncWithInput(NSString *dir, NSArray<NSString *> *args, NSData *input);
 
+// A window over SSH (stage 9, docs/notes/git.md, "Over SSH"): its git runs
+// on the other machine, through its host (SessionGit.h). A queue given a
+// runner sends every git command run on it there: the functions above ask
+// the queue they are called on (dispatch_get_specific), so the panel's, the
+// change bars' and the tree colors' code, each on a serial queue of its
+// own, runs unchanged, and its parsing stays the core's. `dir` is the
+// other machine's path; `input` nil for none. nil takes the runner off.
+typedef MCGitResult *(^MCGitRunner)(NSString *dir, NSArray<NSString *> *args, NSData *input,
+                                    NSTimeInterval timeout);
+void MCGitSetQueueRunner(dispatch_queue_t queue, MCGitRunner runner);
+// Whether the calling queue has a runner: git there is the other
+// machine's, so this Mac having none says nothing, and no path git names
+// is on this Mac's disk.
+BOOL MCGitOnHost(void);
+
 // A diff as colored text: added lines green, removed red, hunk and file
 // headers muted. `font` is the monospaced font to use.
 NSAttributedString *MCGitDiffText(NSData *diff, NSFont *font);
@@ -142,6 +157,16 @@ extern NSNotificationName const MCGitPanelDidRefreshNotification;
 @property(nonatomic, copy) void (^onRevealFile)(NSString *path);
 // The branch line was clicked: the controller opens the branch picker.
 @property(nonatomic, copy) void (^onChooseBranch)(void);
+
+// A window over SSH: git runs through `runner` (MCGitSetQueueRunner on the
+// panel's queue), `host` its "host:path" for what is said. Fetch, pull,
+// push and autofetch say they do not work over SSH yet; Discard keeps the
+// changed copy as a git object there (GitUi::discardPlanOverSsh), since
+// that machine has no Trash, and offers no Undo Discard; the Review
+// Changes row is hidden (the review reads the work tree from this Mac's
+// disk), so a row opens its git diff.
+- (void)useGitRunner:(MCGitRunner)runner overSsh:(NSString *)host;
+@property(nonatomic, readonly, copy) NSString *overSshHost;   // nil on this Mac
 
 // Stage All Changes and Unstage All Changes (git.stageAll,
 // git.unstageAll), from a status read just now, so they work while the

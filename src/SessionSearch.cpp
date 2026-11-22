@@ -430,7 +430,7 @@ bool ReadWorkers::start(ClientId c, std::uint64_t req, std::uint64_t window, con
     Job* j = job.get();
     try {
         j->thread = std::thread([this, j, root, request, seconds, pace = eachFile] {
-            auto emit = [this, j](Json&& json) { push(Answer{j->to, j->req, j->window, std::move(json)}); };
+            auto emit = [this, j](Json&& json) { push(Answer{j->to, j->req, j->window, std::move(json), std::string()}); };
             try {
                 runWorkerRead(root, request, j->cancel, emit, seconds, pace);
             } catch (...) {
@@ -446,6 +446,41 @@ bool ReadWorkers::start(ClientId c, std::uint64_t req, std::uint64_t window, con
         });
     } catch (...) {
         if (why) *why = "no thread to read with";
+        return false;
+    }
+    jobs_.push_back(std::move(job));
+    return true;
+}
+
+bool ReadWorkers::startTask(ClientId c, std::uint64_t req, std::uint64_t window, Task task, std::string* why,
+                            std::size_t most) {
+    reap();
+    if (jobs_.size() >= most) {
+        if (why) *why = "too much running at once on this host; try again in a moment";
+        return false;
+    }
+    auto job = std::make_unique<Job>();
+    job->to = c;
+    job->req = req;
+    job->window = window;
+    Job* j = job.get();
+    try {
+        j->thread = std::thread([this, j, task = std::move(task)] {
+            Answer a{j->to, j->req, j->window, Json(), std::string()};
+            try {
+                task(j->cancel, &a.json, &a.bytes);
+            } catch (...) {
+                a.json = Json::object();
+                a.json.set("error", Json("it failed on the host"));
+                a.bytes.clear();
+            }
+            push(std::move(a));
+            j->finished.store(true);
+            std::lock_guard<std::mutex> lk(mu_);
+            cv_.notify_all();
+        });
+    } catch (...) {
+        if (why) *why = "no thread to run it on";
         return false;
     }
     jobs_.push_back(std::move(job));

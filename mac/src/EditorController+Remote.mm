@@ -9,8 +9,11 @@
 // flag 64; on an older host they are unavailable, but New File, which
 // opens a tab its first save makes there); what would read this Mac's disk
 // at the folder's path (Reveal in Finder, drags out, Quick Look, the TODO
-// list) says it does not work over SSH yet. Every method does nothing (or
-// NO) in a window on this Mac. The
+// list) says it does not work over SSH yet. Its git runs on the host too
+// (stage 9, docs/notes/git.md, "Over SSH"): the tree's colors and the
+// branch from startRemoteWorkspace, Source Control and the change bars as
+// they are made (hostGitRunner), the host's notices refreshing them. Every
+// method does nothing (or NO) in a window on this Mac. The
 // window's state is the MCRemoteWorkspace, an associated object, so the
 // controller gains no instance variables.
 #import "EditorController+Private.h"
@@ -45,6 +48,10 @@ static char kRemoteWorkspaceKey;
         [s applyTreeListings:listings stats:@{} reshowRoot:NO];
         [s remoteFoldersChanged:listings.allKeys];   // a copy a viewer shows, read again (+RemoteViewers)
     };
+    // git on the host (stage 9): the tree's colors and the branch now,
+    // Source Control and the change bars with the panel (useHostGit); the
+    // host's word that git may have changed in place of FSEvents.
+    ws.onGitChanged = ^{ [weakSelf gitChangedOnHost]; };
     _root.source = ws;
     _root.children = nil;
     _root.shown = nil;
@@ -52,6 +59,12 @@ static char kRemoteWorkspaceKey;
     [_root loadChildren];
     if (self.outline) [self reloadTreeKeepingState:NO];
     [self remoteTreeFoldersChanged];
+    [self watchGitOnHost:ws.gitRunner];
+    [self useHostGit];   // the panel made already, if it was
+}
+
+- (MCGitRunner)hostGitRunner {
+    return [self remoteWorkspace].gitRunner;
 }
 
 // Reconnect: the new host lists the tree again (what changed there while
@@ -62,6 +75,7 @@ static char kRemoteWorkspaceKey;
     if (!ws || !link.link) return;
     [ws attachLink:link];
     [self reloadTreeKeepingState:YES];
+    [self gitChangedOnHost];   // what changed there meanwhile
 }
 
 - (void)remoteTreeFoldersChanged {

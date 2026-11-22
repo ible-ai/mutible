@@ -2,6 +2,7 @@
 #include "SessionHost.h"
 
 #include "SessionFiles.h"
+#include "SessionGit.h"
 
 #include <algorithm>
 #include <cerrno>
@@ -278,6 +279,7 @@ void Host::onRead(ClientId c, Message& m) {
         return;
     }
     if (op == "replace") return onReplace(c, m);
+    if (op == "git") return onGit(c, m);
     if (isFileOp(op)) return onFileOp(c, m);
     if (isWorkerRead(op)) {
         // Quick Open's list and Find in Folder, on a worker: answered as it
@@ -323,6 +325,7 @@ void Host::takeReads() {
         r.req = a.req;
         r.window = a.window;
         r.json = std::move(a.json);
+        r.bytes = std::move(a.bytes);
         send(a.to, std::move(r));
     }
 }
@@ -381,6 +384,9 @@ void Host::onHello(ClientId c, Message& m) {
     // And sets up this machine's shell integration for such a terminal
     // (TermSpec's integration), when its mutible has the scripts.
     if (integration_.any()) w.flag |= 128;
+    // And runs git for an app's window in its folder (FsRead's "git",
+    // SessionGit.h): the window over SSH's Source Control.
+    w.flag |= kHostRunsGit;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));
@@ -1620,6 +1626,38 @@ void Host::hostStep(DocId id, Doc& d, const std::u16string& next, const char* na
         trimLog(d);
         tellUndoState(id, d);
     }
+}
+
+void Host::onGit(ClientId c, Message& m) {
+    auto refuse = [&](const std::string& why, const char* reason) {
+        Message r;
+        r.kind = Kind::FsData;
+        r.req = m.req;
+        r.window = m.window;
+        r.json = gitRefused(why, reason).json;
+        send(c, std::move(r));
+    };
+    // It may change the index, the work tree and the history: an app's
+    // window only (a page has its own reads, SessionWebGit.h).
+    auto who = renderers_.find(c);
+    if (who == renderers_.end() || who->second.readOnly || who->second.guest)
+        return refuse("Only an app's window runs git on the host.", "readonly");
+    const std::string root = readRoot(m.window);
+    if (root.empty()) return refuse("There is no folder to run git in.", "missing");
+    if (!workers_) workers_ = std::make_unique<ReadWorkers>();
+    std::string why;
+    Json request = m.json;
+    std::string input = std::move(m.bytes);
+    const bool started = workers_->startTask(
+        c, m.req, m.window,
+        [root, request = std::move(request), input = std::move(input)](std::atomic<bool>& cancel, Json* json,
+                                                                       std::string* bytes) {
+            GitAnswer a = runGitRequest(root, request, input, &cancel);
+            *json = std::move(a.json);
+            *bytes = std::move(a.out);
+        },
+        &why, kMaxGitJobs);
+    if (!started) refuse(why, "busy");
 }
 
 void Host::onFileOp(ClientId c, Message& m) {

@@ -106,6 +106,13 @@
 // "moved": true} (no stamp, no encodingName: the file was not written); one
 // under a deleted path is marked gone as a file deleted on disk is (DocDisk
 // flag 2, DocDirty). A renderer that only reads is refused ("readonly").
+//
+// A window's git (stage 9, a host whose Welcome has flag 256): FsRead's
+// "git" {"dir", "args", "timeout"} with the command's standard input as the
+// message's bytes runs one git command in the session's folder on a worker
+// (SessionGit.h), answered by one FsData {"op": "git", "ok", "status",
+// "err", "timedOut"} with its standard output as the bytes, or {"op":
+// "git", "error", "reason"} when it was not run. Only from an app's window.
 // Pure C++17, no I/O.
 #pragma once
 
@@ -186,7 +193,9 @@ enum class Kind {
                  // flag 64: it does a tree's file operations (FsRead's "rename",
                  // "move", "delete", "newFile", "newFolder"); flag 128: it has
                  // its machine's shell integration scripts and sets them up
-                 // itself for a hostShell terminal (TermSpec's integration)
+                 // itself for a hostShell terminal (TermSpec's integration);
+                 // flag 256: it runs git for an app's window (FsRead's "git",
+                 // SessionGit.h: a window over SSH's Source Control)
     DocOpened,   // doc, v (and text16 when it was open already: another renderer's)
     DocEdited,   // doc, v, by, seq, ops, ops16, flag (1 undo, 2 redo), select
     DocUndone,   // doc, req, outcome

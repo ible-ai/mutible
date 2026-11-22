@@ -5,6 +5,14 @@
 #include <algorithm>
 #include <string>
 
+#include "GitStatus.h"
+#include "SessionGit.h"
+
+@interface MCRemoteWorkspace ()
+// The link's "host:path", for what git's runner says off the main thread.
+@property(atomic, copy) NSString *labelText;
+@end
+
 @implementation MCRemoteWorkspace {
     MCSessionLinkRef *_link;
     int _diskToken;
@@ -59,6 +67,7 @@
     _link = link;
     _watchSent.clear();   // a new host knows nothing of the old one's watch
     if (!_link.link) return;
+    self.labelText = @(_link.link->label().c_str());
     __weak MCRemoteWorkspace *weakSelf = self;
     _diskToken = _link.link->addDiskListener([weakSelf](const Json &changed) {
         // Told inside the link's dispatch, which may be inside a wait for a
@@ -164,6 +173,10 @@ static NSString *PrefetchKey(NSString *path, BOOL hidden) {
         if (dir && entries && answer["error"].isNull()) listings[dir] = entries;
     }
     if (listings.count && self.onListings) self.onListings(listings);
+    if (changed["git"].asBool()) {
+        _gitNotices++;
+        if (self.onGitChanged) self.onGitChanged();
+    }
 }
 
 - (void)watchFolders:(NSArray<NSString *> *)paths hidden:(BOOL)hidden {
@@ -311,6 +324,87 @@ static NSString *PrefetchKey(NSString *path, BOOL hidden) {
     ask.set("op", Json(folder ? "newFolder" : "newFile"));
     ask.set("path", Json(rel));
     return [self fileOp:std::move(ask) reason:reason];
+}
+
+// ------------------------------------------------------------ git
+
+namespace {
+MCGitResult *GitFailed(const std::string &why) {
+    MCGitResult *r = [MCGitResult new];
+    r.status = -1;
+    r.output = [NSData data];
+    r.errorText = [NSString stringWithUTF8String:why.c_str()] ?: @"git did not run.";
+    return r;
+}
+}  // namespace
+
+
+- (MCGitRunner)gitRunner {
+    __weak MCRemoteWorkspace *weakSelf = self;
+    return ^MCGitResult *(NSString *dir, NSArray<NSString *> *args, NSData *input, NSTimeInterval timeout) {
+        std::vector<std::string> argv;
+        for (NSString *a in args) argv.push_back(a.UTF8String ?: "");
+        // What the window's title calls the folder ("host:path"), kept on
+        // the main thread as each link is attached.
+        NSString *labelText = weakSelf.labelText;
+        const std::string label = labelText.length ? std::string(labelText.UTF8String ?: "") : "the other machine";
+        // They would want credentials nobody can type there.
+        if (Git::talksToRemote(argv)) return GitFailed(Shared::gitRemoteOpText(label));
+        // The answer comes on the main queue: never wait for it there.
+        if ([NSThread isMainThread]) return GitFailed("git for a window over SSH runs off the main thread.");
+        const std::string where = dir.UTF8String ?: "";
+        std::string stdinBytes = input.length ? std::string((const char *)input.bytes, input.length) : std::string();
+        // Filled on the main queue, read here once the semaphore says so.
+        NSMutableArray<MCGitResult *> *result = [NSMutableArray arrayWithCapacity:1];
+        dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MCRemoteWorkspace *ws = weakSelf;
+            MCSession::Link *l = ws ? [ws live] : nullptr;
+            if (!l) {
+                [result addObject:GitFailed(Shared::gitLostText(label))];
+                dispatch_semaphore_signal(answered);
+                return;
+            }
+            if (!l->runsGit()) {
+                [result addObject:GitFailed(Shared::gitTooOldText(l->label()))];
+                dispatch_semaphore_signal(answered);
+                return;
+            }
+            ws->_gitRuns++;
+            const std::string lostText = Shared::gitLostText(l->label());
+            const std::uint64_t req =
+                l->git(where, argv, std::move(stdinBytes), timeout,
+                       [answered, lostText, result](bool got, Json &&answer, std::string &&out) {
+                           if (!got) {
+                               [result addObject:GitFailed(lostText)];
+                           } else {
+                               Shared::GitReply reply = Shared::gitReplyFrom(answer, std::move(out));
+                               MCGitResult *r = [MCGitResult new];
+                               r.status = reply.status;
+                               r.output = [NSData dataWithBytes:reply.out.data() length:reply.out.size()];
+                               r.errorText = [[NSString stringWithUTF8String:reply.err.c_str()]
+                                   stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                               r.timedOut = reply.timedOut;
+                               [result addObject:r];
+                           }
+                           dispatch_semaphore_signal(answered);
+                       });
+            if (!req) {
+                [result addObject:GitFailed(lostText)];
+                dispatch_semaphore_signal(answered);
+            }
+        });
+        // The host stops git at its own limit; this waits that long and a
+        // little more for the answer to cross.
+        const double wait = (timeout > 0 ? timeout : Git::timeoutFor(argv)) + 30;
+        if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(wait * NSEC_PER_SEC))) != 0) {
+            MCGitResult *r = GitFailed("The other machine did not answer within " + Git::durationText(wait) + ": " +
+                                       Git::commandLine(argv));
+            r.timedOut = YES;
+            return r;
+        }
+        return result.firstObject ?: GitFailed("git did not run.");
+    };
 }
 
 // ------------------------------------------------------------ new files

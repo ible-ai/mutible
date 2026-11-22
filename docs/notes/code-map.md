@@ -99,7 +99,10 @@ goes here first, with tests; the GUI only displays it.
   (stage 7's heavier reads on the host's own worker threads,
   `ReadWorkers`: FsRead's "files", Quick Open's list, and "search", Find
   in Folder, answered as they go and cancelled by "cancel", for the
-  browser's page; `search:*`), `DiskWatch`
+  browser's page; `search:*`), `SessionGit` (stage 9's first slice:
+  FsRead's "git", one git command a window over SSH asks its host to run
+  on a worker, held to the apps' subcommands and to the folder, Welcome
+  flag 256; `hostgit:*`), `DiskWatch`
   (stage 7's watching: the core's one platform interface for the disk's
   notices, inotify on Linux and FSEvents on the Mac, each on a thread or
   queue of its own behind a pipe the host polls, with the pure `Filter`,

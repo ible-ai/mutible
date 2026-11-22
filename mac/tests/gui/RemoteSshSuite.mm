@@ -88,6 +88,17 @@
 //     `false` queued then status 1, a half-typed line set aside while the
 //     app runs a command and given back at the next prompt (the pop key),
 //     `sh run.sh` run as Run File types it, the host ending with the window.
+//   - git over SSH (stage 9; skipped without git on this Mac): a window on
+//     a repository of its own there, a.txt changed after its first commit.
+//     Its host runs git for it (Welcome flag 256; the window's workspace
+//     counts the runs, since git run here on the same path would find the
+//     same repository): Source Control lists the change, has no Review
+//     Changes, and shows the branch, as do the status bar and the tree's
+//     change count; a.txt's change bar; a row opens its git diff; Stage and
+//     Commit, checked with git on the stand-in's disk; a change made there
+//     listed by the host's notice; a new file's discard refused; b.txt's
+//     Discard keeping its changed copy as a git object that git cat-file
+//     shows there; Fetch refused with nothing sent.
 //   - The connection drops (the stand-in's process group killed: the relay
 //     only), with the stand-in refusing to connect for a while: the window
 //     says it is reconnecting (its title, no Reconnect button), the text
@@ -109,6 +120,8 @@
 #import "EditorController+Private.h"
 #import "EditorTab.h"
 #import "FileTree.h"
+#import "GitGutter.h"
+#import "GitPanel.h"
 #import "PalettePanel.h"
 #import "RemoteConnect.h"
 #import "RemoteFileCache.h"
@@ -117,6 +130,7 @@
 #import "Search.h"
 #import "SessionLink.h"
 #import "SessionWindow.h"
+#import "StatusBranchItem.h"
 #import "Terminal.h"
 #import "TerminalGridView.h"
 #import "TerminalPanel.h"
@@ -170,6 +184,11 @@ NSUInteger gWindowsBefore;   // the windows before an address the open one holds
 NSString *gPng, *gPdf, *gHuge;   // files the viewers show through copies
 NSString *gCopies;               // the window's folder of copies
 NSUInteger gRefreshes;           // its copies refreshed before a change there
+NSString *gGit;                  // this Mac's git (the stand-in's machine's), nil when none
+NSString *gGitFolder;            // a repository there, with a window of its own
+EditorController *gGitC;
+NSUInteger gGitRunsBefore, gGitNoticesBefore;
+NSString *gKeptObject;           // the object Discard kept b.txt's changed copy as
 
 NSString *RealPath(NSString *path) {
     char buf[PATH_MAX];
@@ -388,6 +407,30 @@ void RunUntil(NSString *what, NSString *command, NSString *expect) {
     });
 }
 
+MCGitPanel *GitOf(EditorController *c) { return [c valueForKey:@"gitPanel"]; }
+NSInteger GitRow(EditorController *c, NSString *description) {
+    return (NSInteger)[[GitOf(c) rowDescriptions] indexOfObject:description];
+}
+BOOL GitRows(EditorController *c, NSArray<NSString *> *rows) {
+    return GitOf(c).inRepository && [[GitOf(c) rowDescriptions] isEqualToArray:rows];
+}
+NSUInteger GitRuns(EditorController *c) { return [c remoteWorkspace].gitRuns; }
+
+// git run on this Mac in the stand-in's folder (which is this Mac's): what
+// the other machine's disk and repository say, apart from the window.
+// `command` is read when the step runs.
+void GitThere(NSString *what, NSString * (^command)(void), void (^check)(int status, NSString *out)) {
+    MCGuiAsync(what, 30, ^(MCGuiDone done) {
+        if (!gGit || !gGitC) { done(); return; }
+        NSString *sh = [NSString stringWithFormat:@"cd '%@' && %@", gGitFolder, command()];
+        MCGuiRunProcess(@[ @"/bin/sh", @"-c", sh ], nil, ^(int st, NSString *out, NSString *err) {
+            if (st) MCGuiNote(@"git there: %@", err);
+            check(st, out ?: @"");
+            done();
+        });
+    });
+}
+
 }  // namespace
 
 MC_GUI_SUITE(remote_ssh) {
@@ -448,10 +491,11 @@ MC_GUI_SUITE(remote_ssh) {
             @"# sets up from its own scripts (build/'s copies).\n"
             @"if [ -s '%@' ]; then SHELL=\"$(cat '%@')\"; else SHELL=/bin/zsh; fi\n"
             @"export SHELL\n"
-            @"PATH='%@':$PATH\n"
+            @"PATH='%@':'%@':$PATH\n"
             @"export PATH\n"
             @"exec /bin/sh -c \"$*\"\n",
-            gArgs, gBlock, gTries, gPidFile, gSlow, gSlow, gShellFile, gShellFile, bin];
+            gArgs, gBlock, gTries, gPidFile, gSlow, gSlow, gShellFile, gShellFile, bin,
+            (MCGitExecutable() ?: @"/usr/bin/git").stringByDeletingLastPathComponent];
         MCGuiWriteFile(gSsh, script);
         chmod(gSsh.fileSystemRepresentation, 0755);
         MCSetEnv("MUTIBLE_SSH", gSsh.fileSystemRepresentation);
@@ -1516,6 +1560,180 @@ MC_GUI_SUITE(remote_ssh) {
         gBashC = nil;
     });
     MCGuiWait(@"its lasting host ends after its idle time", 30, ^BOOL { return !gBash || gBashHost <= 0 || Gone(gBashHost); });
+    // ---- git over SSH (stage 9): a window on a repository of its own
+    // there, whose Source Control, change bars, tree colors and branch come
+    // from git run by its host (Welcome flag 256), counted by the window's
+    // workspace, since the stand-in's folder is this Mac's and git run here
+    // would find the same repository. Checked on the stand-in's disk with
+    // git apart from the window.
+    MCGuiStep(@"git over SSH: a repository there with a commit", ^{
+        gGit = MCGitExecutable();
+        if (!gGit) {
+            MCGuiNote(@"no git on this Mac: the git over SSH checks skipped");
+            return;
+        }
+        [NSFileManager.defaultManager removeItemAtPath:gShellFile error:nil];   // zsh again
+        NSString *made = [MCGuiScratch() stringByAppendingPathComponent:@"remote-git"];
+        [NSFileManager.defaultManager createDirectoryAtPath:made withIntermediateDirectories:YES attributes:nil error:nil];
+        gGitFolder = RealPath(made);
+        MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"a.txt"], @"one\ntwo\nthree\n");
+        MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"b.txt"], @"bee\n");
+    });
+    MCGuiAsync(@"git init, add, commit there", 30, ^(MCGuiDone done) {
+        if (!gGit) { done(); return; }
+        NSString *sh = [NSString stringWithFormat:@"cd '%@' && '%@' init -q -b main && '%@' add -A && '%@' commit -qm first",
+                                                  gGitFolder, gGit, gGit, gGit];
+        MCGuiRunProcess(@[ @"/bin/sh", @"-c", sh ], nil, ^(int st, NSString *, NSString *err) {
+            GCHECK(st == 0);
+            if (st) {
+                MCGuiNote(@"git: %@", err);
+                gGit = nil;
+            }
+            done();
+        });
+    });
+    MCGuiStep(@"a.txt changed there; ssh://standin/<repo>/a.txt", ^{
+        if (!gGit) return;
+        MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"a.txt"], @"one\nTWO\nthree\n");
+        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"ssh://standin%@/a.txt", gGitFolder]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+    });
+    MCGuiWait(@"connected", 20, ^BOOL { return !gGit || MCRemoteConnect.pending.count == 0; });
+    MCGuiStep(@"its window runs git on its host; Ctrl+Shift+G", ^{
+        if (!gGit) return;
+        GCHECK(NewAlerts().count == 0);
+        gGitC = RemoteWindowOn(gGitFolder);
+        GCHECK(gGitC != nil);
+        if (!gGitC) { gGit = nil; return; }
+        GCHECK([gGitC sessionRemoteLink].link->client().hostRunsGit());
+        GCHECK(GitOf(gGitC).overSshHost.length > 0);
+        GCHECK(MCGuiPerformMenuKey(gGitC.window, 5, NSEventModifierFlagControl | NSEventModifierFlagShift, nil, nil));
+        GCHECK([[gGitC valueForKey:@"gitPanelVisible"] boolValue]);
+    });
+    MCGuiWait(@"the panel lists the change, from git run by the host", 20, ^BOOL {
+        return !gGit || (GitRows(gGitC, @[ @"# Changes  1", @"W M a.txt" ]) && GitRuns(gGitC) > 0);
+    });
+    MCGuiStep(@"no Review Changes over SSH (it reads this Mac's disk)", ^{
+        if (!gGit) return;
+        GCHECK(![[GitOf(gGitC) valueForKey:@"reviewButtonShown"] boolValue]);
+    });
+    MCGuiWait(@"the branch in the panel and the status bar, and the tree's colors", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCStatusBranchItem *b = [gGitC valueForKey:@"statusBranchItem"];
+        return [GitOf(gGitC).branchText containsString:@"main"] && !b.hidden &&
+               [b.nameButton.title hasPrefix:@"main"] && [gGitC treeGitChangeCount] == 1;
+    });
+    MCGuiWait(@"a change bar on a.txt, against the index there", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCGitGutter *bars = [gGitC valueForKey:@"gitGutter"];
+        return [gGitC.currentPath isEqualToString:[gGitFolder stringByAppendingPathComponent:@"a.txt"]] &&
+               bars.barCount == 1 && [bars.barDescriptions.firstObject hasPrefix:@"modified 1+1"];
+    });
+    MCGuiStep(@"a row opens its git diff (no review page over SSH)", ^{
+        if (!gGit) return;
+        [GitOf(gGitC) reviewRow:GitRow(gGitC, @"W M a.txt") preview:YES];
+    });
+    MCGuiWait(@"the diff, run there", 15, ^BOOL {
+        if (!gGit) return YES;
+        NSTextView *diff = [gGitC valueForKey:@"diffView"];
+        return [[gGitC valueForKey:@"isDiff"] boolValue] && [[gGitC valueForKey:@"diffName"] isEqualToString:@"a.txt"] &&
+               [diff.string containsString:@"+TWO"] &&
+               [diff.string containsString:@"-two"];
+    });
+    MCGuiStep(@"stage a.txt", ^{
+        if (!gGit) return;
+        gGitRunsBefore = GitRuns(gGitC);
+        [GitOf(gGitC) toggleStageAtRow:GitRow(gGitC, @"W M a.txt")];
+    });
+    MCGuiWait(@"staged, by the host", 15, ^BOOL {
+        return !gGit || (GitRows(gGitC, @[ @"# Staged changes  1", @"S M a.txt" ]) && GitRuns(gGitC) > gGitRunsBefore);
+    });
+    GitThere(@"git there says a.txt is staged", ^NSString * { return @"git diff --cached --name-only"; },
+             ^(int st, NSString *out) {
+                 GCHECK(st == 0);
+                 GCHECK_EQ_STR(out, @"a.txt\n");
+             });
+    MCGuiStep(@"commit with a message", ^{
+        if (!gGit) return;
+        GitOf(gGitC).messageView.string = @"second, over ssh";
+        [GitOf(gGitC) commit];
+    });
+    MCGuiWait(@"committed: nothing left to list", 20, ^BOOL {
+        return !gGit || (GitOf(gGitC).inRepository && [GitOf(gGitC) rowDescriptions].count == 0);
+    });
+    GitThere(@"git there has the commit, and nothing changed", ^NSString * {
+        return @"git log -1 --format=%s && git status --porcelain";
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"second, over ssh\n");
+    });
+    MCGuiWait(@"the change bar gone, the tree's colors too", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCGitGutter *bars = [gGitC valueForKey:@"gitGutter"];
+        return bars.barCount == 0 && [gGitC treeGitChangeCount] == 0;
+    });
+    MCGuiStep(@"b.txt changed there, and a new file", ^{
+        if (!gGit) return;
+        gGitNoticesBefore = [gGitC remoteWorkspace].gitNotices;
+        MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"b.txt"], @"bee two\n");
+        MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"new.txt"], @"new\n");
+    });
+    MCGuiWait(@"listed by the host's notice, no refresh asked", 20, ^BOOL {
+        return !gGit || ([gGitC remoteWorkspace].gitNotices > gGitNoticesBefore &&
+                         GitRows(gGitC, @[ @"# Changes  2", @"W M b.txt", @"W U new.txt" ]));
+    });
+    MCGuiStep(@"discarding the new file is refused (no Trash there)", ^{
+        if (!gGit) return;
+        [GitOf(gGitC) discardAtRow:GitRow(gGitC, @"W U new.txt")];
+        GCHECK([GitOf(gGitC).errorLine containsString:@"not tracked by git"]);
+        GCHECK(Exists([gGitFolder stringByAppendingPathComponent:@"new.txt"]));
+    });
+    MCGuiStep(@"Discard Changes on b.txt: its changed copy kept as a git object there", ^{
+        if (!gGit) return;
+        MCGuiAnswerAlerts(@[ @(NSAlertFirstButtonReturn) ]);
+        [GitOf(gGitC) discardAtRow:GitRow(gGitC, @"W M b.txt")];
+    });
+    MCGuiWait(@"discarded there", 20, ^BOOL {
+        return !gGit || ([Read([gGitFolder stringByAppendingPathComponent:@"b.txt"]) isEqualToString:@"bee\n"] &&
+                         [GitOf(gGitC).errorLine containsString:@"git object"]);
+    });
+    MCGuiStep(@"the object named, and no Undo Discard", ^{
+        if (!gGit) return;
+        NSString *line = GitOf(gGitC).errorLine;
+        MCGuiNote(@"said: %@", line);
+        NSRange r = [line rangeOfString:@"git object "];
+        GCHECK(r.location != NSNotFound);
+        if (r.location != NSNotFound && NSMaxRange(r) + 12 <= line.length)
+            gKeptObject = [line substringWithRange:NSMakeRange(NSMaxRange(r), 12)];
+        GCHECK(GitOf(gGitC).undoDiscardTitle == nil);
+    });
+    GitThere(@"git there shows the kept copy", ^NSString * {
+        return [NSString stringWithFormat:@"git cat-file -p %@", gKeptObject ?: @"none"];
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"bee two\n");
+    });
+    MCGuiStep(@"Fetch says it does not work over SSH yet", ^{
+        if (!gGit) return;
+        gGitRunsBefore = GitRuns(gGitC);
+        [GitOf(gGitC) fetch];
+        GCHECK([GitOf(gGitC).errorLine containsString:@"do not work in a window over SSH yet"]);
+        GCHECK(GitRuns(gGitC) == gGitRunsBefore);
+    });
+    MCGuiStep(@"its window closes", ^{
+        if (!gGit) return;
+        // The one alert is Discard's own question, which the check answered;
+        // closing asks nothing.
+        GCHECK([NewAlerts() isEqualToArray:@[ @"Discard the changes to b.txt?" ]]);
+        if (NewAlerts().count != 1) MCGuiNote(@"alerts in this suite: %@", NewAlerts());
+        [gGitC.window performClose:nil];
+        gGitC = nil;
+    });
+    MCGuiWait(@"gone", 10, ^BOOL { return !gGit || RemoteWindowOn(gGitFolder) == nil; });
+    MCGuiStep(@"closing asked nothing", ^{
+        if (!gGit) return;
+        GCHECK(NewAlerts().count == 1);
+    });
     MCGuiStep(@"nothing left", ^{
         // The suite's own, by their recorded pids.
         if (gHostB > 0 && !Gone(gHostB)) kill(-gHostB, SIGKILL);

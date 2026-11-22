@@ -60,6 +60,8 @@ core_sources = [
   core_dir / 'SqliteRead.cpp',
   core_dir / 'SessionFiles.cpp',
   core_dir / 'SessionSearch.cpp',
+  # A window over SSH's git, run by the host (stage 9).
+  core_dir / 'SessionGit.cpp',
   # The host watches the disk (stage 7): inotify, behind the core's one
   # platform interface for it.
   core_dir / 'DiskWatch.cpp',

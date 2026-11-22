@@ -460,6 +460,72 @@ setprop log.tag.MutibleGit DEBUG` on Android.
   compound or unusual forms are refused (even a filename containing "git"); use
   plain `cd x && git ...` lines or a script file.
 
+## Over SSH (stage 9, the Mac; 2026-11-22)
+
+A window over SSH (`mutible ssh://host/path`, docs/notes/session-host.md,
+"Git over SSH") runs its git on the other machine, through its host:
+Source Control's status list, the diffs a row opens, stage and unstage
+(rows and hunks), commit, amend, undo last commit, stash, switching
+branches and Discard; the change bars; the tree's colors and the status
+bar's branch. Before, all of these ran this Mac's git against a path only
+the other machine has, and showed nothing (or, where the paths happened to
+coincide, the wrong repository).
+
+- **The seam is the queue** (GitPanel.h's `MCGitRunner`,
+  `MCGitSetQueueRunner`, `MCGitOnHost`): every git the panel, the change
+  bars (MCGitGutter) and the tree colors (MCTreeGitColors) run goes
+  through `MCGitRun`, each on a serial queue of its own; a queue given a
+  runner (`dispatch_queue_set_specific`) sends what runs on it to the
+  runner instead of spawning git. So their code and the core's parsing
+  run unchanged. The runner is `MCRemoteWorkspace gitRunner`
+  (RemoteWorkspace.mm): on the queue it hands the request to the main
+  queue (`Link::git`, `Client::requestGit`: FsRead "git", SessionGit.h)
+  and waits on a semaphore for the answer, which `Link::pumpGits` delivers
+  inside the link's dispatch; never on the main thread (it would wait on
+  itself). A host without Welcome flag 256 gets nothing sent: the result
+  is status -1 with `Shared::gitTooOldText` ("Source Control needs a newer
+  mutible on host:path ..."), which the panel shows as its error line, as
+  the lost connection's `gitLostText`. Fetch, pull, push (and autofetch)
+  are refused before anything is sent (`gitRemoteOpText`), and the panel's
+  `runSync:` says so itself.
+- **The window** (EditorController+Git.mm `useHostGit`, +Remote.mm,
+  +Tree.mm `watchGitOnHost:`): the panel and the gutter get the runner as
+  they are made (`ensureGitPanel`), the tree colors from
+  `startRemoteWorkspace`; the host's FsChanged with `"git": true` (its
+  watch sees the folder and .git's index, HEAD and refs) calls
+  `gitChangedOnHost`: the colors look again (`lookSoon`), the panel
+  refreshes while shown, and the bars look again. Reconnect does the same.
+- **What differs over SSH.** The panel (`overSshHost`) hides Review
+  Changes and sets no `onReview`/`onReviewCommit`: the review page reads
+  the work tree and pictures from this Mac's disk, so a row opens its raw
+  `git diff` and a commit its `git show` in the diff tab (hunk actions
+  work there); `showChangeReviewAt:` refuses over SSH. Discard uses
+  `GitUi::discardPlanOverSsh` (and the batch and hunk forms): no Trash
+  there, so the changed copy is kept as a git object first
+  (`keepCopyArgs`: `hash-object -w --no-filters`) and named in what is
+  said (`keptCopiesText`), with no Undo Discard; a file git does not track
+  is refused (discarding it would delete it). The gutter
+  (`sourceOverSshFor:`) takes the file's path in its repository from
+  `rev-parse --show-prefix` there, not this Mac's realpath, asks the index
+  entry every look (one `ls-files`, the blob again only when its object
+  changed) instead of the index file's stat, and watches no folder here.
+  The tree colors take the folder as the host spells it (no realpath).
+- **Not done.** The review page and the commit page over SSH (their reads
+  would need the work tree through the host), fetch, pull and push
+  (credentials there), line history (EditorLineHistory), and the agents'
+  worktree pages; GTK's window over SSH (its git runs through
+  linux/src/GitRun.cpp's `runGitWithin`, on each object's git thread: the
+  same request would go there, see session-host.md's note for GTK).
+- **Checks.** Core: `hostgit:args`, `:dir`, `:words`, `:run`, `:wire`
+  (tests/session_git_tests.inc). GUI: remote_ssh's git block (a window on
+  a repository of its own through the stand-in; the panel lists the
+  change through the host, `gitRuns` counted, no Review Changes, the
+  branch in the panel and the status bar, the tree's change count, a bar
+  on the changed line, a row's diff, stage and commit checked with git on
+  the stand-in's disk, a change there listed by the host's notice, an
+  untracked discard refused, a discard keeping its copy as an object that
+  `git cat-file -p` shows, Fetch refused with nothing sent).
+
 ## Traps
 
 Each trap's first sentence, in the order it appears above; the whole
@@ -472,3 +538,4 @@ text is in place in its section.
 - Git panel (all three ports): **Apply to Main checks and applies the same files** (round 10's defect 6, 2026-11-19): the check ran on the page's read and the apply on a fresh `git diff <base>` with no pathspec, so a file the agent changed after the read was patched into main over the user's own edit, unchecked, and an untracked file made since was dropped; the apply reads the worktree again and refuses anything new, checks main again, and holds the diff to the paths asked about. And after `apply --3way` a rename is one status entry: restoring only its new path left the source's deletion staged; unstage `origPath` too.
 - Git panel (all three ports): **A refusal's note settles on the read after it** (2026-11-19, main's CI after #245): a worktree page settled every note on the read on show, but a refused Apply to Main asks the user to look over the read that follows (it shows the file changed since), so that read took the note away; `_noteSettlesOnNextRead` settles a refusal's note on the next read. In a check, wait for the read that shows the change (its row), never for any later read: one started before the write can land first.
 - Git panel (Mac checks): **`isDiff` is not "the diff tab is on show"** (2026-11-21, git_panel FLAKY on #319 and red on 1.6.7's commit): every tab in the editor's slot that is not a file sets it, the review page and a comparison included, and `showDiffAtRow:` runs `git diff` on the panel's queue before the diff tab replaces what is in front. A wait on `isDiff` after the steps had kept a review page passed at once, and the next step read the review page's title whenever git took longer than about 20 ms (a loaded runner). Wait for the diff itself: the suite's `ShowsDiffOf(c, name)` (no page, no comparison, not a commit, `diffName` is the file).
+- Over SSH (the Mac): **the stand-in's folder is this Mac's**, so a git run here on the window's path would find the same repository and every check would pass with the routing broken; remote_ssh counts the host's runs (`MCRemoteWorkspace gitRuns`) and checks git's results on that disk apart from the window. And **a runner never waits on the main thread**: `Link::git`'s answer is delivered there, so the runner refuses to run on it rather than hang.

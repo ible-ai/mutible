@@ -539,6 +539,12 @@ typedef NS_ENUM(NSInteger, MCPane) { MCPaneNone, MCPaneEditor, MCPaneBrowser, MC
 - (void)revealPath:(NSString *)path open:(BOOL)open from:(EditorTabs::OpenFrom)from;
 - (void)startWatching:(NSString *)path;
 - (void)stopWatching;
+// The rows' git colors and the status bar's branch: made once; over SSH
+// from git run on the host (watchGitOnHost:), looking again when the host
+// says git may have changed (treeGitChangedOnHost).
+- (void)ensureTreeGitColors;
+- (void)watchGitOnHost:(MCGitRunner)runner;
+- (void)treeGitChangedOnHost;
 - (void)reloadTreeKeepingState:(BOOL)rescan;
 - (void)treeFoldersChangedOnDisk:(NSArray<NSString *> *)paths subtree:(NSArray<NSNumber *> *)subtree;
 - (void)listChangedTreeFolders;
@@ -851,6 +857,9 @@ extern NSUInteger MCDirtyFromHostMarks;
 - (void)remoteWorkspaceMovedToLink;
 // The window's MCRemoteWorkspace, nil on this Mac.
 - (MCRemoteWorkspace *)remoteWorkspace;
+// git for the window run by its host (stage 9: Source Control, the change
+// bars, the tree's colors, the branch), nil on this Mac.
+- (MCGitRunner)hostGitRunner;
 // The tree listed, opened or closed folders: the host is told which to
 // watch (on the main queue's next turn, once).
 - (void)remoteTreeFoldersChanged;
@@ -999,6 +1008,11 @@ extern NSUInteger MCDirtyFromHostMarks;
 // The window's review page and commit page, new, with their hooks.
 - (MCChangeReviewPage *)newChangeReviewPage;
 - (MCChangeReviewPage *)newCommitReviewPage;
+// A window over SSH (stage 9): Source Control and the change bars run git
+// on the host (hostGitRunner), once both exist; and the host said git may
+// have changed, so the panel, the bars and the tree's colors look again.
+- (void)useHostGit;
+- (void)gitChangedOnHost;
 @end
 
 @interface EditorController (Persistence)

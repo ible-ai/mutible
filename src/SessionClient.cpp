@@ -979,6 +979,21 @@ std::uint64_t Client::requestFileOp(std::uint64_t window, Json request) {
     return req;
 }
 
+std::uint64_t Client::requestGit(std::uint64_t window, Json request, std::string input) {
+    if (!hostRunsGit()) return 0;
+    Message m;
+    m.kind = Kind::FsRead;
+    m.window = window;
+    m.json = std::move(request);
+    m.json.set("op", Json("git"));
+    m.bytes = std::move(input);
+    m.req = ++nextReq_;
+    const std::uint64_t req = m.req;
+    queue(std::move(m));   // behind this renderer's edits and saves
+    pump();
+    return req;
+}
+
 bool Client::readAnswer(std::uint64_t req, Json* out, std::string* bytes) {
     auto it = replies_.find(req);
     if (it == replies_.end() || it->second.kind != Kind::FsData) return false;

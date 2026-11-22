@@ -487,7 +487,7 @@ namespace {
 // ------------------------------------------------------------------ git
 
 ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::string>& args,
-                            const std::string& input, int timeoutMs) {
+                            const std::string& input, int timeoutMs, const std::atomic<bool>* cancel) {
     ChangeReview::GitOut r;
     // stdin: the input in an unlinked scratch file (no pipe to fill, and no
     // SIGPIPE when git exits before reading it), else /dev/null.
@@ -583,7 +583,8 @@ ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::strin
     std::string* sinks[2] = {&r.out, &r.err};
     char buf[65536];
     while (fds[0] >= 0 || fds[1] >= 0) {
-        if (!termed && (msLeft(deadline) <= 0 || r.out.size() > kMaxOut)) {
+        const bool stopped = cancel && cancel->load();
+        if (!termed && (stopped || msLeft(deadline) <= 0 || r.out.size() > kMaxOut)) {
             ::killpg(pid, SIGTERM);
             termed = true;
             killAt = Clock::now() + std::chrono::seconds(2);
@@ -601,7 +602,9 @@ ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::strin
                 p[n] = pollfd{fds[i], POLLIN, 0};
                 which[n++] = i;
             }
-        const long long wait = termed ? 100 : std::max(1LL, std::min(1000LL, msLeft(deadline)));
+        // A cancel is looked at every tenth of a second.
+        const long long most = cancel ? 100LL : 1000LL;
+        const long long wait = termed ? 100 : std::max(1LL, std::min(most, msLeft(deadline)));
         const int got = ::poll(p, n, (int)wait);
         if (got < 0 && errno == EINTR) continue;
         for (nfds_t k = 0; k < n; k++) {
@@ -623,9 +626,11 @@ ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::strin
     while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
     if (termed) {
         r.ok = false;
-        r.err = r.out.size() > kMaxOut ? "git wrote more than this page reads."
-                                       : "git did not answer within " + std::to_string(timeoutMs / 1000) +
-                                             " seconds.";
+        r.timedOut = true;
+        r.err = r.out.size() > kMaxOut       ? "git wrote more than this page reads."
+                : cancel && cancel->load() ? "git was stopped."
+                                           : "git did not answer within " + std::to_string(timeoutMs / 1000) +
+                                                 " seconds.";
         r.out.clear();
         return r;
     }

@@ -120,6 +120,7 @@ std::string RealPath(NSString *p) {
     GitUi::IndexEntry _entry;
     NSPopover *_popover;
     NSInteger _popoverBar;
+    BOOL _overSsh;                     // git runs on the other machine (useGitRunner:)
 }
 
 - (instancetype)initWithHost:(id<MCGitGutterHost>)host {
@@ -150,12 +151,20 @@ std::string RealPath(NSString *p) {
     _watch = nil;
 }
 
+- (void)useGitRunner:(MCGitRunner)runner {
+    MCGitSetQueueRunner(_queue, runner);
+    _overSsh = runner != nil;
+    _source = nil;   // read again, the other machine's way
+    _watch = nil;
+    [self refreshSoon];
+}
+
 // Watch `gitDir` (empty: nothing); `indexStamp` is the index as the look
 // read it, so a change made since is caught at the first event.
 - (void)watchGitDir:(const std::string &)gitDir indexStamp:(Stamp)indexStamp {
     if (_watch && _watch->dir == gitDir) return;
     _watch = nil;
-    if (gitDir.empty()) return;
+    if (gitDir.empty() || _overSsh) return;   // over SSH: the host's notices
     const int fd = open(gitDir.c_str(), O_EVTONLY | O_CLOEXEC);
     if (fd < 0) return;
     dispatch_source_t source = dispatch_source_create(
@@ -257,7 +266,7 @@ std::string RealPath(NSString *p) {
     id<MCGitGutterHost> host = _host;
     MCLineGutter *g = host.gitGutterView;
     CodeTextView *tv = host.gitGutterTextView;
-    NSString *path = [AppSettings shared].settings.gitGutter() && MCGitExecutable()
+    NSString *path = [AppSettings shared].settings.gitGutter() && (_overSsh || MCGitExecutable())
                          ? host.gitGutterPath : nil;
     const NSUInteger gen = ++_generation;
     _looks++;
@@ -272,9 +281,11 @@ std::string RealPath(NSString *p) {
     const bool bom = [host gitGutterHasBom];
     const auto encoding = (FolderSearch::TextEncoding)[host gitGutterEncoding];
     MCGitGutterSource *previous = _source;
+    const BOOL overSsh = _overSsh;
     __weak MCGitGutter *weakSelf = self;
     dispatch_async(_queue, ^{
-        MCGitGutterSource *src = [MCGitGutter sourceFor:path previous:previous];
+        MCGitGutterSource *src = overSsh ? [MCGitGutter sourceOverSshFor:path previous:previous]
+                                         : [MCGitGutter sourceFor:path previous:previous];
         std::vector<QuickDiff::Bar> bars;
         QuickDiff::Original original;
         if (src->hasOriginal) {
@@ -337,6 +348,47 @@ std::string RealPath(NSString *p) {
     if (!ls.ok) return s;
     s->entry = GitUi::parseIndexEntry(Bytes(ls.output));
     if (!s->entry.ok) return s;   // untracked, a conflict, a link, a submodule
+    MCGitResult *blob = MCGitRunSync(top, Args(GitUi::blobArgs(s->entry.object)));
+    if (!blob.ok) return s;
+    s->blob = Bytes(blob.output);
+    s->hasOriginal = true;
+    return s;
+}
+
+// Over SSH, off the main thread, on the queue (whose runner is the host's):
+// the file's repository and path from git there, and its index entry each
+// time, the blob read again only when the entry names another object.
++ (MCGitGutterSource *)sourceOverSshFor:(NSString *)path previous:(MCGitGutterSource *)previous {
+    const std::string want = path.UTF8String ?: "";
+    MCGitGutterSource *s = [MCGitGutterSource new];
+    s->path = want;
+    if (previous && previous->path == want) {
+        s->top = previous->top;
+        s->gitDir = previous->gitDir;
+        s->rel = previous->rel;
+        s->inRepository = previous->inRepository;
+        if (!s->inRepository) return s;
+    } else {
+        NSString *dir = path.stringByDeletingLastPathComponent;
+        MCGitResult *r = MCGitRunSync(dir, Args(GitUi::topLevelArgs()));
+        if (!r.ok || !GitUi::parseTopLevel(Bytes(r.output), s->top, s->gitDir)) return s;
+        MCGitResult *p = MCGitRunSync(dir, @[@"rev-parse", @"--show-prefix"]);
+        if (!p.ok) return s;
+        std::string prefix = Bytes(p.output);
+        while (!prefix.empty() && (prefix.back() == '\n' || prefix.back() == '\r')) prefix.pop_back();
+        s->rel = prefix + (path.lastPathComponent.UTF8String ?: "");
+        s->inRepository = true;
+    }
+    NSString *top = [NSString stringWithUTF8String:s->top.c_str()];
+    MCGitResult *ls = MCGitRunSync(top, Args(GitUi::indexEntryArgs(s->rel)));
+    if (!ls.ok) return s;
+    s->entry = GitUi::parseIndexEntry(Bytes(ls.output));
+    if (!s->entry.ok) return s;   // untracked, a conflict, a link, a submodule
+    if (previous && previous->path == want && previous->hasOriginal && previous->entry.object == s->entry.object) {
+        s->blob = previous->blob;
+        s->hasOriginal = true;
+        return s;
+    }
     MCGitResult *blob = MCGitRunSync(top, Args(GitUi::blobArgs(s->entry.object)));
     if (!blob.ok) return s;
     s->blob = Bytes(blob.output);

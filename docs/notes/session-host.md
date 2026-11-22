@@ -4630,6 +4630,76 @@ ivars: its state is an associated `MCRemoteFileCache`),
   `viewerPathOf:`. A method named `copy...` is in ARC's copy family (its
   result taken as retained), hence `localPathOf:` and `localCopyOf:`.
 
+#### Git over SSH (2026-11-22, stage 9's first slice, Welcome flag 256)
+
+A window over SSH had no Source Control: its panel, change bars, tree
+colors and branch ran this Mac's git on a path only the other machine has.
+Now the host runs git for it. Core: `src/SessionGit.{h,cpp}`; the Mac's
+side is in docs/notes/git.md, "Over SSH".
+
+- **One request** (FsRead "git", SessionGit.h): `{"op": "git", "dir",
+  "args", "timeout"}` with the command's standard input as the message's
+  `bytes`, answered by one FsData `{"op": "git", "ok", "status", "err",
+  "timedOut"}` with standard output as the `bytes` (base64 on the wire, so
+  blobs and patches cross whole), or `{"op": "git", "error", "reason"}`
+  when not run (`args`, `remote`, `outside`, `missing`, `readonly`,
+  `busy`). An argument vector, where the apps already spawn git, so their
+  parsing (GitStatus, GitModel, QuickDiff) is reused unchanged; narrower
+  requests (status, diff, show) would have meant a second code path in
+  every caller. `Client::requestGit` queues it behind the renderer's edits
+  and saves (a commit after Cmd+S sees the saved file), and sends nothing
+  to a host without flag 256 (`hostRunsGit`).
+- **On a worker** (`Host::onGit`, `ReadWorkers::startTask`, answers with
+  bytes now): never on the host's thread; at most `kMaxGitJobs` (16)
+  reads and tasks at once, one past that refused `busy`. `runGit`
+  (SessionWebGit.h) runs it: `git -C dir`, no shell, its own process
+  group, stdin from an unlinked scratch file, GIT_OPTIONAL_LOCKS=0, no
+  prompt, no editor, GIT_DIR and friends dropped; the request's time limit
+  (else `Git::timeoutFor`, at most 600 s), and now a `cancel` flag (the
+  worker's: the renderer went, or the host ends) that stops it within a
+  tenth of a second; `GitOut::timedOut` is new.
+- **Held to what the apps run** (`gitArgsRefusal`): global options only
+  `--literal-pathspecs` and `-c` with core.quotePath or log.showSignature
+  (no `-C`, `--git-dir`, `-c core.sshCommand=...`); the subcommands the
+  panel, the change bars, the tree colors, the review and line history
+  use; `reset` without --hard, --merge or --keep, `rm` only with
+  --cached, `switch` without -f, `stash` push, pop, list or show,
+  `worktree list`, `remote` names only; no `--output`, `--exec`,
+  `--upload-pack`, `--ext-diff`, `--unsafe-paths` anywhere before "--";
+  `diff --no-index` only between /dev/null and relative paths without
+  "..". Fetch, pull, push, ls-remote, clone and submodule are refused
+  (`remote`) with "Fetch, pull and push do not work in a window over SSH
+  yet ...". Folder (`gitDirAllowed`): `dir` resolved on the host must be
+  the session's folder, inside it, or the top level of the repository the
+  folder is in (asked of git in the folder only when `dir` is outside it),
+  so a link out of the folder leads nowhere. Not a wall against the
+  renderer, which may already run a shell there; it keeps an app's mistake
+  inside the folder. Refused from a reader and from a guest (`readonly`):
+  a page has its own reads (SessionWebGit.h).
+- **Refreshing.** The host's watch already says `"git": true` in FsChanged
+  for a write in the folder or in .git's index, HEAD or refs; the Mac's
+  `MCRemoteWorkspace` now hears it (`onGitChanged`, `gitNotices`).
+- **For GTK** (not done): GTK's Source Control, change bars and tree
+  colors each run git on a thread of their own through
+  linux/src/GitRun.cpp's `runGitWithin`. A GTK window over SSH needs the
+  same seam there: when the window is remote, `runGitWithin` (or a
+  per-object runner it is given) sends `Shared::gitRequest` through
+  `Client::requestGit` on the main loop and waits on that thread for the
+  answer (`readAnswer` with bytes, `gitReplyFrom` into a GitResult), the
+  window hears FsChanged's `git`, and its Discard uses
+  `GitUi::discardPlanOverSsh` and `keepCopyArgs`. The texts
+  (`gitTooOldText`, `gitLostText`, `gitRemoteOpText`) are shared.
+- **Checks.** `hostgit:args` (every argument vector the apps build passes,
+  each refusal above refused, fetch, pull and push in words), `:dir`,
+  `:words` (the Discard plans and texts over SSH), `:run` (a real
+  repository: status, a relative dir and "", stdin and stdout, a failure's
+  status and words, every refusal reason, a link out, a folder below the
+  top level run at the top level and nowhere else of the repository, a
+  cancel), `:wire` (through the encoding: binary stdin and stdout, stage,
+  commit, git log there, a refusal, a guest and a reader refused, an older
+  host's Welcome sending nothing). GUI: remote_ssh's git block (docs/notes/
+  git.md). Not run here: CI runs it.
+
 ### Still to do
 
 - **Stage 8, after the fourth slice** (in order of value): open clean tabs following the remote
@@ -4644,7 +4714,7 @@ ivars: its state is an associated `MCRemoteFileCache`),
   app, or a window closed while disconnected, left on the lasting host
   (closing a connected window closes what it had there, but those leave it
   until the idle time, or for good while it is unsaved or running); the first connection and Reconnect off the main
-  thread too (only the automatic tries are); then stage 9 (git, servers, formatters, agents)
+  thread too (only the automatic tries are); then the rest of stage 9 (git is started: "Git over SSH" above; servers, formatters, agents)
   and the parts left out above (ports for the browser pane, Finder drags,
   Quick Look).
 - **Stage 7, after the watching, the Mac's and GTK's saves, Quick Open and

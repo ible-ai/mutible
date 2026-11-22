@@ -377,9 +377,8 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
     [self checkTabsOnDisk];   // a tab's file moved or deleted in the terminal
 }
 
-- (void)startWatching:(NSString *)path {
-    [self stopWatching];
-    if (!path) return;
+// The rows' git colors and the status bar's branch, made once.
+- (void)ensureTreeGitColors {
     if (!_gitColors) {
         _gitColors = [MCTreeGitColors new];
         __weak EditorController *weakSelf = self;
@@ -398,6 +397,27 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
             [s showStatusBranchName:b.shown ? ns(b.name) : nil counts:ns(b.counts) tip:ns(b.tip)];
         };
     }
+}
+
+// A window over SSH (stage 9): the tree's git colors and the status bar's
+// branch from git run on the other machine (RemoteWorkspace.h's
+// gitRunner), its notices (treeGitChangedOnHost) in place of FSEvents.
+- (void)watchGitOnHost:(MCGitRunner)runner {
+    if (!runner || !_root.path) return;
+    [self ensureTreeGitColors];
+    [_gitColors setRoot:nil];
+    [_gitColors useGitRunner:runner];
+    [_gitColors setRoot:_root.path];
+}
+
+- (void)treeGitChangedOnHost {
+    [_gitColors lookSoon];
+}
+
+- (void)startWatching:(NSString *)path {
+    [self stopWatching];
+    if (!path) return;
+    [self ensureTreeGitColors];
     [_gitColors setRoot:path];
     FSEventStreamContext ctx = {0, (__bridge void *)self, NULL, NULL, NULL};
     CFStringRef cfPath = (__bridge CFStringRef)path;

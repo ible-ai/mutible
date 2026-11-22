@@ -304,6 +304,14 @@ public:
     // answered by readAnswer(req, &json) as any read, {"ok": true, ...} or
     // {"error", "reason"}.
     std::uint64_t requestFileOp(std::uint64_t window, Json request);
+    // Whether the host runs git for an app's window (its Welcome's flag 256,
+    // SessionGit.h): a window over SSH's Source Control.
+    bool hostRunsGit() const { return (hostFlags_ & 256) != 0; }
+    // One git command on the host (SessionGit.h's gitRequest as `request`,
+    // `input` its standard input), queued behind this renderer's edits and
+    // saves. 0, sending nothing, when the host does not (hostRunsGit).
+    // Answered by readAnswer(req, &json, &bytes): gitReplyFrom reads it.
+    std::uint64_t requestGit(std::uint64_t window, Json request, std::string input);
     // A guest's Save As: the document written to `rel` ('/'-separated from
     // `window`'s folder, which it must be held inside: SessionFiles.h's
     // newFilePath, with dotfiles only when `hidden`), after every edit this

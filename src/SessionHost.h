@@ -112,6 +112,11 @@
 // readsFd() and calls takeReads(), which sends what the workers answered.
 // The Welcome says the host takes them (flag 8).
 //
+// A window's git (stage 9, SessionGit.h, Welcome flag 256): FsRead's "git"
+// runs one git command for an app's window on another machine (the Mac
+// over SSH) on a worker the same way, its answer git's status, standard
+// error and (as the bytes) standard output.
+//
 // A page's writes (stage 7, Welcome flag 16): a guest's New File is an
 // untitled document the host keeps (DocOpen flag 2, Doc::fromPage, dropped
 // while empty once nobody has it); its Save As names the document's file
@@ -438,6 +443,10 @@ private:
     // {path, from, moved: true} to every renderer that hears DocDirty), those
     // under a deleted one marked gone as a file deleted on disk is.
     void onFileOp(ClientId c, Message& m);
+    // A window's git (FsRead's "git", SessionGit.h): run on a worker in the
+    // session's folder, its one answer with git's output as the bytes;
+    // refused from a renderer that only reads and from a guest.
+    void onGit(ClientId c, Message& m);
     // A page's Save As (DocSave with "saveAs"): the document's file named
     // anew, inside the session's folder, written, and its path changed.
     void onSaveAs(ClientId c, Message& m);
