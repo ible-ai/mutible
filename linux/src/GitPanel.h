@@ -57,6 +57,16 @@ public:
 
     GtkWidget* widget() const { return root_; }
 
+    // A window over SSH (stage 9, docs/notes/session-host.md): its git runs
+    // on the other machine through `runner` (GitRun.h), `label` its
+    // "host:path". Called once, before the first look. There the review pages
+    // (which read the work tree from this disk), fetch, pull and push, the
+    // Trash and the repository's watching are off: the host's notices
+    // (RemoteWorkspace::onGit) have it look again, and Discard keeps the
+    // changed copy as a git object there (GitUi::discardPlanOverSsh).
+    void setHost(GitRunnerPtr runner, const std::string& label);
+    bool overSsh() const { return (bool)runner_; }
+
     // Open Folder: forget everything and look again.
     void setRoot(const std::string& root);
     const std::string& root() const { return rootDir_; }
@@ -344,6 +354,8 @@ private:
     static void drawGraphRow(GtkDrawingArea*, cairo_t*, int w, int h, gpointer self);
 
     std::string rootDir_;
+    GitRunnerPtr runner_;                // over SSH: the host's git
+    std::string hostLabel_;
     bool active_ = false;
     bool reviewOpen_ = false;            // the review page is open
     std::shared_ptr<bool> alive_;        // false once the panel is gone

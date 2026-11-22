@@ -71,7 +71,13 @@ TreeGitColors::~TreeGitColors() {
     g_thread_pool_free(pool_, FALSE, FALSE);
 }
 
+void TreeGitColors::setHost(GitRunnerPtr runner) { runner_ = std::move(runner); }
+
 void TreeGitColors::post(std::function<void()> job) {
+    if (runner_) job = [runner = runner_, job = std::move(job)] {
+        GitRunScope scope(runner);
+        job();
+    };
     g_thread_pool_push(pool_, new std::function<void()>(std::move(job)), nullptr);
 }
 
@@ -79,7 +85,7 @@ void TreeGitColors::setRoot(const std::string& root) {
     if (root == root_) return;
     generation_++;
     root_ = root;
-    char* real = root.empty() ? nullptr : realpath(root.c_str(), nullptr);
+    char* real = root.empty() || runner_ ? nullptr : realpath(root.c_str(), nullptr);
     realRoot_ = real ? std::string(real) : root;
     free(real);
     top_.clear();
@@ -218,6 +224,7 @@ void TreeGitColors::look() {
 // A stage, commit or checkout writes only in the git folder, which the
 // tree's monitors never see (it is hidden, and they watch a folder each).
 void TreeGitColors::watchGitDir(const std::string& gitDir) {
+    if (runner_) return;   // over SSH: the host's notices
     if (watch_ && watch_->dir() == gitDir) return;
     watch_.reset();
     if (gitDir.empty()) return;

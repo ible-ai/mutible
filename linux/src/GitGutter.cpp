@@ -119,6 +119,47 @@ std::shared_ptr<const GitGutter::Source> sourceFor(
     return s;
 }
 
+// Over SSH, on the worker (whose runner is the host's): the file's
+// repository and its path there from git there, and its index entry at each
+// look, the blob read again only when the entry names another object.
+std::shared_ptr<const GitGutter::Source> sourceOverSshFor(
+    const std::string& path, const std::shared_ptr<const GitGutter::Source>& previous) {
+    auto s = std::make_shared<GitGutter::Source>();
+    s->path = path;
+    if (previous && previous->path == path) {
+        s->top = previous->top;
+        s->gitDir = previous->gitDir;
+        s->rel = previous->rel;
+        s->inRepository = previous->inRepository;
+        if (!s->inRepository) return s;
+    } else {
+        const std::string dir = dirOf(path);
+        GitResult r = runGit(dir, GitUi::topLevelArgs());
+        if (!r.ok() || !GitUi::parseTopLevel(r.out, s->top, s->gitDir)) return s;
+        GitResult p = runGit(dir, {"rev-parse", "--show-prefix"});
+        if (!p.ok()) return s;
+        std::string prefix = p.out;
+        while (!prefix.empty() && (prefix.back() == '\n' || prefix.back() == '\r')) prefix.pop_back();
+        s->rel = prefix + baseOf(path);
+        s->inRepository = true;
+    }
+    GitResult ls = runGit(s->top, GitUi::indexEntryArgs(s->rel));
+    if (!ls.ok()) return s;
+    s->entry = GitUi::parseIndexEntry(ls.out);
+    if (!s->entry.ok) return s;   // untracked, a conflict, a link, a submodule
+    if (previous && previous->path == path && previous->hasOriginal &&
+        previous->entry.object == s->entry.object) {
+        s->blob = previous->blob;
+        s->hasOriginal = true;
+        return s;
+    }
+    GitResult blob = runGit(s->top, GitUi::blobArgs(s->entry.object));
+    if (!blob.ok()) return s;
+    s->blob = std::move(blob.out);
+    s->hasOriginal = true;
+    return s;
+}
+
 const char* kindName(QuickDiff::Kind k) {
     return k == QuickDiff::Kind::Added ? "added" : k == QuickDiff::Kind::Modified ? "modified"
                                                                                 : "deleted";
@@ -165,7 +206,18 @@ GitGutter::~GitGutter() {
     g_thread_pool_free(pool_, FALSE, FALSE);
 }
 
+void GitGutter::setHost(GitRunnerPtr runner) {
+    runner_ = std::move(runner);
+    source_.reset();   // read again, the other machine's way
+    watch_.reset();
+    refreshSoon();
+}
+
 void GitGutter::post(std::function<void()> job) {
+    if (runner_) job = [runner = runner_, job = std::move(job)] {
+        GitRunScope scope(runner);
+        job();
+    };
     g_thread_pool_push(pool_, new std::function<void()>(std::move(job)), nullptr);
 }
 
@@ -296,7 +348,7 @@ void GitGutter::scheduleAfter(int ms) {
 }
 
 std::string GitGutter::pathToLook() const {
-    if (!on_ || gitExecutable().empty()) return std::string();
+    if (!on_ || (!runner_ && gitExecutable().empty())) return std::string();
     Document* d = editor_->active();
     if (!d || !editor_->isSource() || d->path().empty() || d->loading() ||
         d->largeFileFeaturesOff() || !gtk_text_view_get_editable(GTK_TEXT_VIEW(view_)))
@@ -328,8 +380,10 @@ void GitGutter::look() {
     }
     std::shared_ptr<const Source> previous = source_;
     std::shared_ptr<bool> alive = alive_;
-    post([this, alive, path, previous, gen, buffer] {
-        std::shared_ptr<const Source> src = sourceFor(path, previous);
+    const bool overSsh = (bool)runner_;
+    post([this, alive, path, previous, gen, buffer, overSsh] {
+        std::shared_ptr<const Source> src =
+            overSsh ? sourceOverSshFor(path, previous) : sourceFor(path, previous);
         deliver(alive, [this, alive, src, path, gen, buffer] {
             source_ = src;
             watch(src);
@@ -386,7 +440,7 @@ void GitGutter::setBars(GtkTextBuffer* buffer, std::vector<QuickDiff::Bar> bars)
 // The repository folder of the file looked at, while it has one: a stage,
 // commit or checkout made anywhere brings a look at once.
 void GitGutter::watch(const std::shared_ptr<const Source>& src) {
-    const std::string dir = src && src->inRepository ? src->gitDir : std::string();
+    const std::string dir = src && src->inRepository && !runner_ ? src->gitDir : std::string();
     if (watch_ && watch_->dir() == dir) return;
     watch_.reset();
     if (dir.empty()) return;

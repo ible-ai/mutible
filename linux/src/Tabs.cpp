@@ -507,6 +507,13 @@ void Editor::remakeComparison(const TabSessions::PageTab& page, int at, bool sho
 // MCComparison prepare); the tab opens on the main loop when that is done.
 void Editor::openComparison(const CompareSpec& spec, bool remake, int at, bool show,
                             std::function<void(Document*)> done) {
+    if (remote()) {
+        // Both sides would be read from this machine: a repository or file that
+        // happens to be at the same path would pass for the host's.
+        if (onOverSshRefusal) onOverSshRefusal("Comparing does not work in a window over SSH yet.");
+        if (done) done(nullptr);
+        return;
+    }
     struct Job {
         Editor* editor;
         std::shared_ptr<bool> alive;

@@ -218,7 +218,7 @@ void GitPanel::showRowMenu(int row, double x, double y) {
     std::string discardLabel, why;
     GStatBuf st;
     const bool exists = !topLevel_.empty() &&
-                        g_lstat((topLevel_ + "/" + r->path).c_str(), &st) == 0;
+                        (runner_ || g_lstat((topLevel_ + "/" + r->path).c_str(), &st) == 0);
     if (rows.size() > 1) {
         // Several chosen: what acts on all of them, then the clicked file's own.
         size_t changes = 0, staged = 0;
@@ -228,7 +228,7 @@ void GitPanel::showRowMenu(int row, double x, double y) {
         if (staged) append(all, "Unstage Changes (" + std::to_string(staged) + " Files)", "unstage");
         discardLabel = "Discard Changes (" + std::to_string(rows.size()) + " Files)…";
         append(all, discardLabel, "discard");
-        why = GitUi::discardBatchPlan(rows).refusal;
+        why = (runner_ ? GitUi::discardBatchPlanOverSsh(rows) : GitUi::discardBatchPlan(rows)).refusal;
         g_menu_append_section(menu, nullptr, G_MENU_MODEL(all));
         g_object_unref(all);
         GMenu* own = g_menu_new();
@@ -244,9 +244,9 @@ void GitPanel::showRowMenu(int row, double x, double y) {
         append(own, "Open as git Diff", "opendiff");
         append(own, r->staged ? "Unstage Changes" : "Stage Changes", "togglestage");
         if (!r->staged) {
-            discardLabel = r->untracked ? "Discard (Move to Trash)…" : "Discard Changes…";
+            discardLabel = r->untracked && !runner_ ? "Discard (Move to Trash)…" : "Discard Changes…";
             append(own, discardLabel, "discard");
-            why = GitUi::discardPlan(*r).refusal;
+            why = (runner_ ? GitUi::discardPlanOverSsh(*r) : GitUi::discardPlan(*r)).refusal;
         }
         g_menu_append_section(menu, nullptr, G_MENU_MODEL(own));
         g_object_unref(own);

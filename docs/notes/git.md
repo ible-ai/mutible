@@ -513,9 +513,7 @@ coincide, the wrong repository).
 - **Not done.** The review page and the commit page over SSH (their reads
   would need the work tree through the host), fetch, pull and push
   (credentials there), line history (EditorLineHistory), and the agents'
-  worktree pages; GTK's window over SSH (its git runs through
-  linux/src/GitRun.cpp's `runGitWithin`, on each object's git thread: the
-  same request would go there, see session-host.md's note for GTK).
+  worktree pages; GTK's window over SSH is done (below).
 - **Checks.** Core: `hostgit:args`, `:dir`, `:words`, `:run`, `:wire`
   (tests/session_git_tests.inc). GUI: remote_ssh's git block (a window on
   a repository of its own through the stand-in; the panel lists the
@@ -539,3 +537,17 @@ text is in place in its section.
 - Git panel (all three ports): **A refusal's note settles on the read after it** (2026-11-19, main's CI after #245): a worktree page settled every note on the read on show, but a refused Apply to Main asks the user to look over the read that follows (it shows the file changed since), so that read took the note away; `_noteSettlesOnNextRead` settles a refusal's note on the next read. In a check, wait for the read that shows the change (its row), never for any later read: one started before the write can land first.
 - Git panel (Mac checks): **`isDiff` is not "the diff tab is on show"** (2026-11-21, git_panel FLAKY on #319 and red on 1.6.7's commit): every tab in the editor's slot that is not a file sets it, the review page and a comparison included, and `showDiffAtRow:` runs `git diff` on the panel's queue before the diff tab replaces what is in front. A wait on `isDiff` after the steps had kept a review page passed at once, and the next step read the review page's title whenever git took longer than about 20 ms (a loaded runner). Wait for the diff itself: the suite's `ShowsDiffOf(c, name)` (no page, no comparison, not a commit, `diffName` is the file).
 - Over SSH (the Mac): **the stand-in's folder is this Mac's**, so a git run here on the window's path would find the same repository and every check would pass with the routing broken; remote_ssh counts the host's runs (`MCRemoteWorkspace gitRuns`) and checks git's results on that disk apart from the window. And **a runner never waits on the main thread**: `Link::git`'s answer is delivered there, so the runner refuses to run on it rather than hang.
+
+## Over SSH on GTK (2026-11-22)
+
+The Linux window over SSH runs its panel, change bars and tree colors on the
+host too (docs/notes/session-host.md, "The GTK window over SSH, git"). The
+seam is the thread, not the queue: `GitRunScope` (GitRun.h) gives a git
+thread the window's `GitRunner`, and `runGitWithin` hands every command to
+it; `hostGitRunner` waits on that thread for `RemoteWorkspace::git`'s answer
+and never runs on the main thread. Each object's `setHost` also turns off
+what reads this disk: the panel's and the gutter's and the colors' watches,
+the review page and Trash (Discard uses `discardPlanOverSsh` and keeps a
+git object). Over SSH, the commit and review pages, comparisons, `mutible diff` and the agents' worktrees are refused with a note (they would read this
+computer's repository); line history is not routed.
+- Over SSH on GTK: **the stand-in's folder is this machine's**, so remote_ssh counts the host's runs (`RemoteWorkspace::gitRuns`) and reads git's results apart from the window. A runner is called only on a git thread: a call from the main thread answers an error rather than hang.

@@ -43,6 +43,7 @@
 
 #include "GitDirWatch.h"
 #include "GitModel.h"
+#include "GitRun.h"
 #include "QuickDiff.h"
 
 class Editor;
@@ -113,6 +114,14 @@ public:
     // a look and a click, to see Stage Change refuse.
     void holdLooksForChecks(bool hold);
 
+    // A window over SSH (docs/notes/session-host.md, stage 9): the bars' git
+    // runs on the other machine through `runner` (GitRun.h), the file's
+    // repository and path in it asked of git there, the index asked at every
+    // look (this machine's index file is not that one); no folder is watched
+    // here, the host's notices call refreshSoon. Called once, before the
+    // first look.
+    void setHost(GitRunnerPtr runner);
+
     // What the worker knows of the file last looked at (GitGutter.cpp).
     struct Source;
 
@@ -143,6 +152,7 @@ private:
     GtkWidget* view_ = nullptr;
     GThreadPool* pool_ = nullptr;
     std::shared_ptr<bool> alive_;
+    GitRunnerPtr runner_;                // over SSH: the host's git
 
     bool on_ = false;
     GtkTextBuffer* buffer_ = nullptr;    // the view's, held while listened to

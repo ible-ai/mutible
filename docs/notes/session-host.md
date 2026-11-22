@@ -4679,15 +4679,7 @@ side is in docs/notes/git.md, "Over SSH".
 - **Refreshing.** The host's watch already says `"git": true` in FsChanged
   for a write in the folder or in .git's index, HEAD or refs; the Mac's
   `MCRemoteWorkspace` now hears it (`onGitChanged`, `gitNotices`).
-- **For GTK** (not done): GTK's Source Control, change bars and tree
-  colors each run git on a thread of their own through
-  linux/src/GitRun.cpp's `runGitWithin`. A GTK window over SSH needs the
-  same seam there: when the window is remote, `runGitWithin` (or a
-  per-object runner it is given) sends `Shared::gitRequest` through
-  `Client::requestGit` on the main loop and waits on that thread for the
-  answer (`readAnswer` with bytes, `gitReplyFrom` into a GitResult), the
-  window hears FsChanged's `git`, and its Discard uses
-  `GitUi::discardPlanOverSsh` and `keepCopyArgs`. The texts
+- **For GTK**: done, see "The GTK window over SSH, git" below; the texts
   (`gitTooOldText`, `gitLostText`, `gitRemoteOpText`) are shared.
 - **Checks.** `hostgit:args` (every argument vector the apps build passes,
   each refusal above refused, fetch, pull and push in words), `:dir`,
@@ -5024,6 +5016,72 @@ the status bar, changing nothing; the local actions are unchanged.
 - **Checked** (`remote_ssh`): each op through the stand-in, disk and tree
   rows and tabs, a refused rename (the host's sentence, nothing changed), and
   the question's Cancel.
+
+#### The GTK window over SSH, git (2026-11-22, stage 9's first slice on GTK)
+
+A GTK window over SSH had its Source Control, change bars and tree colors
+off (slice 1: this machine's repository at that path is another one). They
+are the host's now (Welcome flag 256, "Git over SSH" above), by the same
+seam as the Mac's but at the thread rather than the queue.
+
+- **The seam is the thread** (`linux/src/GitRun.{h,cpp}`): every git the
+  panel, the change bars and the tree colors run goes through
+  `runGitWithin` on a one-thread pool of their own. A `GitRunner`
+  (`hostGitRunner(ws)`) is held by each of the three (`setHost`); their
+  `post()` wraps each job in a `GitRunScope`, a thread-local the job's
+  `runGitWithin` finds and hands the command to instead of spawning git.
+  Their code and the core's parsing run unchanged. The runner, on that
+  thread: fetch, pull, push (`Git::talksToRemote`) are answered at once with
+  `gitRemoteOpText`; refused on the main thread (it would wait on itself);
+  else an idle on the main loop asks `RemoteWorkspace::git` (`Link::gitAsync`
+  over `Client::requestGit`; the answer is a `byteReads_` entry, read by
+  `gitReplyFrom`) and the thread waits on a condition variable, at most the
+  command's limit plus 30 seconds. No link, no host flag 256 (`gitTooOldText`)
+  and a lost connection (`gitLostText`; `Link::failPending` answers the
+  waiting ones) come back as status -1 with the sentence, which the panel
+  shows as its error line. Never run on the main thread: a window's other
+  git callers (below) still run this machine's git.
+- **The window** (main.cpp `makeGitPanel`, the tree colors where the tree is
+  made): the panel gets `setHost` and the root the host spells, the gutter
+  `setHost`, the tree colors `setHost` before `setRoot` (no realpath here).
+  `RemoteWorkspace::onGit` (FsChanged's `"git": true`, `gitNotices`) has the
+  panel `refresh()`, the bars `refreshSoon()` and the colors `lookSoon()`;
+  Reconnect calls it too. Nothing is watched on this disk (the panel's
+  `watch`, the gutter's and the colors' `GitDirWatch`, off).
+- **What differs.** No Review Changes: the panel hides its button, sets no
+  `onReview`/`onReviewCommit` (a row and a commit open the raw diff and
+  `git show` in the diff tab, hunk actions working there), and
+  `showChangeReview` says so. Discard, one row, several, the menu bar's and a
+  hunk's, use `GitUi::discardBatchPlanOverSsh`, `discardPlanOverSsh`,
+  `hunkPlanOverSsh`: `keepCopyArgs` first, the object named in the words
+  (`keptCopiesText`), nothing for Undo Discard; an untracked file is
+  refused. Fetch, pull, push, Sync and autofetch say `gitRemoteOpText`
+  (autofetch nothing). The gutter's `sourceOverSshFor` takes the file's path
+  in its repository from `rev-parse --show-prefix`, asks the index entry at
+  every look and reads the blob again only when its object changed.
+- **Refused, not routed.** Anything that would read this computer's
+  repository or disk on the host's paths is refused in a remote window with a
+  note in the same voice ("... does not work in a window over SSH yet"), so
+  a path that exists here too (ssh to localhost, a home folder spelled the
+  same) never shows this machine's repository as the host's: the review page
+  and a commit's (`showChangeReview`, `showCommitReview`, `reviewChanges`),
+  every comparison (`Editor::openComparison`, `onOverSshRefusal`), `mutible
+  diff`, and the agents' worktrees (none made). A graph row opens the
+  commit's raw `git show` from the host. Not done: those through the host,
+  and line history. A host too old for flag 256 (`gitTooOldText`) could not
+  be made by the stand-in: remote_ssh checks the no-host answer
+  (`gitLostText`) and Push's, not that one.
+- **Checks.** remote_ssh's git block (a window on a repository of its own
+  through the stand-in; `gitRuns` and `gitNotices` counted, since the
+  stand-in's folder is this machine's and a git run here would pass the
+  same checks): the panel lists a modified file, no Review Changes, the
+  branch and the tree's change count, a change bar, a row's diff, stage and
+  commit (the commit read from the repository's log on disk), a change made
+  there listed by the host's notice, an untracked discard refused, a
+  discard keeping its copy as an object `git cat-file -p` shows, fetch, pull
+  and push refused with nothing sent, a graph row showing the host's `git show`
+  and no page, Review Changes and Compare refused with their notes and
+  nothing opened, and a runner without a host.
 
 #### The GTK window over SSH, viewers (2026-11-21, eighth slice)
 

@@ -444,6 +444,16 @@ bool Link::fileOpAsync(Json request, std::function<void(bool, const Json&)> done
     return true;
 }
 
+bool Link::runsGit() const { return !lost() && client_->hostRunsGit(); }
+
+bool Link::gitAsync(Json request, std::string input, BytesFn done) {
+    if (!runsGit()) return false;
+    const std::uint64_t req = client_->requestGit(0, std::move(request), std::move(input));
+    if (!req) return false;
+    byteReads_[req] = std::move(done);
+    return true;
+}
+
 bool Link::readBytesAsync(Json request, BytesFn done) {
     if (lost()) return false;
     const std::uint64_t req = client_->requestRead(0, std::move(request));

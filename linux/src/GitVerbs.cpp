@@ -11,6 +11,7 @@
 // button, and in the status bar while the panel is hidden.
 #include "GitPanel.h"
 #include "GitTrash.h"
+#include "SessionGit.h"
 #include "Question.h"
 
 #include <limits.h>
@@ -270,7 +271,8 @@ void GitPanel::discardRow(int row) {
 }
 
 void GitPanel::discardRows(const std::vector<GitUi::Row>& rows, const std::string& top) {
-    const GitUi::DiscardBatch batch = GitUi::discardBatchPlan(rows);
+    const GitUi::DiscardBatch batch =
+        runner_ ? GitUi::discardBatchPlanOverSsh(rows) : GitUi::discardBatchPlan(rows);
     if (!batch.refusal.empty()) {
         say(batch.refusal, false);
         gtk_widget_error_bell(root_);
@@ -284,6 +286,7 @@ void GitPanel::discardRows(const std::vector<GitUi::Row>& rows, const std::strin
 // it has changes in the Changes list, by a status read now.
 void GitPanel::discardPath(const std::string& path) {
     const std::string root = rootDir_;
+    const bool overSsh = (bool)runner_;
     if (root.empty() || path.empty()) {
         gtk_widget_error_bell(root_);
         return;
@@ -298,7 +301,12 @@ void GitPanel::discardPath(const std::string& path) {
             // gone, so its folder is resolved instead.
             char dirBuf[PATH_MAX], topBuf[PATH_MAX];
             gchar* dir = g_path_get_dirname(path.c_str());
-            if (realpath(dir, dirBuf) && realpath(snap->topLevel.c_str(), topBuf)) {
+            if (overSsh) {
+                // The host spells its paths with links resolved already.
+                const std::string full = std::string(dir) + "/" + nameOf(path);
+                const std::string& top = snap->topLevel;
+                if (full.compare(0, top.size() + 1, top + "/") == 0) rel = full.substr(top.size() + 1);
+            } else if (realpath(dir, dirBuf) && realpath(snap->topLevel.c_str(), topBuf)) {
                 const std::string full = std::string(dirBuf) + "/" + nameOf(path);
                 const std::string top = topBuf;
                 if (full.compare(0, top.size() + 1, top + "/") == 0) rel = full.substr(top.size() + 1);
@@ -336,12 +344,24 @@ void GitPanel::runDiscards(const std::vector<GitUi::DiscardPlan>& plans,
     post([=] {
         std::vector<Discard> made;
         std::string failure;
+        std::vector<std::pair<std::string, std::string>> kept;   // over SSH: name, object
         for (size_t i = 0; i < plans.size() && i < rels.size() && failure.empty(); i++) {
             const GitUi::DiscardPlan& p = plans[i];
             const std::string path = top + "/" + rels[i];
             Discard d;
             d.path = path;
             d.rel = rels[i];
+            if (p.keepFirst) {
+                // Over SSH: the changed copy kept as a git object there.
+                GitResult k = runGit(top, GitUi::keepCopyArgs(rels[i]));
+                if (k.ok() && k.out.size() >= 40) {
+                    kept.push_back({rels[i], k.out});
+                } else {
+                    failure = nameOf(rels[i]) + " could not be kept as a git object there (" +
+                              gitFailure(k) + "), so nothing was discarded.";
+                    break;
+                }
+            }
             if (p.trashFirst) {
                 std::string err;
                 if (!GitTrash::trash(path, &d.trashed, &err)) {
@@ -359,13 +379,15 @@ void GitPanel::runDiscards(const std::vector<GitUi::DiscardPlan>& plans,
                     break;
                 }
             }
+            if (p.keepFirst) continue;   // nothing Undo Discard could put back
             made.push_back(d);
         }
         deliver(alive, self, [=](GitPanel* panel) {
             panel->discards_.insert(panel->discards_.end(), made.begin(), made.end());
             while (panel->discards_.size() > 20) panel->discards_.erase(panel->discards_.begin());
             if (root == panel->rootDir_) {
-                panel->say(failure.empty() ? doneText : failure, failure.empty());
+                const std::string done = kept.empty() ? doneText : GitUi::keptCopiesText(doneText, kept);
+                panel->say(failure.empty() ? done : failure, failure.empty());
                 panel->runRefresh();
             }
             panel->actionDone();
@@ -434,8 +456,9 @@ void GitPanel::runHunkOp(GitUi::HunkOp op, size_t first, size_t last, bool lines
         return;
     }
     const ShownDiff d = shownDiff_;
-    const GitUi::HunkPlan plan =
+    GitUi::HunkPlan plan =
         GitUi::hunkPlan(d.bytes, GitUi::diffSideOf(d.row), op, first, last, lines);
+    if (runner_) plan = GitUi::hunkPlanOverSsh(plan);
     if (!plan.refusal.empty()) {
         say(plan.refusal, false);
         gtk_widget_error_bell(root_);
@@ -454,12 +477,22 @@ void GitPanel::runHunkOp(GitUi::HunkOp op, size_t first, size_t last, bool lines
 // shown again: what is left, or, for a diff gone stale, what is there now.
 void GitPanel::runHunkPlan(const GitUi::HunkPlan& plan, bool discard, const ShownDiff& d) {
     const std::string root = rootDir_;
+    const bool overSsh = (bool)runner_;
     std::shared_ptr<bool> alive = alive_;
     GitPanel* self = this;
     post([=] {
         const std::string path = d.top + "/" + plan.path;
         std::string trashed, failure;
-        if (discard) {
+        std::vector<std::pair<std::string, std::string>> kept;   // over SSH: name, object
+        if (discard && overSsh) {
+            // The other machine has no Trash: the file as it is kept there as a git object.
+            GitResult k = runGit(d.top, GitUi::keepCopyArgs(plan.path));
+            if (k.ok() && k.out.size() >= 40)
+                kept.push_back({plan.path, k.out});
+            else
+                failure = nameOf(plan.path) + " could not be kept as a git object there (" +
+                          gitFailure(k) + "), so nothing was discarded.";
+        } else if (discard) {
             std::string err;
             if (!GitTrash::trashCopy(path, &trashed, &err))
                 failure = nameOf(plan.path) + " could not be copied to the Trash (" + err +
@@ -474,7 +507,7 @@ void GitPanel::runHunkPlan(const GitUi::HunkPlan& plan, bool discard, const Show
             }
         }
         deliver(alive, self, [=](GitPanel* p) {
-            if (failure.empty() && discard) {
+            if (failure.empty() && discard && !trashed.empty()) {
                 Discard u;
                 u.path = path;
                 u.rel = plan.path;
@@ -484,7 +517,10 @@ void GitPanel::runHunkPlan(const GitUi::HunkPlan& plan, bool discard, const Show
                 if (p->discards_.size() > 20) p->discards_.erase(p->discards_.begin());
             }
             if (root == p->rootDir_) {
-                p->say(failure.empty() ? plan.doneText : failure, failure.empty());
+                p->say(failure.empty() ? (kept.empty() ? plan.doneText
+                                                       : GitUi::keptCopiesText(plan.doneText, kept))
+                                       : failure,
+                       failure.empty());
                 p->runRefresh();
                 p->showDiffOf(d.row, d.top);
             }
@@ -607,6 +643,13 @@ void GitPanel::updateSyncButton() {
 void GitPanel::runSync(GitUi::SyncOp op, bool quietly) {
     const std::string root = rootDir_;
     if (root.empty()) return;
+    if (runner_) {
+        // They would want credentials nobody can type on that machine.
+        if (quietly) return;
+        gtk_widget_error_bell(root_);
+        say(Shared::gitRemoteOpText(hostLabel_), false);
+        return;
+    }
     // One asked for at a time; one asked for while a background fetch runs
     // waits behind it on the git thread.
     if (quietly ? (syncing_ || autoFetching_) : syncing_) {
@@ -703,7 +746,7 @@ void GitPanel::finishSync(GitUi::SyncOp op, const GitUi::SyncPlan& plan, const G
 // repository's top level once a status has said it, else the folder; the
 // fetch itself reads the remotes again and fetches nothing without one.
 bool GitPanel::autoFetchTickAt(double now) {
-    if (!autoFetchOn_ || rootDir_.empty() || syncing_ || autoFetching_) return false;
+    if (!autoFetchOn_ || rootDir_.empty() || syncing_ || autoFetching_ || runner_) return false;
     if (!(isActive && isActive())) return false;
     const std::string key = autoKey_.empty() ? rootDir_ : autoKey_;
     GitUi::AutoFetchState& st = autoFetchStates()[key];
