@@ -120,6 +120,24 @@ std::string discardText(const Read& r, size_t fi, const std::u16string& text, co
                         const std::function<bool(std::string* where, std::string* why)>& trashCopy,
                         std::string* trashed);
 
+// The same two writes where the work tree is on another machine (a window over
+// SSH), which this process cannot write: `git apply` on the host with one
+// patch that turns the file as the view read it (`x.workBytes`) into `bytes`
+// (workPatch). git refuses it when the file changed since (every old line is
+// in the patch), which is the stale check; git writes the file there, so a tab
+// of the host's follows the disk as it does for any change. "" when written,
+// else why not. A text with a NUL (UTF-16) is refused: a patch cannot carry it.
+// workPatch gives "" for nothing to change or such a text.
+std::string workPatch(const std::string& rel, const std::string& oldBytes,
+                      const std::string& newBytes);
+std::string writeWorkOnHost(const Read& r, size_t fi, const std::string& bytes, const GitRunner& run);
+// Discard over SSH: the index entry is checked as discardText does, the file
+// as it is kept first as a git object in that repository (GitUi::keepCopyArgs;
+// the other machine has no Trash), then the work tree is written. `*kept` is
+// the object's name once it is written, else empty.
+std::string discardTextOnHost(const Read& r, size_t fi, const std::u16string& text,
+                              const GitRunner& run, std::string* kept);
+
 // ------------------------------------------------------------- a commit
 // A commit's page (a click in the graph), the part the Mac keeps in
 // ReadCommit (mac/src/ChangeReviewPage.mm), over the same runner: its

@@ -726,6 +726,131 @@ void gitOverSsh() {
         GCHECK(said.find("does not work in a window over SSH yet") != std::string::npos);
         GCHECK(RepoWindow().editor->documents().size() == docs);
     });
+    // ---- Discard of a block and the conflict choices on the page, over SSH:
+    // the host's git writes the work tree (git apply of one patch), the
+    // changed copy is kept there as a git object, and a clean tab follows.
+    MCGuiStep("d.txt, f.txt and e.txt written there", [] {
+        std::string l;
+        for (int i = 1; i <= 12; i++) l += "l" + std::to_string(i) + "\n";
+        MCGuiWriteFile(gGitFolder + "/d.txt", l);
+        MCGuiWriteFile(gGitFolder + "/f.txt", l);
+        std::string e;
+        for (int i = 1; i <= 9; i++) e += "p" + std::to_string(i) + "\n";
+        MCGuiWriteFile(gGitFolder + "/e.txt", e);
+    });
+    Shell("commit them, a branch with its own e.txt, and main's own",
+          "set -e; cd '" + rp(MCGuiScratch()) + "/remote-git' && " + G() + " add d.txt f.txt e.txt && " + G() +
+              " commit -qm more && " + G() + " checkout -q -b theirs && sed -e 's/^p1$/T1/' -e 's/^p9$/T9/' e.txt >e.tmp && mv e.tmp e.txt && " +
+              G() + " commit -qam theirs && " + G() + " checkout -q main && sed -e 's/^p1$/M1/' -e 's/^p9$/M9/' e.txt >e.tmp && mv e.tmp e.txt && " +
+              G() + " commit -qam ours");
+    MCGuiStep("d.txt and f.txt each changed in two places; d.txt open in a tab", [] {
+        for (const char* f : {"/d.txt", "/f.txt"}) {
+            std::string l;
+            for (int i = 1; i <= 12; i++) l += (i == 2 || i == 11 ? "X" : "l") + std::to_string(i) + "\n";
+            MCGuiWriteFile(gGitFolder + f, l);
+        }
+        RepoWindow().editor->openFile(gGitFolder + "/d.txt");
+    });
+    MCGuiWait("the tab holds d.txt as changed", 20, [] {
+        Document* d = RepoWindow().editor->active();
+        return d && d->path() == gGitFolder + "/d.txt" && !d->loading() && d->text().find("X11") != std::string::npos;
+    });
+    MCGuiStep("Review Changes", [] { gitPanel()->reviewChanges(); });
+    MCGuiWait("the page lists d.txt and f.txt with two blocks each", 20, [] {
+        ChangeReviewPage* p = reviewPage();
+        return p && p->loaded() && !p->isCommit() && p->blockCount() == 5 && p->pageText().find("f.txt") != std::string::npos;
+    });
+    MCGuiStep("Discard on f.txt's first block (a file no tab holds)", [] {
+        ChangeReviewPage* p = reviewPage();
+        GCHECK(p && p->blockCount() == 5);
+        if (!p || p->blockCount() < 5) return;
+        // Blocks 0 and 1 are d.txt's, 2 and 3 f.txt's, 4 the new file's.
+        GCHECK(p->press("Discard", (size_t)p->rowOfBlock(2)));
+    });
+    MCGuiWait("the question", 10, QuestionUp);
+    MCGuiStep("it says the other machine has no Trash; Discard Change", [] {
+        const std::string q = QuestionText();
+        GCHECK(q.find("no Trash") != std::string::npos);
+        Answer("Discard Change");
+    });
+    MCGuiWait("f.txt there lost only that block, the page says where the copy is", 20, [] {
+        ChangeReviewPage* p = reviewPage();
+        return QuestionGone() && MCGuiReadFile(gGitFolder + "/f.txt") == "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nX11\nl12\n" && p &&
+               p->messageText().find("git object") != std::string::npos;
+    });
+    MCGuiStep("the object holds the file as it was", [] {
+        MCGuiSetKeyWindow(nullptr);
+        ChangeReviewPage* p = reviewPage();
+        GCHECK(p != nullptr);
+        if (!p) return;
+        const std::string line = p->messageText();
+        MCGuiNote("said: %s", line.c_str());
+        GCHECK(line.find("over SSH yet") == std::string::npos);
+        const size_t at = line.find("git object ");
+        std::string object = at == std::string::npos ? "none" : line.substr(at + 11, 12);
+        GCHECK_EQ_STR(GitText({"cat-file", "-p", object}), "l1\nX2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nX11\nl12\n");
+    });
+    MCGuiWait("the page reloaded with four blocks", 20, [] {
+        ChangeReviewPage* p = reviewPage();
+        return p && p->loaded() && p->blockCount() == 4;
+    });
+    MCGuiStep("Discard on d.txt's first block (its tab is clean)", [] {
+        ChangeReviewPage* p = reviewPage();
+        GCHECK(p && p->blockCount() == 4);
+        if (!p || p->blockCount() < 4) return;
+        GCHECK(p->press("Discard", (size_t)p->rowOfBlock(0)));
+    });
+    MCGuiWait("the question", 10, QuestionUp);
+    MCGuiStep("Discard Change", [] { Answer("Discard Change"); });
+    MCGuiWait("d.txt there lost only that block, and its clean tab follows, still clean", 20, [] {
+        if (!QuestionGone() || MCGuiReadFile(gGitFolder + "/d.txt") != "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nX11\nl12\n") return false;
+        for (Document* d : RepoWindow().editor->documents())
+            if (d->path() == gGitFolder + "/d.txt")
+                return d->text() == "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nX11\nl12\n" && !d->dirty();
+        return false;
+    });
+    MCGuiStep("a save from that tab goes through: the host counts the file as the tab has it", [] {
+        RepoWindow().editor->openFile(gGitFolder + "/d.txt");
+        MCGuiKey("ctrl+home");
+        MCGuiType("Z");
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("saved there", 20, [] {
+        return MCGuiReadFile(gGitFolder + "/d.txt") == "Zl1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\nX11\nl12\n";
+    });
+    Shell("merge theirs (conflicts in e.txt)", "cd '" + rp(MCGuiScratch()) + "/remote-git' && " + G() + " merge theirs >/dev/null 2>&1; " + G() +
+                                                   " ls-files -u | grep -q e.txt");
+    MCGuiStep("Review Changes again", [] { gitPanel()->reviewChanges(); });
+    MCGuiWait("the page lists e.txt with Keep choices", 30, [] {
+        ChangeReviewPage* p = reviewPage();
+        if (!p || !p->loaded() || p->pageText().find("e.txt") == std::string::npos) return false;
+        for (size_t r = 0; r < p->rowCount(); r++)
+            for (const std::string& b : p->buttonsOfRow(r))
+                if (b == "Keep Incoming") return true;
+        return false;
+    });
+    MCGuiStep("Keep Incoming on the first conflict", [] {
+        ChangeReviewPage* p = reviewPage();
+        GCHECK(p != nullptr);
+        if (!p) return;
+        for (size_t r = 0; r < p->rowCount(); r++)
+            for (const std::string& b : p->buttonsOfRow(r))
+                if (b == "Keep Incoming") {
+                    GCHECK(p->press("Keep Incoming", r));
+                    return;
+                }
+        GCHECK(false);
+    });
+    MCGuiWait("e.txt there has their side for the first block and still marks the second", 20, [] {
+        const std::string e = MCGuiReadFile(gGitFolder + "/e.txt");
+        ChangeReviewPage* p = reviewPage();
+        return e.find("T1\n") == 0 && e.find("M1") == std::string::npos && e.find("<<<<<<<") != std::string::npos &&
+               e.find("M9") != std::string::npos && p && p->messageText().find("left in e.txt") != std::string::npos;
+    });
+    MCGuiStep("no refusal said", [] {
+        ChangeReviewPage* p = reviewPage();
+        GCHECK(p && p->messageText().find("over SSH yet") == std::string::npos);
+    });
     MCGuiStep("its window closes", [] {
         GCHECK(alertText().empty());
         MCGuiSetKeyWindow(nullptr);

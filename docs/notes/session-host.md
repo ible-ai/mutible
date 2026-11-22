@@ -5291,11 +5291,20 @@ host's now, not refused. No new request: the same FsRead "git" and "read".
   `review-read:host-work-tree`), which `readUncommitted` uses instead of
   `readFileStable`. The Mac can set the same hook from its
   `MCGitRunnerQueue`.
-- **Still refused on the page** (a note on the page's message line):
-  Discard of a block or lines, and Keep Current/Incoming/Both on a conflict
-  (they write this computer's disk through `writeDiscard`/`keepConflict`;
-  the panel's file Discard is the routed one), and the worktree page (Apply
-  to Main, not made over SSH). Mark Resolved is git only and works.
+- **Discard of a block or lines and the conflict choices** (item 172) write
+  the host's work tree with `git apply` of one whole-file patch from the
+  file as the page read it (`x.workBytes`) to the new text
+  (`ChangeReview::workPatch`, `writeWorkOnHost`, `discardTextOnHost`, core
+  test `review-read:git`): git refuses it when the file moved since (every
+  old line is in the patch), which is the stale check, and writes it there,
+  so a clean tab of the file takes the host's text at once (`Editor::followHostFile`: a GTK tab over SSH does not follow the host's disk by itself; the page's `workWritten` hook). Discard asks
+  with the no-Trash words, first keeps the file as it is as a git object
+  there (`keepCopyArgs`) and names it in the page's message; no Undo
+  Discard. A text with a NUL (UTF-16) or a name with a quote is refused. A
+  tab with unsaved text is refused as locally.
+- **Still refused on the page** (a note on the page's message line): the
+  worktree page (Apply to Main, not made over SSH). Mark Resolved is git
+  only and works.
 - **Comparisons** (`Editor::openComparison`): over SSH the thread runs in
   `GitRunScope(hostGitRunner(remoteWs_))`; `sideText` then reads a file side
   through `hostWorkReader()` and a revision side with `rev-parse

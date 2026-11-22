@@ -307,6 +307,83 @@ std::string discardText(const Read& r, size_t fi, const std::u16string& text, co
     return "";
 }
 
+std::string workPatch(const std::string& rel, const std::string& oldBytes,
+                      const std::string& newBytes) {
+    if (oldBytes == newBytes) return "";
+    if (oldBytes.find('\0') != std::string::npos || newBytes.find('\0') != std::string::npos) return "";
+    for (char c : rel)
+        if ((unsigned char)c < 0x20 || c == '"' || c == '\\') return "";
+    auto lines = [](const std::string& b, char sign, std::string* out) {
+        size_t n = 0, at = 0;
+        while (at < b.size()) {
+            const size_t nl = b.find('\n', at);
+            const bool last = nl == std::string::npos;
+            const size_t end = last ? b.size() : nl + 1;
+            *out += sign;
+            out->append(b, at, end - at);
+            if (last) *out += "\n\\ No newline at end of file\n";
+            at = end;
+            n++;
+        }
+        return n;
+    };
+    std::string minus, plus;
+    const size_t no = lines(oldBytes, '-', &minus), nn = lines(newBytes, '+', &plus);
+    return "--- a/" + rel + "\n+++ b/" + rel + "\n@@ -" + (no ? "1," : "0,") + std::to_string(no) +
+           " +" + (nn ? "1," : "0,") + std::to_string(nn) + " @@\n" + minus + plus;
+}
+
+namespace {
+std::string leafOf(const std::string& rel) {
+    return rel.substr(rel.rfind('/') == std::string::npos ? 0 : rel.rfind('/') + 1);
+}
+}  // namespace
+
+std::string writeWorkOnHost(const Read& r, size_t fi, const std::string& bytes, const GitRunner& run) {
+    if (fi >= r.diffs.size() || fi >= r.extras.size()) return "That file is no longer in the view.";
+    const Extra& x = r.extras[fi];
+    const std::string rel = x.row.path;
+    if (x.workBytes == bytes) return "";
+    const std::string patch = workPatch(rel, x.workBytes, bytes);
+    if (patch.empty())
+        return leafOf(rel) + " cannot be written through the other machine (its text has a NUL byte "
+                             "or its name a quote or backslash).";
+    GitOut a = run(r.top, {"apply", "--whitespace=nowarn", "-"}, patch);
+    if (a.ok) return "";
+    if (a.err.find("does not apply") != std::string::npos ||
+        a.err.find("does not match") != std::string::npos ||
+        a.err.find("No such file") != std::string::npos)
+        return staleText(rel, false);
+    return leafOf(rel) + " could not be written (" + (a.err.empty() ? "git apply failed" : a.err) +
+           ").";
+}
+
+std::string discardTextOnHost(const Read& r, size_t fi, const std::u16string& text,
+                              const GitRunner& run, std::string* kept) {
+    if (kept) kept->clear();
+    if (fi >= r.diffs.size() || fi >= r.extras.size()) return "That file is no longer in the view.";
+    const Extra& x = r.extras[fi];
+    const std::string rel = x.row.path;
+    const std::string bytes =
+        FolderSearch::encodeFileText(QuickDiff::toUtf8(text), x.workEnc, x.workBom);
+    if (x.workBytes != bytes && workPatch(rel, x.workBytes, bytes).empty())
+        return leafOf(rel) + " cannot be written through the other machine (its text has a NUL byte "
+                             "or its name a quote or backslash), so nothing was discarded.";
+    GitOut ls = run(r.top, GitUi::indexEntryArgs(rel), "");
+    const GitUi::IndexEntry entry = GitUi::parseIndexEntry(ls.out);
+    if (!ls.ok || !entry.ok || entry.object != x.indexObject) return staleText(rel, true);
+    GitOut k = run(r.top, GitUi::keepCopyArgs(rel), "");
+    if (!k.ok || k.out.size() < 40)
+        return leafOf(rel) + " could not be kept as a git object there (" +
+               (k.err.empty() ? "git hash-object failed" : k.err) + "), so nothing was discarded.";
+    std::string object = k.out;
+    while (!object.empty() && (object.back() == '\n' || object.back() == ' ')) object.pop_back();
+    const std::string failure = writeWorkOnHost(r, fi, bytes, run);
+    if (!failure.empty()) return failure;
+    if (kept) *kept = object;
+    return "";
+}
+
 // ------------------------------------------------ a worktree against main
 CommitRead readCommit(const std::string& root, const std::string& commit, const GitRunner& run,
                       const ImageReading& images) {

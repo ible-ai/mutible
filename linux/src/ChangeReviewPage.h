@@ -125,6 +125,9 @@ public:
     std::function<void(const std::string& path, int line)> onOpenFile;
     std::function<void(const CompareSpec&)> onShowComparison;
     std::function<bool(const std::string& path)> hasUnsavedText;
+    // A window over SSH: git on the host wrote this work tree file (a block's
+    // Discard, a conflict choice); a clean tab of it follows.
+    std::function<void(const std::string& path)> workWritten;
     std::function<Rgba(int style)> syntaxColor;
     // editor.merge-current (false) and editor.merge-incoming (true): a
     // conflict block's tints.

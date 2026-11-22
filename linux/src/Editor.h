@@ -261,6 +261,11 @@ public:
     // False when it cannot be read or the window is not over SSH.
     bool readHostTextForEdit(const std::string& path, std::string* text);
     void forgetHostTextsForEdit() { preread_.clear(); }
+    // A window over SSH: git there changed the file at `path` (the review
+    // page's Discard of a block, a conflict choice): a clean tab of it takes
+    // the host's text now, as a local tab follows its disk. A tab with unsaved
+    // text is left as it is. False when no tab did.
+    bool followHostFile(const std::string& path);
     // The window's notes, hanging over the text (AgentNotes.h).
     AgentNotes* notes() const { return notes_; }
     // The inline agent's bar over the text (InlineAgentBar.h).
