@@ -1722,12 +1722,18 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiStep(@"its window closes", ^{
         if (!gGit) return;
-        GCHECK(NewAlerts().count == 0);
-        if (NewAlerts().count) MCGuiNote(@"alerts in this suite: %@", NewAlerts());
+        // The one alert is Discard's own question, which the check answered;
+        // closing asks nothing.
+        GCHECK([NewAlerts() isEqualToArray:@[ @"Discard the changes to b.txt?" ]]);
+        if (NewAlerts().count != 1) MCGuiNote(@"alerts in this suite: %@", NewAlerts());
         [gGitC.window performClose:nil];
         gGitC = nil;
     });
     MCGuiWait(@"gone", 10, ^BOOL { return !gGit || RemoteWindowOn(gGitFolder) == nil; });
+    MCGuiStep(@"closing asked nothing", ^{
+        if (!gGit) return;
+        GCHECK(NewAlerts().count == 1);
+    });
     MCGuiStep(@"nothing left", ^{
         // The suite's own, by their recorded pids.
         if (gHostB > 0 && !Gone(gHostB)) kill(-gHostB, SIGKILL);
