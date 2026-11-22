@@ -9493,3 +9493,22 @@ side's; two are fixed, one left alone on purpose.
 - **What.** A terminal in a window over SSH to a flag-128 host (core `src/HostIntegration.*`, the Mac's #350) now sends a nonce and `integration = {"zsh","bash"}` in `Terminal::spawnShell`'s remote branch (`remoteNonce_`); `HostListener::termIntegrated` sets `nonce_` and `bashShell_` from the shell name TermOpened gives, so the marks, exit status, busy tracking and held line are the local integrated shell's. An older host or a shell without it runs unmarked as before. `attachShell` no longer reads `/proc/<pid>/comm` for a remote pid.
 - **Checks.** remote_ssh: the remote bash's prompt marked, `sleep 2` busy with its text then idle at status 0, `false` status 1. zsh is not installed here, so not checked.
 - **Not done.** A held remote terminal (attached after a reconnect or from the session browser) stays unmarked; the Mac keeps the nonce by link and terminal id. Real ssh never run.
+
+### 162. tree_focus flake: a restored tree scroll lost to a folder listed late (November 2026)
+
+- **What.** CI on PR #350 (GTK job) failed `Near(TreeTop(back), gTop)` once at "its scroll kept:
+  the target's tab on show" (`the tree at 61000, the record's 1000`; the retry passed). The wait
+  before it had seen 1000: `FileTree::restoreView` put the scroll back once the folders were
+  open and rows had been quiet for 150 ms, but a_big's listing (a worker thread, then rows
+  spliced in over idles) can take longer under load, and its rows arrive above the scroll, where
+  GTK keeps its anchor row and moves the value by their height (about 60000). A real bug: a
+  restored window could lose its tree's place.
+- **Fix.** The restore waits for every folder listing in flight (`gListingsOut`, counted in
+  `startListing` and `listingDone`) as well as `pendingExpand_` and the quiet; its deadline is
+  now a hard cap of 10 s (was 3 s) for a folder that never lists. The user's wheel and keys end
+  it as before (`stopKeeping`). Reproduced deterministically: `FileTree::slowFolderForTests`
+  (a test's folder whose listing waits on the worker) makes the check's a_big list 1.5 s late;
+  without the gate it fails with the CI's values (tree at 70150, the record's 1150), with it
+  passes. The note at that check stays.
+- **Where.** `linux/src/FileTree.cpp` (`restoreView`, `afterLayout`'s restore, `startListing`,
+  `listingDone`), `FileTree.h`, `tests/gui/TreeFocusSuite.cpp`.

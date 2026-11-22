@@ -193,6 +193,8 @@ public:
     // opened again as their listings arrive (those outside the focus
     // remembered for when it widens), `selected` selected, and the scroll
     // put back once the rows have stopped coming, as far as they go.
+    // A test's slow folder: its listing waits `ms` on the worker (0: none).
+    static void slowFolderForTests(const std::string& path, int ms);
     void restoreView(const std::vector<std::string>& open, const std::string& selected,
                      double scroll);
 
@@ -445,6 +447,8 @@ private:
     // none), till when, and when the rows last changed.
     std::string restoreSelect_;
     double      restoreScroll_ = -1;
+    // This tree's folder listings asked for and not yet in (restoreView waits for none).
+    std::shared_ptr<int> listingsOut_ = std::make_shared<int>(0);
     gint64      restoreDeadline_ = 0;
     gint64      rowsChanged_ = 0;
     // The frame clock asked for an after-paint (a reference), its handler,
