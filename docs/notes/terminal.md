@@ -100,6 +100,9 @@ for full-screen programs. Both can be open at once.
   the remote install's, not this app's: flag 128 dates both from
   2026-11-21, so a change to the marks or the private keys needs a new
   flag (or a version in TermOpened) before a newer Mac relies on it.
+  **GTK** (2026-11-22) sends the same spec to a flag-128 host (`Terminal::
+  spawnShell`'s remote branch, `HostListener::termIntegrated`) and then
+  reads the host's marks like a local shell's; session-host.md has it.
   **A remote bash** has no 133;B and no zsh line editor keys: typing waits
   for `canTypeNow`'s 0.3 s and raw tty, the push key is the same, the
   line comes back with `kBashPopKey` at a later prompt (`giveLineBack`),

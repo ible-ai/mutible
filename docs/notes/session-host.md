@@ -3920,15 +3920,24 @@ which `openRemoteAddress`es it; no other argument is read as a path.
   window opens its folder in a window of its own. Closing a remote window
   detaches and then `Link::detach()`es, which ends the remote host.
 - **Terminals** (`Terminal::spawnShell`): on a remote link the TermSpec has
-  `hostShell = true`, `TERM`, `COLORTERM` and `TERM_PROGRAM` only, no
-  nonce and no integration (bash's `--rcfile` and zsh's `ZDOTDIR` are this
-  machine's files), so a remote shell has no marks; `shellDirectory` never
-  reads `/proc/<pid>/cwd` for a pid that is the other machine's. **To do
-  (the Linux session):** since 2026-11-21 a host with flag 128
-  (`Client::hostIntegrates`) sets up its own machine's integration ("The
-  Mac over SSH", "The remote's own integration"): send the nonce and
-  `integration = {"zsh", "bash"}`, keep `nonce_`, and set `bashShell_`
-  from `termIntegrated`'s shell name (empty: clear `nonce_`, as now).
+  `hostShell = true`, `TERM`, `COLORTERM` and `TERM_PROGRAM` only
+  (bash's `--rcfile` and zsh's `ZDOTDIR` are this machine's files);
+  `shellDirectory` never reads `/proc/<pid>/cwd` for a pid that is the
+  other machine's. **The remote's own integration** (2026-11-22): when
+  `Client::hostIntegrates()` (Welcome flag 128) the TermSpec also carries a
+  fresh nonce (`remoteNonce_`) and `integration = {"zsh", "bash"}`; the
+  view believes the marks only once `termIntegrated`'s shell name arrives
+  (before `termOpened`; `HostListener::termIntegrated` sets `nonce_` and
+  `bashShell_`), so `shellState()`, the busy question, the held line and
+  Run File treat it as a local integrated shell (the host reads the marks;
+  `applyShell` is unchanged). An older host, a shell that is neither zsh
+  nor bash, or bash before 4.4 gets no name: `nonce_` stays empty and the
+  shell is unmarked as before. `attachShell` (a held terminal) does not
+  read `/proc/<pid>/comm` of a remote pid: a held remote terminal is
+  unmarked until it is started again (the Mac keeps the nonce by link and
+  terminal id; GTK does not yet). remote_ssh checks the marked prompt,
+  `sleep 2` busy then idle and `false`'s status 1 with the login bash;
+  zsh was not installed where this was written.
 - **A dropped connection**: the link's lost listener says so in the status
   bar (the core's `explainSshFailure` of the reaped status, "Disconnected
   from host:path: ... Your text is kept here; Reconnect opens it there
