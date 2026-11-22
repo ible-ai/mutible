@@ -104,6 +104,17 @@ public:
     // of the lane, "" for none.
     graphene_rect_t rectOfTest(int index) const;
     std::string testTipAt(double x, double y) const;
+    // The pointer resting over a line's number, dot or change bar (not the
+    // test lane or the fold lane): the line (0-based) it is on, called again
+    // as it moves to another, and kNoLine when it leaves the gutter or is
+    // over another lane (LineHistoryView.h's box). pointerAt is what the
+    // motion controller calls, in the gutter's coordinates, for the checks.
+    static constexpr size_t kNoLine = static_cast<size_t>(-1);
+    std::function<void(size_t line)> onHoverLine;
+    void pointerAt(double x, double y);
+    // Line `line`'s row (its first display line), in the gutter's
+    // coordinates; empty when it is not laid out.
+    graphene_rect_t rectOfLine(size_t line) const;
     // The tags whose starts get a dot, with their severities (1 error, 2
     // warning: the worst wins), colored by the tag's underline color.
     void setDiagnosticTags(std::vector<std::pair<std::string, int>> tags);
@@ -189,6 +200,7 @@ private:
     int            digits_ = kMinDigits;
     size_t         caretLine_ = 0;
     bool           hovering_ = false;
+    size_t         hoverLine_ = kNoLine;
     guint          measuredFont_ = 0;
     guint          resizeIdle_ = 0;
     std::vector<std::pair<std::string, int>> diagTags_;

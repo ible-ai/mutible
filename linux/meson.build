@@ -161,6 +161,10 @@ core_sources = [
   core_dir / 'QuickDiff.cpp',
   core_dir / 'SideBySide.cpp',
   core_dir / 'LineDiff.cpp',
+  # Show Line History (LineHistoryView.cpp): blame that knows Claude Code's
+  # sessions, over the edits the Agents panel's transcripts hold.
+  core_dir / 'AgentEdits.cpp',
+  core_dir / 'LineHistory.cpp',
   # Merge conflict blocks and what keeping a side makes of them (the Mac's
   # editor and review page use them; the GTK port can follow).
   core_dir / 'MergeConflicts.cpp',
@@ -362,6 +366,9 @@ gui_sources = [
   # (TreeGitColors.cpp), both watching the repository's folder
   # (GitDirWatch.cpp).
   'src/GitGutter.cpp',
+  # Show Line History: who last changed each line (LineHistoryView.cpp, over
+  # the core's LineHistory.cpp).
+  'src/LineHistoryView.cpp',
   # The ▶ beside each test (TestGutter.cpp, over the core's Runnables).
   'src/TestGutter.cpp',
   'src/AgentNotes.cpp',

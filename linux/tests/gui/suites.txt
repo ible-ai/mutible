@@ -144,3 +144,4 @@ MarkdownDetailsSuite.cpp
 CsvHeaderSuite.cpp
 LargeMemorySuite.cpp
 RemoteSshSuite.cpp
+LineHistorySuite.cpp

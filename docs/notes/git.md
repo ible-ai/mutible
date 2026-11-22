@@ -416,10 +416,34 @@ setprop log.tag.MutibleGit DEBUG` on Android.
   0.6 s after typing stops; an edit hides lines from its offset on
   (`_validBefore`) until the next look; each path's last answer is kept
   with its text (8 files) and reused on a tab switch while the git panel
-  and the Agents model have not published since. Not done: GTK, "committed
+  and the Agents model have not published since. GTK has it too (see the
+  next item). Not done: "committed
   from session X" (left out until it can be exact), and a gap between
   git's and LineDiff's alignment of blank lines around an insertion (one
   may read "Not committed" or the commit where the other reads the session).
+- **Line history on GTK** (2026-11-22, `linux/src/LineHistoryView.{h,cpp}`,
+  `Gutter::onHoverLine`, core `LineHistory::blameArgs` / `GitOutcome` /
+  `assemble` / `Answer::label` / `Answer::detail`, `linehistory:assemble`,
+  GUI `line_history`): the Mac's steps with the core doing the words. The
+  Mac's own `EditorLineHistory.mm` still does its blame call, its error
+  classification and its `combine` itself, untouched (`mac/` was not
+  edited); `assemble` is that same logic made testable and shared, for the
+  Mac to adopt. The look runs on a one-thread `GThreadPool` inside a
+  `GitRunScope`, so a window over SSH blames through the host's git
+  (`runGitWithin` with the text as `input`); Claude Code's transcripts are
+  read only when the window is not remote (`agentModel` returns null there),
+  from the Agents model's folder (`MUTIBLE_CLAUDE_PROJECTS`; tests set it to
+  a scratch folder). The box is a non-autohide `GtkPopover` parented to the
+  text view (unparented on `unrealize`, as the change bars' is); it closes
+  250 ms after the pointer leaves the gutter and the box. The words are an
+  AboveText pass in `CodeView`, the click a capture-phase gesture on the
+  view. Edits are tracked by the first line of `insert-text` and
+  `delete-range` (`validBefore_`), not by offsets. The switch (an
+  `app.togglelinehistory` boolean action) is kept for the next launch in
+  `$XDG_STATE_HOME/mutible/line-history.json`, as the Mac keeps it in its
+  defaults. Not done: the page of what a session changed in
+  a file (GTK has none), so a session's click only says so; an encoding
+  other than UTF-8 is blamed as the UTF-8 text the buffer holds.
 - **The status bar's branch** (Mac, 2026-11-19, round 9's "no branch and
   no git button"; `StatusBranchItem.{h,mm}`, core `Git::statusBranch`,
   `git:status-branch`; GUI `git_panel`): VS Code's bottom left, at the

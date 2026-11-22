@@ -133,4 +133,46 @@ std::string sessionDetail(const SessionInfo &s, const AgentEdits::Change &c, lon
                           DateFormat date);
 std::string notCommittedDetail();
 
+// ------------------------------------------------------- one look, whole
+// What a port's look gives and gets (the Mac's EditorLineHistory.mm does
+// the same steps itself; the GTK port's LineHistoryView.cpp uses these).
+// The arguments of the blame the port runs, in the file's folder, with the
+// editor's text on stdin: `name` is the file's name there.
+std::vector<std::string> blameArgs(const std::string &name);
+
+// How the blame ended, as the port's git runner says.
+struct GitOutcome {
+    bool ok = false;           // status 0
+    bool timedOut = false;
+    int status = 0;            // -1: git could not be run
+    std::string out, err;
+};
+
+// A session that changed this file, with its changes (AgentEdits::collect).
+struct SessionInput {
+    SessionInfo info;
+    std::string file;          // the file as the session's calls named it
+    std::vector<AgentEdits::Change> changes;
+};
+
+// One look's answer: the commits and sessions it names and each line's
+// words. A file git does not track, or no repository, is all uncommitted;
+// a git that timed out, failed otherwise or answered in a way that does not
+// read leaves each line Unknown (but for a session's lines, which are still
+// its), with the reason in `trouble`.
+struct Answer {
+    bool hasBlame = false;
+    Blame blame;
+    std::vector<SessionInput> sessions;
+    std::vector<Line> lines;
+    std::string trouble;
+    // A line's words beside it and in the box; "" while Unknown (a line the
+    // answer has none for, or git could not say).
+    std::string label(size_t line, long long now) const;
+    std::string detail(size_t line, long long now, DateFormat date) const;
+};
+
+Answer assemble(const std::string &text, const GitOutcome &git,
+                std::vector<SessionInput> sessions);
+
 }  // namespace LineHistory

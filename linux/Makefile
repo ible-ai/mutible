@@ -37,7 +37,7 @@ CORE := ../src/SyntaxHighlighter.cpp ../src/MarkdownParser.cpp ../src/MarkdownEm
         ../src/GitStatus.cpp ../src/GitGraph.cpp ../src/GitModel.cpp \
         ../src/FileDetails.cpp ../src/FolderPicker.cpp ../src/Commands.cpp ../src/CommandsLinux.cpp \
         ../src/EditorTabs.cpp ../src/Backups.cpp ../src/TabSessions.cpp ../src/SavePlan.cpp ../src/BrowserTabs.cpp ../src/WebBookmark.cpp \
-        ../src/LineIndex.cpp ../src/PieceTable.cpp ../src/QuickDiff.cpp ../src/SideBySide.cpp ../src/LineDiff.cpp \
+        ../src/LineIndex.cpp ../src/PieceTable.cpp ../src/QuickDiff.cpp ../src/SideBySide.cpp ../src/LineDiff.cpp ../src/AgentEdits.cpp ../src/LineHistory.cpp \
         ../src/MergeConflicts.cpp ../src/ChangeReview.cpp ../src/ChangeReviewRead.cpp \
         ../src/RightAreaLayout.cpp ../src/TerminalLayout.cpp ../src/TermDockRecord.cpp \
         ../src/NavHistory.cpp ../src/NavRecorder.cpp ../src/ViewZoom.cpp \
@@ -70,7 +70,7 @@ GUI := src/main.cpp src/ClickCount.cpp src/FileTree.cpp src/TreeFollow.cpp src/T
        src/LspSessionSemantic.cpp src/SemanticColors.cpp src/WrapIndentTags.cpp \
        src/LspSessionSymbols.cpp src/LspSessionFolding.cpp src/LspSessionJsonCheck.cpp \
        src/GitPanel.cpp src/GitVerbs.cpp src/GitMenus.cpp src/GitRun.cpp src/GitTrash.cpp src/EnvLock.cpp \
-       src/GitDiffView.cpp src/CompareView.cpp src/ComparePanes.cpp src/CompareDecision.cpp src/GitGutter.cpp src/TestGutter.cpp src/AgentNotes.cpp src/InlineAgentBar.cpp src/TerminalAttention.cpp src/TreeGitColors.cpp src/GitDirWatch.cpp \
+       src/GitDiffView.cpp src/CompareView.cpp src/ComparePanes.cpp src/CompareDecision.cpp src/GitGutter.cpp src/LineHistoryView.cpp src/TestGutter.cpp src/AgentNotes.cpp src/InlineAgentBar.cpp src/TerminalAttention.cpp src/TreeGitColors.cpp src/GitDirWatch.cpp \
        src/WebImageRules.cpp src/WebImages.cpp src/Mermaid.cpp src/Math.cpp src/Keys.cpp src/HintsSearchBox.cpp src/HintsColumns.cpp \
        src/BackupStore.cpp src/Persistence.cpp src/RecentList.cpp src/DockMenu.cpp src/DesktopMode.cpp src/MigrationLinux.cpp src/WindowLayout.cpp \
        src/PalettePanel.cpp \

@@ -339,4 +339,79 @@ std::string notCommittedDetail() {
     return "Not committed\nNo Claude Code session's edit wrote this line.";
 }
 
+// ------------------------------------------------------- one look, whole
+std::vector<std::string> blameArgs(const std::string &name) {
+    return {"blame", "--porcelain", "--contents", "-", "--", name};
+}
+
+Answer assemble(const std::string &text, const GitOutcome &git, std::vector<SessionInput> sessions) {
+    Answer a;
+    a.sessions = std::move(sessions);
+    const size_t count = lineCount(text);
+    bool known = true;
+    if (git.ok) {
+        a.hasBlame = parsePorcelain(git.out, &a.blame);
+        if (!a.hasBlame) {
+            known = false;
+            a.trouble = "git blame answered in a way mutible does not read.";
+        }
+    } else {
+        // A file git does not track, or no repository: nothing is committed.
+        const std::string &why = git.err;
+        const bool notTracked = why.find("no such path") != std::string::npos ||
+                                why.find("not a git repository") != std::string::npos ||
+                                why.find("HEAD") != std::string::npos ||
+                                why.find("no such ref") != std::string::npos;
+        if (git.timedOut || git.status == -1 || !notTracked) {
+            known = false;
+            a.trouble = why.empty() ? std::string("git could not say.") : why;
+        }
+    }
+    std::vector<SessionLines> lines;
+    lines.reserve(a.sessions.size());
+    for (const SessionInput &s : a.sessions)
+        lines.push_back(SessionLines{&s.changes, linesWritten(s.changes, text)});
+    if (known) {
+        a.lines = combine(count, a.hasBlame ? &a.blame : nullptr, lines);
+    } else {
+        a.lines.assign(count, Line());
+        // git could not say what is committed; a session's line is still its.
+        std::vector<Line> sessionsOnly = combine(count, nullptr, lines);
+        for (size_t i = 0; i < count; i++)
+            if (sessionsOnly[i].kind == Kind::Session) a.lines[i] = sessionsOnly[i];
+    }
+    return a;
+}
+
+std::string Answer::label(size_t line, long long now) const {
+    if (line >= lines.size()) return std::string();
+    const Line &l = lines[line];
+    switch (l.kind) {
+        case Kind::Commit: return commitLabel(blame.commits[(size_t)l.commit], now);
+        case Kind::Session: {
+            const SessionInput &s = sessions[(size_t)l.session];
+            return sessionLabel(s.info, s.changes[(size_t)l.change], now);
+        }
+        case Kind::NotCommitted: return notCommittedLabel();
+        case Kind::Unknown: break;
+    }
+    return std::string();
+}
+
+std::string Answer::detail(size_t line, long long now, DateFormat date) const {
+    if (line >= lines.size()) return std::string();
+    const Line &l = lines[line];
+    switch (l.kind) {
+        case Kind::Commit: return commitDetail(blame.commits[(size_t)l.commit], now, date);
+        case Kind::Session: {
+            const SessionInput &s = sessions[(size_t)l.session];
+            return sessionDetail(s.info, s.changes[(size_t)l.change], now, date);
+        }
+        case Kind::NotCommitted: return notCommittedDetail();
+        case Kind::Unknown:
+            return trouble.empty() ? std::string() : "Line history is not available: " + trouble;
+    }
+    return std::string();
+}
+
 }  // namespace LineHistory
