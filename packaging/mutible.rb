@@ -8,8 +8,8 @@
 # mutible was called mutible until 1.6.0: packaging/mutible.rb is the old
 # cask, deprecated, in the old tap.
 cask "mutible" do
-  version "1.6.20"
-  sha256 "dee0e1198a81c9520dddb646f85327e44b1858f45ce3827e2ab9c4e48572c9e2"
+  version "1.6.22"
+  sha256 "fb20d52feae844072c4a5ce51134dba44c765a2603a4663611fd5c0c0482c142"
 
   url "https://github.com/ible-ai/mutible/releases/download/v#{version}/Mutible.zip"
   name "Mutible"
