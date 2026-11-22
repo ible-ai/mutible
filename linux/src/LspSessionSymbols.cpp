@@ -128,7 +128,7 @@ void LspSession::workspaceSymbols(const std::string& query, WorkspaceSymbolsDone
 // spells it; one with no file is left out.
 std::vector<Lsp::Symbol> LspSession::mergedWorkspaceSymbols(std::vector<std::string>* paths) const {
     std::vector<Lsp::Symbol> merged = Lsp::mergeSymbols(
-        sym_->answers, [](const std::string& u) { return lspui::canonicalUri(u); });
+        sym_->answers, [this](const std::string& u) { return lspui::canonicalUri(u, isRemote()); });
     std::vector<Lsp::Symbol> symbols;
     for (Lsp::Symbol& s : merged) {
         std::string path = treePathForUri(s.uri);

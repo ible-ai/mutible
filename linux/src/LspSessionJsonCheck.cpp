@@ -28,7 +28,7 @@ const size_t kJsonCheckLimit = 8u << 20;
 const std::string& LspSession::shownUri() const { return uri_.empty() ? json_->uri : uri_; }
 
 void LspSession::jsonCheckDocument() {
-    std::string uri = !path_.empty() && JsonOutline::checksAsJson(path_) ? lspui::uriOf(path_)
+    std::string uri = !path_.empty() && JsonOutline::checksAsJson(path_) ? lspui::uriOf(path_, isRemote())
                                                                          : std::string();
     if (!uri.empty() && (server_ || alsoServer_)) {   // a server's list replaces the editor's
         if (diag_->store.erase(uri, kJsonServer)) problemsChanged();

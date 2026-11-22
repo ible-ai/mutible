@@ -35,6 +35,8 @@ FLAKY line.
 - #360 GTK over SSH: language servers run by the host (item 167).
 - #361 (the Mac session's) formatters over SSH (FsRead "format", Welcome
   flag 1024) and fetch, pull and push through the host's git.
+- GTK over SSH: language servers' edits reach files no tab holds, and
+  URIs are the host's paths, never this machine's realpath (item 168).
 
 ## Where it stands
 
@@ -9574,3 +9576,9 @@ side's; two are fixed, one left alone on purpose.
 - **Consent.** `LspSession::consentRoot()` is `link.machine() + folder()` (`ssh://standin/<folder>`) for a remote window; `FolderConsent::keyFor` keeps an `ssh://` key as it is (never a realpath of this machine's folder of that name); the bar, Ask Again and the session read it (`consentRootOf` in main.cpp). The request's `allowed` carries the answer, the host checks the folder's code on its own disk. The Python environment question is never asked.
 - **Checks.** remote_ssh's block (after git): a window on a folder of its own through the stand-in, lsp.fakelang (build/fakelsp, `.fk`) started by the host (its parent is not the app, `LspRunningServerCount() == 0`, initialize's rootUri the remote's and processId null, didOpen's URI), diagnostics, completion through the host, Return takes it, Ctrl+S and didSave after the host's write, Go to Definition opening util.fk through the host, a file made there reaching the watchers (`remoteFileBatches`, `watchedFolders()` empty), a Rust file's server (lsp.rust, restricted, the bar asks, a real click on Allow kept as `ssh://standin<folder>` and not for the folder here, the host starting it again with its defaults), and both servers gone with the window.
 - **Not done.** Workspace edits to files no tab holds are refused with a note; each flush settles the document's host copy (one round trip; the Mac follows the storage); `lspui::uriOf` uses this machine's `realpath` on a remote path; a flag-less host not checked (the stand-in is this build); real ssh never run.
+
+### 168. The window over SSH, language servers: edits to unopened files and URIs (stage 9, third slice; November 2026)
+
+- **What.** Two of entry 167's gaps closed, no change in `src/`. (1) `lspui::uriOf(path, remote)` and `canonicalUri(uri, remote)` never call this machine's `realpath` for a remote window (`LspSession::realOf` for `sameFile`, `treePathForUri`, `documentForPath` and the references' folder), so a link that exists only here at a remote path is not followed and the server's URIs map back as given. (2) A workspace edit to a file no tab holds (rename across files, Organize Imports, a code action) reads it through the host (`Editor::readHostTextForEdit`, `Link::readText`, waiting, as the Mac's `languageServerDiskText`), the text kept in `Editor::preread_` so `loadInto` fills the tab at once instead of beginLoading's "Opening" (the edit needs the text now); the edit is then applied as for a local file: a kept tab, one undo step, nothing saved (saving is the host's write). `applyEdit` forgets the kept texts however it ends.
+- **Checks.** remote_ssh's language server block: a rename touching util.fk (tab) and other.fk (none): the tab made with the edited host text, dirty, disks unchanged, Ctrl+S of each written by the host; a link `lnk.fk` here at a remote file's path: didOpen's URI is the window's path (never util.fk's).
+- **Not done.** Each flush's host copy round trip; real ssh never run.

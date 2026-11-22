@@ -480,8 +480,11 @@ SSH"). The seam is the transport, so everything above it is unchanged:
   the start, the handshake on `LspStarted` (processId null), the refusals
   mapped as `remoteServerEnded:` does, and `LspFiles` in place of inotify;
   consent is keyed `ssh://machine/folder` (`consentRoot`, kept by
-  `FolderConsent::keyFor`). Not done: edits to files no tab holds, the host
-  copy's round trip per flush.
+  `FolderConsent::keyFor`). A workspace edit to a file no tab holds reads it
+  through the host and opens a tab for it, unsaved, as on a local folder (GTK:
+  `Editor::readHostTextForEdit`). A remote window's URIs are its paths as
+  given, never this machine's realpath (GTK: `lspui::uriOf(path, remote)`,
+  `LspSession::realOf`). Not done: the host copy's round trip per flush.
 - **Checks**: `hostlsp:*` in `make test` (session_lsp_tests.inc); GUI:
   remote_ssh's language server block (RemoteSshSuite.mm's header).
 

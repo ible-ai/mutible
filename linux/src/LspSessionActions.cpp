@@ -339,7 +339,7 @@ void LspSession::commitRename(const std::string& name, int gen) {
                     note(why);
                     return;
                 }
-                const Lsp::WorkspaceEdit we = Lsp::parseWorkspaceEdit(result, lspui::canonicalUri);
+                const Lsp::WorkspaceEdit we = Lsp::parseWorkspaceEdit(result, [this](const std::string& u) { return lspui::canonicalUri(u, isRemote()); });
                 if (we.editCount() == 0 && we.problem.empty()) {
                     gtk_widget_error_bell(view_);
                     note("Nothing to rename");
@@ -398,7 +398,7 @@ void LspSession::referencesArrived(const Json& result, const Json& error, int ge
         return;
     }
     const std::vector<Lsp::ReferenceFile> files =
-        Lsp::groupReferences(Lsp::parseLocations(result), uri_, lspui::canonicalUri);
+        Lsp::groupReferences(Lsp::parseLocations(result), uri_, [this](const std::string& u) { return lspui::canonicalUri(u, isRemote()); });
     if (files.empty()) {
         gtk_widget_error_bell(view_);
         note("No references found");
@@ -410,7 +410,7 @@ void LspSession::referencesArrived(const Json& result, const Json& error, int ge
     GtkTextIter cur;
     cursorIter(&cur);
     const Lsp::Position caret = positionOf(&cur);
-    const std::string rootReal = lspui::realPath(root_);
+    const std::string rootReal = realOf(root_);
     size_t total = 0;
     for (const Lsp::ReferenceFile& f : files) {
         const std::string path = treePathForUri(f.uri);
@@ -422,7 +422,7 @@ void LspSession::referencesArrived(const Json& result, const Json& error, int ge
         const std::string shown = path.empty() ? f.uri : path;
         const size_t slash = shown.find_last_of('/');
         const std::string name = slash == std::string::npos ? shown : shown.substr(slash + 1);
-        std::string folder = slash == std::string::npos ? "" : lspui::realPath(shown.substr(0, slash));
+        std::string folder = slash == std::string::npos ? "" : realOf(shown.substr(0, slash));
         if (!rootReal.empty() && folder.rfind(rootReal, 0) == 0) {
             folder = folder.substr(rootReal.size());
             if (!folder.empty() && folder[0] == '/') folder = folder.substr(1);
@@ -605,7 +605,7 @@ void LspSession::performCodeAction(const Lsp::CodeAction& action, std::shared_pt
                                    std::function<void()> then) {
     if (action.hasEdit()) {
         std::string failure;
-        const int n = applyEdit(Lsp::parseWorkspaceEdit(action.edit, lspui::canonicalUri),
+        const int n = applyEdit(Lsp::parseWorkspaceEdit(action.edit, [this](const std::string& u) { return lspui::canonicalUri(u, isRemote()); }),
                                 server.get(), action.asked.get(), &failure, action.title);
         if (n < 0) {
             gtk_widget_error_bell(view_);
@@ -642,7 +642,7 @@ void LspSession::serverAppliesEdit(const std::weak_ptr<Server>& weak, const Json
             return;
         }
         std::string failure;
-        const int n = applyEdit(Lsp::parseWorkspaceEdit(params["edit"], lspui::canonicalUri),
+        const int n = applyEdit(Lsp::parseWorkspaceEdit(params["edit"], [this](const std::string& u) { return lspui::canonicalUri(u, isRemote()); }),
                                 s.get(), nullptr, &failure,
                                 params["label"].asString().empty() ? std::string("Edit")
                                                                     : params["label"].asString());

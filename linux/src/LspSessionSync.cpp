@@ -87,7 +87,7 @@ void LspSession::documentChanged(const std::string& pathIn) {
     }
     server_ = server;
     alsoServer_ = also;
-    if (server || also) uri_ = lspui::uriOf(path);
+    if (server || also) uri_ = lspui::uriOf(path, isRemote());
     // It, and every other tab a running server takes (a server just started
     // gets them all); a tab that closed or stopped showing text is closed.
     syncOpenDocuments();
@@ -176,7 +176,7 @@ void LspSession::syncOpenDocuments() {
                 std::shared_ptr<Server> server = runningServer(key);
                 if (!server) continue;
                 if (Lsp::isAlsoKey(key) && !alsoWantsPath(d->path(), key)) continue;
-                const std::string uri = lspui::uriOf(d->path());
+                const std::string uri = lspui::uriOf(d->path(), isRemote());
                 if (!seen.insert(key + " " + uri).second) continue;
                 wanted[{d->id(), key}] = Want{d, uri, lang.languageId, server};
             }

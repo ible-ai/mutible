@@ -641,7 +641,7 @@ void gitOverSsh() {
 // this app's own (LspRunningServerCount), the URIs it was sent (the
 // remote's paths, no parent process), and the answers kept per host and
 // folder (FolderConsent's ssh:// key, never this machine's path).
-std::string gLspFolder, gLspUtilUri;
+std::string gLspFolder, gLspUtilUri, gLspOtherUri;
 int gLspServer = 0, gRustServer = 0;
 size_t gLspTabs = 0;
 
@@ -712,6 +712,8 @@ void lspOverSsh() {
         gLspFolder = rp(made);
         MCGuiWriteFile(gLspFolder + "/main.fk", "use util\nfn main() {\n    return hel;\n}\n");
         MCGuiWriteFile(gLspFolder + "/util.fk", "fn helper() {}\n");
+        MCGuiWriteFile(gLspFolder + "/other.fk", "fn helper() {}\ncall helper\n");   // no tab ever holds it before the rename
+        gLspOtherUri = "file://" + gLspFolder + "/other.fk";
         MCGuiWriteFile(gLspFolder + "/src/main.rs", "fn main() {}\n");
         gLspUtilUri = "file://" + gLspFolder + "/util.fk";
         const std::string script =
@@ -729,7 +731,13 @@ void lspOverSsh() {
             "{\"label\": \"helper\", \"kind\": 3}, {\"label\": \"other\", \"kind\": 3}]}},"
             "{\"method\": \"textDocument/definition\", \"result\": [{\"uri\": \"" + gLspUtilUri +
             "\", \"range\": {\"start\": {\"line\": 0, \"character\": 3}, \"end\": {\"line\": 0, "
-            "\"character\": 9}}}]}]}";
+            "\"character\": 9}}}]},"
+            // A rename touching util.fk (a tab) and other.fk (none).
+            "{\"method\": \"textDocument/rename\", \"result\": {\"changes\": {\"" + gLspUtilUri +
+            "\": [{\"range\": {\"start\": {\"line\": 0, \"character\": 3}, \"end\": {\"line\": 0, "
+            "\"character\": 9}}, \"newText\": \"assist\"}], \"" + gLspOtherUri +
+            "\": [{\"range\": {\"start\": {\"line\": 1, \"character\": 5}, \"end\": {\"line\": 1, "
+            "\"character\": 11}}, \"newText\": \"assist\"}]}}}]}";
         const std::string cmd = MCGuiFakeLsp("remote", script);
         // Asks for its settings once initialized, as rust-analyzer does.
         const std::string rust = MCGuiFakeLsp(
@@ -824,7 +832,8 @@ void lspOverSsh() {
     MCGuiWait("it opens util.fk through the host", 20, [] {
         return !lspS() || lspWindow().editor->currentPath() == gLspFolder + "/util.fk";
     });
-    MCGuiStep("util.fk's text, read through the host; a file made there", [] {
+    MCGuiWait("util.fk read through the host is in the buffer", 20, [] { return !lspS() || lspBufferText() == "fn helper() {}\n"; });
+    MCGuiStep("util.fk's text; a file made there", [] {
         if (!lspS()) return;
         GCHECK_EQ_STR(lspBufferText(), "fn helper() {}\n");
         // The host's disk notice reaches the server's watchers
@@ -841,6 +850,67 @@ void lspOverSsh() {
     });
     MCGuiStep("no watch of this machine's disk was made", [] {
         if (lspS()) GCHECK(lspS()->watchedFolders().empty());
+    });
+
+    // ---- a rename whose edit reaches a file no tab holds: read through the
+    // host, a tab made for it with the edit in (nothing saved, as the Mac),
+    // and a save of it written by the host.
+    MCGuiStep("F2 on helper in util.fk, assist typed", [] {
+        if (!lspS()) return;
+        GCHECK(lspWindow().editor->documentFor(gLspFolder + "/other.fk") == nullptr);
+        lspWindow().editor->focusActiveDocument();
+        lspCaretAfter("help");
+        MCGuiKey("F2");
+    });
+    MCGuiWait("the rename box", 10, [] { return !lspS() || (lspS()->renameBoxVisible() && lspS()->renameEntry()); });
+    MCGuiStep("typed", [] { MCGuiType("assist\n"); });
+    MCGuiWait("renamed", 20, [] { return !lspS() || lspS()->lastNote().rfind("Renamed", 0) == 0; });
+    MCGuiStep("two files, other.fk's tab made with the host's text edited; nothing written yet", [] {
+        if (!lspS()) return;
+        GCHECK_EQ_STR(lspS()->lastNote(), "Renamed 2 occurrences in 2 files");
+        Document* o = lspWindow().editor->documentFor(gLspFolder + "/other.fk");
+        GCHECK(o != nullptr);
+        if (o) {
+            GCHECK_EQ_STR(o->text(), "fn helper() {}\ncall assist\n");
+            GCHECK(o->dirty());
+        }
+        GCHECK_EQ_STR(lspBufferText(), "fn assist() {}\n");
+        GCHECK_EQ_STR(readFile(gLspFolder + "/other.fk"), "fn helper() {}\ncall helper\n");
+        GCHECK_EQ_STR(readFile(gLspFolder + "/util.fk"), "fn helper() {}\n");
+        GCHECK(alertText().empty());
+        lspWindow().editor->focusActiveDocument();
+        MCGuiKey("ctrl+s");   // util.fk
+    });
+    MCGuiWait("util.fk written by the host", 20, [] {
+        return !lspS() || readFile(gLspFolder + "/util.fk") == "fn assist() {}\n";
+    });
+    MCGuiStep("other.fk on show, saved", [] {
+        if (!lspS()) return;
+        lspWindow().editor->openFile(gLspFolder + "/other.fk");
+        lspWindow().editor->focusActiveDocument();
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("other.fk written by the host", 20, [] {
+        return !lspS() || readFile(gLspFolder + "/other.fk") == "fn helper() {}\ncall assist\n";
+    });
+
+    // ---- a remote path is the host's: a link that exists only here is not
+    // followed for the document's URI.
+    MCGuiStep("a link here at a remote file's path, opened there", [] {
+        if (!lspS()) return;
+        GCHECK(symlink((gLspFolder + "/util.fk").c_str(), (gLspFolder + "/lnk.fk").c_str()) == 0);
+        lspWindow().editor->openFile(gLspFolder + "/lnk.fk");
+    });
+    MCGuiWait("the server is sent the window's path, not this machine's resolution of it", 20, [] {
+        return !lspS() || MCGuiFakeLspReceived("remote", "textDocument/didOpen", "lnk.fk") > 0;
+    });
+    MCGuiStep("no didOpen under the link's target for it", [] {
+        if (!lspS()) return;
+        int under = 0;
+        for (const Json& m : lspReceived("remote", "textDocument/didOpen"))
+            if (m["params"]["textDocument"]["uri"].asString() == "file://" + gLspFolder + "/lnk.fk") under++;
+        GCHECK(under == 1);
+        unlink((gLspFolder + "/lnk.fk").c_str());
     });
 
     // ---- the folder's answer, per host and folder: rust-analyzer would run

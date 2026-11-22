@@ -201,6 +201,15 @@ bool Editor::loadInto(Document* d, const std::string& path) {
     // viewers that read the disk themselves (pictures, PDFs, players, a
     // database, Quick Look) are not offered for it yet.
     if (link_ && link_->kind() == SessionLink::Link::Kind::Remote) {
+        auto pre = preread_.find(path);
+        if (pre != preread_.end()) {   // read for a workspace edit: in at once
+            Document::FileEncoding enc;
+            enc.encoding = pre->second.encoding;
+            enc.bom = pre->second.bom;
+            const std::string text = std::move(pre->second.text);
+            preread_.erase(pre);
+            return textRead(d, path, (int)Document::Read::Ok, text, enc);
+        }
         // Asked of the host without blocking (Document::beginLoading, as a
         // large file loads): the tab shows "Opening..." and documentLoaded
         // finishes it, or says why not.
@@ -291,6 +300,15 @@ bool Editor::openFile(const std::string& path, EditorTabs::OpenFrom from) {
     activate(d);
     if (Document* o = documentById(old)) letGo(o);
     return ok;
+}
+
+bool Editor::readHostTextForEdit(const std::string& path, std::string* text) {
+    if (!remote()) return false;
+    SessionLink::Link::RemoteText r = link_->readText(path);
+    if (!r.ok) return false;
+    *text = r.text;
+    preread_[path] = std::move(r);
+    return true;
 }
 
 Document* Editor::agentPreviewTab() const {

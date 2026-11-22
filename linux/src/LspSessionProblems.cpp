@@ -136,7 +136,7 @@ bool LspSession::problemsKnown() const {
 void LspSession::openProblem(const LspProblem& problem) {
     if (problem.heading || problem.path.empty()) return;
     Lsp::Location loc;
-    loc.uri = lspui::uriOf(problem.path);
+    loc.uri = lspui::uriOf(problem.path, isRemote());
     loc.range.start = Lsp::Position{problem.line, problem.column};
     loc.range.end = Lsp::Position{problem.endLine, problem.endColumn};
     revealLocation(loc);
