@@ -1442,7 +1442,9 @@ static void act_save(GSimpleAction*, GVariant*, gpointer userp) {
         return;
     // Ctrl+S in a project that sets up its formatter, with format on save
     // off: offer it (FormatOffer.h).
-    if (saveCurrent(app) && app->formatOffer && app->format && app->format->canFormat())
+    // Over SSH the project's configuration is the other machine's, which the
+    // offer would look for on this one's disk: no offer there.
+    if (saveCurrent(app) && !app->remote && app->formatOffer && app->format && app->format->canFormat())
         app->formatOffer->offerAfterSaving(app->editor->currentPath());
 }
 
@@ -1458,6 +1460,66 @@ static void act_format_document(GSimpleAction*, GVariant*, gpointer userp) {
 // window over SSH its host's ssh:// machine and folder (LspSession::consentRoot).
 static std::string consentRootOf(App* app) {
     return app->lsp ? app->lsp->consentRoot() : app->rootDir;
+}
+
+// Format Document in a window over SSH (stage 9, the Mac's formatText:): the
+// host plans and runs the formatter on its own disk (SessionFormat.h) and
+// `done` comes once on the main loop, with the answer, the link's end, or
+// (when nothing answers past the formatter's own limit and a little more)
+// the wait's end, whichever is first.
+static void remoteFormat(App* app, const std::string& text, const std::string& path,
+                         const std::string& setting, const std::string& consent, int first, int last,
+                         bool projectOnly, double timeout,
+                         std::function<void(FormatRunner::Result)> done) {
+    auto finished = std::make_shared<bool>(false);
+    auto finish = [finished, done](FormatRunner::Result r) {
+        if (*finished) return;
+        *finished = true;
+        done(std::move(r));
+    };
+    const std::shared_ptr<SessionLink::Link> link = app->link;
+    std::string host = link ? link->target().host : std::string();
+    if (host.empty() && link) host = link->label();
+    if (host.empty()) host = "the other machine";
+    auto later = [finish](FormatRunner::Result r) {
+        auto* p = new std::pair<std::function<void(FormatRunner::Result)>, FormatRunner::Result>(finish, std::move(r));
+        g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer d) -> gboolean {
+            std::unique_ptr<std::pair<std::function<void(FormatRunner::Result)>, FormatRunner::Result>> q(
+                static_cast<std::pair<std::function<void(FormatRunner::Result)>, FormatRunner::Result>*>(d));
+            q->first(std::move(q->second));
+            return G_SOURCE_REMOVE;
+        }, p, nullptr);
+    };
+    if (!link || link->lost()) return later(FormatRunner::notRun(Shared::formatLostText(host)));
+    if (!link->runsFormatters())
+        return later(FormatRunner::notRun(Shared::formatTooOldText(link->label())));
+    Shared::FormatRequest req;
+    req.path = path;
+    req.setting = setting;
+    req.consent = consent;
+    req.firstLine = first;
+    req.lastLine = last;
+    req.projectOnly = projectOnly;
+    req.timeout = timeout;
+    const bool sent = link->formatAsync(
+        Shared::formatRequestJson(req), text,
+        [finish, host](bool got, const Json& answer, std::string&& out) {
+            if (!got) return finish(FormatRunner::notRun(Shared::formatLostText(host)));
+            finish(FormatRunner::fromHost(Shared::formatReplyFrom(answer, std::move(out)), host));
+        });
+    if (!sent) return later(FormatRunner::notRun(Shared::formatLostText(host)));
+    // The host stops the formatter at its own limit; past that and a little
+    // more for the answer to cross, the window stops waiting.
+    struct Wait {
+        std::function<void(FormatRunner::Result)> finish;
+        std::string text;
+    };
+    g_timeout_add_seconds((guint)(timeout + 30), [](gpointer d) -> gboolean {
+        std::unique_ptr<Wait> w(static_cast<Wait*>(d));
+        w->finish(FormatRunner::notRun(w->text));
+        return G_SOURCE_REMOVE;
+    }, new Wait{finish, "The other machine did not answer within " + Git::durationText(timeout + 30) +
+                            ": the file was not changed."});
 }
 
 static void updateFolderToolsAction(App* app) {
@@ -6562,7 +6624,21 @@ static App* newWindow(const std::string& root, const std::string& file,
 #else
             (void)app; (void)command;
 #endif
-        }});
+        },
+        app->remote ? std::function<std::string()>([app] { return consentRootOf(app); })
+                    : std::function<std::string()>(),
+        app->remote ? std::function<void(const std::string&, const std::string&, const std::string&,
+                                         const std::string&, int, int, bool, double,
+                                         std::function<void(FormatRunner::Result)>)>(
+                          [app](const std::string& text, const std::string& path, const std::string& setting,
+                                const std::string& consent, int first, int last, bool projectOnly,
+                                double timeout, std::function<void(FormatRunner::Result)> done) {
+                              remoteFormat(app, text, path, setting, consent, first, last, projectOnly,
+                                           timeout, std::move(done));
+                          })
+                    : std::function<void(const std::string&, const std::string&, const std::string&,
+                                         const std::string&, int, int, bool, double,
+                                         std::function<void(FormatRunner::Result)>)>()});
     app->consentListener = FolderConsent::listen([app](const std::string&) {
         updateFolderToolsAction(app);
     });

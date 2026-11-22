@@ -354,6 +354,46 @@ void format(const std::string& text, const std::string& path, const std::string&
     }).detach();
 }
 
+Result notRun(const std::string& message) {
+    Result r;
+    r.decision.kind = FormatRun::Kind::Failed;
+    r.decision.message = message;
+    r.message = message;
+    return r;
+}
+
+Result fromHost(const Shared::FormatReply& reply, const std::string& host) {
+    Result r;
+    r.decision.tool = reply.tool;
+    r.decision.style = reply.style;
+    r.decision.ranged = reply.ranged;
+    if (reply.kind == "consent") {
+        r.decision.kind = FormatRun::Kind::NeedsConsent;
+        r.decision.consentFolder = reply.consentFolder;
+        r.decision.consentConfig = reply.consentConfig;
+        return r;
+    }
+    if (reply.ok) {
+        r.decision.kind = FormatRun::Kind::Run;
+        // A NUL is UTF-8 but no text a GtkTextBuffer holds.
+        if (reply.text.find('\0') != std::string::npos) {
+            r.message = reply.tool + " wrote something that is not UTF-8 text. The file was not changed.";
+            return r;
+        }
+        r.ok = true;
+        r.text = reply.text;
+        return r;
+    }
+    r.decision.kind = reply.kind == "unavailable" ? FormatRun::Kind::Unavailable
+                      : reply.kind == "run"       ? FormatRun::Kind::Run
+                                                  : FormatRun::Kind::Failed;
+    r.decision.serverMayFormat = reply.serverMayFormat;
+    r.decision.missing = reply.missing;
+    r.message = reply.missing ? Shared::formatMissingText(reply.message, host) : reply.message;
+    r.decision.message = r.message;
+    return r;
+}
+
 void offerOnSave(const std::string& path, const std::string& root, const std::string& setting,
                  std::function<void(std::string)> done) {
     struct Look {

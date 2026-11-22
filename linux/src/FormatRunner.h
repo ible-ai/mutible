@@ -11,6 +11,7 @@
 #pragma once
 
 #include "FormatRun.h"
+#include "SessionFormat.h"
 
 #include <functional>
 #include <string>
@@ -34,6 +35,16 @@ void format(const std::string& text, const std::string& path, const std::string&
             const std::string& setting, const std::string& consent, int firstLine,
             int lastLine, double timeoutSeconds, std::function<void(Result)> done,
             bool projectOnly = false);
+
+// A window over SSH's format: the host planned and ran the formatter on its
+// disk (SessionFormat.h) and `reply` is its answer read back; `host` the
+// machine, for what is said of a formatter missing there (no install
+// commands: this machine's would not put it there). The same Result the
+// local run gives, so the consent question, the server fallback and the
+// notes are unchanged.
+Result fromHost(const Shared::FormatReply& reply, const std::string& host);
+// Nothing was run: why (a host too old, the connection lost, no answer).
+Result notRun(const std::string& message);
 
 // The offer of format on save after a save (FormatRun::onSaveOffer): the
 // question to put, "" for none, found off the main thread; `done` comes on

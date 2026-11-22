@@ -41,6 +41,7 @@
 #include <string>
 
 #include "FormatRun.h"
+#include "FormatRunner.h"
 
 class Document;
 class Editor;
@@ -56,6 +57,15 @@ public:
         // Types a command in the terminal, never pressing Return (the
         // install offer's Run in Terminal); null leaves that button out.
         std::function<void(const std::string& command)> runInTerminal;
+        // A window over SSH (null for a local one): the folder's key for the
+        // answers about its own tools (its ssh:// machine and folder), and
+        // the formatter run by the window's host (FormatRunner::remote),
+        // `done` once on the main thread.
+        std::function<std::string()> consentRoot;
+        std::function<void(const std::string& text, const std::string& path, const std::string& setting,
+                           const std::string& consent, int firstLine, int lastLine, bool projectOnly,
+                           double timeout, std::function<void(FormatRunner::Result)> done)>
+            remoteFormat;
     };
 
     Formatting(GtkWindow* window, Editor* editor, LspSession* lsp, Host host);

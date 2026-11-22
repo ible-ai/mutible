@@ -194,12 +194,9 @@ std::function<FolderSearch::ReadStatus(const std::string&, std::string*)> hostWo
 
 GitRunnerPtr hostGitRunner(const std::shared_ptr<RemoteWorkspace>& wsShared) {
     std::weak_ptr<RemoteWorkspace> weak = wsShared;
-    const std::string label = wsShared->label();
     auto runner = std::make_shared<GitRunner>(
-        [weak, label](const std::string& dir, const std::vector<std::string>& args, double limit,
+        [weak](const std::string& dir, const std::vector<std::string>& args, double limit,
                       const std::string* input) -> GitResult {
-            // Nothing is sent: they would want credentials nobody can type there.
-            if (Git::talksToRemote(args)) return hostFailed(Shared::gitRemoteOpText(label));
             // The answer comes on the main loop: never wait for it there.
             if (g_main_context_is_owner(g_main_context_default()))
                 return hostFailed("git for a window over SSH runs off the main thread.");

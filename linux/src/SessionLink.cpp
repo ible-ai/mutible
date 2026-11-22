@@ -460,6 +460,16 @@ bool Link::gitAsync(Json request, std::string input, BytesFn done) {
     return true;
 }
 
+bool Link::runsFormatters() const { return !lost() && client_->hostFormats(); }
+
+bool Link::formatAsync(Json request, std::string text, BytesFn done) {
+    if (!runsFormatters()) return false;
+    const std::uint64_t req = client_->requestFormat(0, std::move(request), std::move(text));
+    if (!req) return false;
+    byteReads_[req] = std::move(done);
+    return true;
+}
+
 bool Link::readBytesAsync(Json request, BytesFn done) {
     if (lost()) return false;
     const std::uint64_t req = client_->requestRead(0, std::move(request));

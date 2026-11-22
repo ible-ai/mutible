@@ -112,12 +112,10 @@ struct GitReply {
 GitReply gitReplyFrom(const Json& answer, std::string&& out);
 
 // What a window over SSH says when its host cannot run git for it: the
-// host is too old (no flag 256), the connection is lost, or the command
-// talks to a remote (GTK's window, which does not send them yet). `host`
-// is the window's "host:path" or machine name.
+// host is too old (no flag 256) or the connection is lost. `host` is the
+// window's "host:path" or machine name.
 std::string gitTooOldText(const std::string& host);
 std::string gitLostText(const std::string& host);
-std::string gitRemoteOpText(const std::string& host);
 // A fetch, pull or push over SSH that wanted a credential the other
 // machine has not set up for `remote` (GitUi::needsCredentials): what to
 // set up there, and git's last line (stderr's, else stdout's).

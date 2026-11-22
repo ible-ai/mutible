@@ -175,6 +175,29 @@ docs/notes/session-host.md, "Formatters over SSH").
   `lookAgainForMissingServer` runs on window key and
   `MCTerminalCommandDidFinishNotification`, so no restart is needed.
 
+## Over SSH on GTK (2026-11-22)
+
+The Mac's #361 on GTK, with no change in `src/`. `Formatting::Host` gains
+`remoteFormat` and `consentRoot` (null in a local window); `Formatting::run`
+sends the tab's text, path, `format.<lang>`, the selection's lines,
+`projectOnly`, the 10 s limit and the folder's answer through `remoteFormat`
+in place of `FormatRunner::format`, and gets the same `FormatRunner::Result`
+back, so the consent question, the language-server fallback, the notes, the
+undo step and format on save are the local code. main.cpp's `remoteFormat`
+asks `SessionLink::Link::formatAsync` (`Client::requestFormat`, the answer
+read by `Shared::formatReplyFrom`, turned into a Result by
+`FormatRunner::fromHost`), never blocking the main loop; it answers once, with
+the host's answer, the lost link's words, "needs a newer mutible there" (no
+flag 1024) or, past the formatter's limit plus 30 s, that the other machine
+did not answer. The folder's answer is kept under `consentRoot()` (the link's
+ssh:// machine and folder), both when asked and when the question's Allow is
+stored. A formatter missing there names the host and offers no install
+commands (`FormatRunner::fromHost` leaves `installPrograms` empty). The
+format on save offer after a save is not made in a remote window.
+- Over SSH on GTK: **the stand-in's folder is this machine's**, so remote_ssh
+  has the scripted shfmt print where it ran and the stand-in's variable
+  (`SSH_STANDIN`), which only the host's environment has.
+
 ## Traps
 
 - Over SSH: **the stand-in's folder is this Mac's**, so a formatter run

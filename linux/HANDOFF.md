@@ -37,6 +37,9 @@ FLAKY line.
   flag 1024) and fetch, pull and push through the host's git.
 - GTK over SSH: language servers' edits reach files no tab holds, and
   URIs are the host's paths, never this machine's realpath (item 168).
+- GTK over SSH: fetch, pull, push, Sync and autofetch run on the host,
+  and Format Document and format on save run its formatter (item 169);
+  the core's unused `Shared::gitRemoteOpText` is deleted.
 
 ## Where it stands
 
@@ -9582,3 +9585,9 @@ side's; two are fixed, one left alone on purpose.
 - **What.** Two of entry 167's gaps closed, no change in `src/`. (1) `lspui::uriOf(path, remote)` and `canonicalUri(uri, remote)` never call this machine's `realpath` for a remote window (`LspSession::realOf` for `sameFile`, `treePathForUri`, `documentForPath` and the references' folder), so a link that exists only here at a remote path is not followed and the server's URIs map back as given. (2) A workspace edit to a file no tab holds (rename across files, Organize Imports, a code action) reads it through the host (`Editor::readHostTextForEdit`, `Link::readText`, waiting, as the Mac's `languageServerDiskText`), the text kept in `Editor::preread_` so `loadInto` fills the tab at once instead of beginLoading's "Opening" (the edit needs the text now); the edit is then applied as for a local file: a kept tab, one undo step, nothing saved (saving is the host's write). `applyEdit` forgets the kept texts however it ends.
 - **Checks.** remote_ssh's language server block: a rename touching util.fk (tab) and other.fk (none): the tab made with the edited host text, dirty, disks unchanged, Ctrl+S of each written by the host; a link `lnk.fk` here at a remote file's path: didOpen's URI is the window's path (never util.fk's).
 - **Not done.** Each flush's host copy round trip; real ssh never run.
+
+### 169. The window over SSH, fetch, pull, push and formatters (stage 9; November 2026)
+
+- **What.** The Mac's #361 on GTK; the only change in `src/` deletes `Shared::gitRemoteOpText`, which neither app used any more. Fetch, pull, push, Sync and autofetch are no longer refused (`hostGitRunner`, `GitPanel::runSync` and `autoFetchTickAt` lost their `gitRemoteOpText` checks): the host runs them with its own credentials and never a prompt, and `finishSync` says `Shared::gitCredentialsText` when `GitUi::needsCredentials` holds. Format Document and format on save go through `Formatting::Host::remoteFormat` (main.cpp `remoteFormat`: `Link::formatAsync`, `Client::requestFormat`, flag 1024) and come back as the same `FormatRunner::Result` (`FormatRunner::fromHost`), so the consent question, the server fallback, the notes and the undo step are the local code. The consent answer is kept under `consentRoot()` (the link's ssh:// key). No format on save offer in a remote window. A host without flag 1024: "needs a newer mutible there" (`formatTooOldText`).
+- **Checks.** remote_ssh: push to a bare origin on the stand-in's disk, another clone's commit by Fetch and Pull, a force, a `+` refspec, a deletion and a URL refused in the host's sentences, an origin whose ssh refuses the key says the credentials sentence at once; a formatter block (scripted shfmt run by the host: folder, SSH_STANDIN, arguments; format on save; a `format.shell` program outside the table refused).
+- **Not done.** A flag-less host not checked; the format on save offer over SSH; real ssh never run.
