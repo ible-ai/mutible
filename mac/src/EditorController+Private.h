@@ -863,6 +863,9 @@ extern NSUInteger MCDirtyFromHostMarks;
 // A file's text from its disk for the language servers' edits across files
 // (LspSession diskText): the host's in a window over SSH.
 - (NSString *)languageServerDiskText:(NSString *)path;
+// The window's language servers become its host's (once; a window on this
+// Mac, or a session not made yet, does nothing).
+- (void)giveLanguageServersTheHost;
 // The tree listed, opened or closed folders: the host is told which to
 // watch (on the main queue's next turn, once).
 - (void)remoteTreeFoldersChanged;

@@ -411,7 +411,7 @@ SSH"). The seam is the transport, so everything above it is unchanged:
 
 - **The transport** (`LspRemote.{h,mm}`, `MCLspServer
   initWithKey:remote:request:name:`): `MCLspRemoteHost` is the window's
-  host as the place its servers run, made by `startRemoteWorkspace` on the
+  host as the place its servers run, made by `giveLanguageServersTheHost` (from `startRemoteWorkspace` and once the session is made) on the
   window's link and its session window's id, given to the session with
   `useRemoteHost:` before the first file reaches it (and the file on show
   then sent again), moved by Reconnect (`attachLink:`, then
@@ -496,3 +496,4 @@ text is in place in its section.
 - Over SSH: a pid of this Mac's sent as initialize's processId names nothing on the other machine, and a server that watches its parent ends; a remote server gets null.
 - Over SSH: the session's host copy of the text (`hostText`) settles with a round trip on every flush; a remote window's servers follow the storage instead.
 - Over SSH: the stand-in's folder is this Mac's, so a server started here on that path would pass remote_ssh; it checks the server's parent is not the app, and that the URIs and the definition's file came through the host.
+- Over SSH: `useRemoteSessionLink:` (and so `startRemoteWorkspace`) runs before `showWindow` builds the window's LspSession, so the host is given in `giveLanguageServersTheHost`, called from both; #358's first CI run found the session without it.

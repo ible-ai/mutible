@@ -66,8 +66,18 @@ static char kRemoteWorkspaceKey;
     [self remoteTreeFoldersChanged];
     [self watchGitOnHost:ws.gitRunner];
     [self useHostGit];   // the panel made already, if it was
-    // Language servers on the host (stage 9): before the first file reaches
-    // the session, so no server of this Mac's starts for a remote path.
+    [self giveLanguageServersTheHost];
+}
+
+// Language servers on the host (stage 9): the window's LspSession is given
+// an MCLspRemoteHost on its link before its first file, so no server of
+// this Mac's starts for a remote path. Called from startRemoteWorkspace
+// and again once the session is made (Layout's showWindow builds it after
+// useRemoteSessionLink:, so at first there is none: remote_ssh's first CI
+// run on #358 found the session without its host); once.
+- (void)giveLanguageServersTheHost {
+    MCSessionLinkRef *link = [self sessionRemoteLink];
+    if (!link.link || !self.lsp || self.lsp.remoteHost) return;
     [self.lsp useRemoteHost:[[MCLspRemoteHost alloc] initWithLink:link
                                                            window:[self sessionWindow].windowId]];
     // A file already on show (its tab loaded before the host was given)
