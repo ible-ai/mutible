@@ -148,6 +148,11 @@ std::uint64_t RemoteWorkspace::search(Json request, std::function<void(std::vect
     return req;
 }
 
+std::uint64_t RemoteWorkspace::replace(Json request, std::function<void(std::vector<Json>&&, bool)> answers) {
+    if (!live()) return 0;
+    return link_->replace(std::move(request), std::move(answers));
+}
+
 void RemoteWorkspace::cancelSearch(std::uint64_t req) {
     if (link_ && req) link_->cancelStream(req);
 }

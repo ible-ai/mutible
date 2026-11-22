@@ -3913,8 +3913,9 @@ this machine's disk at that path.
   the files are on host:path. The terminal runs there." (`refuseOverSsh`):
   New Folder, Rename, Move to Trash, drops into the tree, Reveal in Files.
   New File asks the name and opens an empty untitled tab at the path, which
-  its first save makes through the host. Find in Folder's TODOs and Replace in
-  Folder (Replace All, one row) say so in the panel's status line.
+  its first save makes through the host. Find in Folder's TODOs, and Replace in
+  Folder's one row and Preserve Case, say so in the panel's status line
+  (Replace All itself goes to the host: the fifth slice's note below).
 - **Quick Open** (`PalettePanel::Context::remoteList`): the host's file list
   fills the same `files_`/`fileKeys_` as the local walk's, with the same
   generation guard and ranking; picks open through the host as any file.
@@ -4307,3 +4308,40 @@ the window's folder.
   `ssh://other/...` and a file outside the folder each a window of their own,
   closed with their host. The new file's tab counts as dirty on GTK (as New
   File's), unlike the Mac's.
+
+#### The GTK window over SSH, Replace All through the host (2026-11-21, sixth slice)
+
+Replace All in a window over SSH is the host's "replace" op (FsRead; the
+browser page's `Server::onReplace`), no src/ change. `SearchPanel::
+replaceAllOnHost` sends what the page sends: the query and its toggles, the
+replacement, `hidden` true (as the search read them), and for each file the
+rows the search showed, `{line, text, count, on}`, in the search's order.
+The host checks every file against all its rows, so the rows dismissed since
+the search (kept in `hostDismissed_`, GTK drops them from `hits_`) go as
+`on:false`. A file whose tab holds changes the host
+lacks (`holdOf`, as the local Replace All) is not sent. The question and its words are
+the local one's ("Replace 2 matches in 2 files?", "Each becomes ... the
+others are written to disk. Left alone, since their tabs have unsaved
+changes: x."); its counts are the rows' (a file the search truncated is
+checked by the host against rows it was not sent: left alone and said).
+
+- **The host's side.** `Host::onReplace` edits each document it holds with no
+  unsaved changes as one host step (a window's tab for it shows the new text
+  through the normal edit path, unsaved, undone there), skips a dirty one
+  (`unsaved`), and gives the other files to a worker, which rewrites them with
+  the save rules (encoding, stamp checked, atomically). The answer
+  (`replaced`, `files`, `edited`, `editedMatches`, `skipped[{why}]`, `error`)
+  becomes the status: "Replaced 2 matches in 2 files (1 open in tabs,
+  unsaved). Left alone, with unsaved changes: fresh.c. Now ...", the host's
+  own `why` sentences after "Left alone:".
+- **Where.** `Link::replace` (`Client::requestReplace`, a stream like search),
+  `RemoteWorkspace::replace`, `SearchPanel::setHostReplace`. Without it (a
+  host whose Welcome lacks flag 16, `hostWritesForPages`: every host of this
+  tree sets it) or a lost link, the status line refuses with a note.
+- **Traps.** The host ignores Preserve Case (`searchOptions`), so it is
+  refused over SSH. One match of a row cannot be sent: the host replaces
+  every match of a row's line, so Replace Match is refused with a note.
+- **Checked** (`remote_ssh`): a panel without the op refuses; with it, util.c
+  (closed) is rewritten on disk, main.c's clean tab shows the new text unsaved
+  with the disk as it was, fresh.c's tab with a typed change is left alone
+  and named, and the question and the status are in the words above.

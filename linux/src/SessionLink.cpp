@@ -530,6 +530,13 @@ std::uint64_t Link::stream(Json request, StreamFn answers) {
     return req;
 }
 
+std::uint64_t Link::replace(Json request, StreamFn answers) {
+    if (lost()) return 0;
+    const std::uint64_t req = client_->requestReplace(0, std::move(request));
+    if (req) streams_[req] = std::move(answers);
+    return req;
+}
+
 void Link::cancelStream(std::uint64_t req) {
     auto it = streams_.find(req);
     if (it == streams_.end()) return;
