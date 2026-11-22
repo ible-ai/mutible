@@ -3400,12 +3400,6 @@ static void wireReviewPage(App* app, const std::shared_ptr<ChangeReviewPage>& pa
 
 static void showChangeReview(App* app, const std::string& rel, bool staged, bool preview) {
     if (app->dead || !app->git) return;
-    // The page reads the work tree and its pictures from this disk: not yet
-    // over SSH, where each row opens its raw diff instead.
-    if (app->remote) {
-        flashStatus(app, "Review Changes does not work in a window over SSH yet; a row opens its diff.");
-        return;
-    }
     if (ChangeReviewPage* open = reviewPageOf(app)) {
         app->editor->showPage(std::shared_ptr<EditorPage>(
             std::shared_ptr<EditorPage>(), open), preview);   // found by its key, the same page
@@ -3428,10 +3422,6 @@ static void showChangeReview(App* app, const std::string& rel, bool staged, bool
 static void showCommitReview(App* app, const std::string& hash, const std::string& subject,
                              bool preview) {
     if (app->dead || !app->git || !Shared::Web::commitName(hash)) return;
-    if (app->remote) {
-        flashStatus(app, "A commit's review page does not work in a window over SSH yet; its diff opens instead.");
-        return;
-    }
     auto page = std::make_shared<ChangeReviewPage>(app->git, app->rootDir, hash, subject);
     wireReviewPage(app, page);
     app->editor->showPage(page, preview);   // a commit already open shows its own tab
@@ -3560,15 +3550,15 @@ static void makeGitPanel(App* app) {
     app->git->fileOnShow = [app] {
         return app->dead || app->editor->isDiff() ? std::string() : app->editor->currentPath();
     };
-    if (!app->remote) {   // over SSH a row opens its raw diff: the review reads this disk
-        app->git->onReview = [app](const std::string& rel, bool staged, bool preview) {
-            showChangeReview(app, rel, staged, preview);
-        };
-        app->git->onReviewCommit = [app](const std::string& hash, const std::string& subject,
-                                         bool preview) {
-            showCommitReview(app, hash, subject, preview);
-        };
-    }
+    // Over SSH the pages read the host's repository and work tree (the
+    // panel's runner, GitRun.h).
+    app->git->onReview = [app](const std::string& rel, bool staged, bool preview) {
+        showChangeReview(app, rel, staged, preview);
+    };
+    app->git->onReviewCommit = [app](const std::string& hash, const std::string& subject,
+                                     bool preview) {
+        showCommitReview(app, hash, subject, preview);
+    };
     app->git->installActions(G_ACTION_MAP(app->window));
     app->editor->onDiffViewMade = [app](GitDiffView* view) {
         if (!app->dead && app->git) app->git->attachDiffView(view);

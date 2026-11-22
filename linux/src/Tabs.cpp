@@ -418,6 +418,18 @@ constexpr size_t kMaxSideBytes = 16u * 1024 * 1024;
 // the page showed it.
 std::string sideText(const TabSessions::ComparedSide& s) {
     if (s.path.empty()) return "";
+    // In a window over SSH (the thread is in the host's git scope) the paths
+    // are the host's: its file through the link, its repository through the
+    // host's git; nothing is read from this disk.
+    const bool host = gitRunsOnHost();
+    if (s.rev.empty() && host) {
+        std::string text;
+        auto read = hostWorkReader();
+        if (!read || read(s.path, &text) != FolderSearch::ReadStatus::Ok || text.size() > kMaxSideBytes ||
+            !g_utf8_validate(text.data(), (gssize)text.size(), nullptr))
+            return "";
+        return text;
+    }
     if (s.rev.empty()) {
         struct stat st;
         if (stat(s.path.c_str(), &st) != 0 || !S_ISREG(st.st_mode) ||
@@ -437,8 +449,8 @@ std::string sideText(const TabSessions::ComparedSide& s) {
     }
     // The path with its links resolved the way the repository names files; a
     // file gone since is its folder's real path and its name.
-    char* resolved = realpath(s.path.c_str(), nullptr);
-    std::string real = resolved ? resolved : "";
+    char* resolved = host ? nullptr : realpath(s.path.c_str(), nullptr);
+    std::string real = host ? s.path : resolved ? resolved : "";
     free(resolved);
     if (real.empty()) {
         const size_t slash = s.path.rfind('/');
@@ -507,12 +519,17 @@ void Editor::remakeComparison(const TabSessions::PageTab& page, int at, bool sho
 // MCComparison prepare); the tab opens on the main loop when that is done.
 void Editor::openComparison(const CompareSpec& spec, bool remake, int at, bool show,
                             std::function<void(Document*)> done) {
+    // Over SSH the sides are the host's: read through its git and link (the
+    // thread runs in a GitRunScope). An agent's proposed change (a decision)
+    // is this computer's file and stays refused.
+    GitRunnerPtr hostGit;
     if (remote()) {
-        // Both sides would be read from this machine: a repository or file that
-        // happens to be at the same path would pass for the host's.
-        if (onOverSshRefusal) onOverSshRefusal("Comparing does not work in a window over SSH yet.");
-        if (done) done(nullptr);
-        return;
+        if (!remoteWs_ || !spec.decisionPrompt.empty()) {
+            if (onOverSshRefusal) onOverSshRefusal("Comparing does not work in a window over SSH yet.");
+            if (done) done(nullptr);
+            return;
+        }
+        hostGit = hostGitRunner(remoteWs_);
     }
     struct Job {
         Editor* editor;
@@ -523,7 +540,8 @@ void Editor::openComparison(const CompareSpec& spec, bool remake, int at, bool s
         bool show;
     };
     Job* job = new Job{this, compareAlive_, nullptr, std::move(done), at, show};
-    std::thread([job, spec = CompareSpec(spec), remake]() mutable {
+    std::thread([job, spec = CompareSpec(spec), remake, hostGit]() mutable {
+        GitRunScope scope(hostGit);
         if (remake) {
             spec.leftText = sideText(spec.left);
             spec.rightText = sideText(spec.right);

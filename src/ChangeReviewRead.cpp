@@ -62,6 +62,21 @@ bool seeImages(File& f, Extra& x, const std::string& oldBytes, const std::string
     return true;
 }
 
+// A work tree file's bytes: the host's when `images` has a reader for them.
+static FolderSearch::ReadStatus workFile(const ImageReading& images, const std::string& path,
+                                         std::string* out, FolderSearch::FileStamp* stamp) {
+    if (images.readWork) {
+        // The same limit as this disk's read, whatever the reader allows.
+        const FolderSearch::ReadStatus rs = images.readWork(path, out);
+        if (rs == FolderSearch::ReadStatus::Ok && out->size() > kMaxSideBytes) {
+            out->clear();
+            return FolderSearch::ReadStatus::TooLarge;
+        }
+        return rs;
+    }
+    return FolderSearch::readFileStable(path, kMaxSideBytes, out, stamp);
+}
+
 Read readUncommitted(const std::string& root, const GitRunner& run, const ImageReading& images) {
     Read data;
     GitOut r = run(root, GitUi::topLevelArgs(), "");
@@ -141,7 +156,7 @@ Read readUncommitted(const std::string& root, const GitRunner& run, const ImageR
             std::string bytes;
             FolderSearch::FileStamp stamp;
             const FolderSearch::ReadStatus rs =
-                FolderSearch::readFileStable(top + "/" + row.path, kMaxSideBytes, &bytes, &stamp);
+                workFile(images, top + "/" + row.path, &bytes, &stamp);
             f.newExists = rs != FolderSearch::ReadStatus::Missing;
             if (rs == FolderSearch::ReadStatus::TooLarge) f.tooLarge = true;
             x.workRead = rs == FolderSearch::ReadStatus::Ok;
@@ -196,8 +211,8 @@ Read readUncommitted(const std::string& root, const GitRunner& run, const ImageR
             if (!row.untracked) oldBytes = blobOf(index, row.path, &oldExists);
             if (row.letter != 'D') {
                 FolderSearch::FileStamp stamp;
-                const FolderSearch::ReadStatus rs = FolderSearch::readFileStable(
-                    top + "/" + row.path, kMaxSideBytes, &newBytes, &stamp);
+                const FolderSearch::ReadStatus rs = workFile(
+                    images, top + "/" + row.path, &newBytes, &stamp);
                 newExists = rs != FolderSearch::ReadStatus::Missing;
                 if (rs == FolderSearch::ReadStatus::TooLarge) f.tooLarge = true;
                 else if (rs != FolderSearch::ReadStatus::Ok) newBytes.clear();

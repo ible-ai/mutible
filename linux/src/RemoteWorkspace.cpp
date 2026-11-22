@@ -194,6 +194,14 @@ bool RemoteWorkspace::hostRunsGit() const { return live() && link_->runsGit(); }
 
 std::string RemoteWorkspace::label() const { return link_ ? link_->label() : std::string(); }
 
+bool RemoteWorkspace::readFile(const std::string& path,
+                               std::function<void(bool, bool, std::string&&)> done) {
+    if (!link_) return false;
+    return link_->readTextAsync(path, nullptr, [done](SessionLink::Link::RemoteBytes&& r) {
+        done(r.ok, r.tooLarge, std::move(r.bytes));
+    });
+}
+
 bool RemoteWorkspace::git(const std::string& dir, const std::vector<std::string>& args, std::string input,
                           double timeout, std::function<void(bool, const Shared::GitReply&)> done) {
     if (!hostRunsGit()) return false;

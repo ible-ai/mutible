@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 
+#include "FolderSearch.h"
 #include "GitModel.h"
 
 struct GitResult {
@@ -36,8 +37,15 @@ struct GitResult {
 // command to it instead of spawning git here. The runner is called on that
 // thread and waits there for the answer, which crosses the main loop
 // (hostGitRunner); never on the main thread.
-using GitRunner = std::function<GitResult(const std::string& dir, const std::vector<std::string>& args,
-                                          double limit, const std::string* input)>;
+using GitRunFn = std::function<GitResult(const std::string& dir, const std::vector<std::string>& args,
+                                         double limit, const std::string* input)>;
+// The runner of a window over SSH also reads a file of the host's work tree
+// (the review page's changed files; ChangeReview::ImageReading::readWork):
+// like the command, called on a git thread and waiting there.
+struct GitRunner : GitRunFn {
+    using GitRunFn::GitRunFn;
+    std::function<FolderSearch::ReadStatus(const std::string& path, std::string* out)> readFile;
+};
 using GitRunnerPtr = std::shared_ptr<const GitRunner>;
 class GitRunScope {
 public:
@@ -51,6 +59,9 @@ private:
 };
 // Whether the calling thread's git runs on a host.
 bool gitRunsOnHost();
+// The calling thread's host's reader of a work tree file; empty when its git
+// runs here.
+std::function<FolderSearch::ReadStatus(const std::string& path, std::string* out)> hostWorkReader();
 
 class RemoteWorkspace;
 // The runner for a window over SSH: asks `ws` (held weakly) on the main loop

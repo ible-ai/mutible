@@ -158,6 +158,40 @@ static void testChangeReviewRead() {
     // A commit's page (the Mac's ReadCommit, now the core's): its header,
     // its files against its first parent, Plain, from blobs only; a root
     // commit against nothing; its pictures as pictures.
+    // A work tree that is another machine's (a window over SSH): its files
+    // come from images.readWork, not from this disk.
+    GROUP("review-read:host-work-tree");
+    {
+        const std::string host = root + "/hostwt";
+        CHECK(sh("mkdir hostwt && cd hostwt && git init -q . && git config user.email a@b && "
+                 "git config user.name n && printf 'one\\ntwo\\n' >f.txt && git add . && "
+                 "git commit -q -m one && printf 'one\\nTWO\\n' >f.txt && printf 'new\\n' >u.txt"));
+        ImageReading images;
+        int asked = 0;
+        images.readWork = [&](const std::string& path, std::string* out) {
+            asked++;
+            *out = path.size() >= 5 && path.compare(path.size() - 5, 5, "f.txt") == 0 ? "one\nHOST\n"
+                                                                                      : "elsewhere\n";
+            return FolderSearch::ReadStatus::Ok;
+        };
+        Read r = readUncommitted(host, run, images);
+        CHECK(r.diffs.size() == 2 && asked == 2);
+        for (const FileDiff& d : r.diffs) {
+            if (d.file.path == "f.txt") CHECK(QuickDiff::toUtf8(d.file.newText) == "one\nHOST\n");
+            if (d.file.path == "u.txt") CHECK(QuickDiff::toUtf8(d.file.newText) == "elsewhere\n");
+        }
+        // More than kMaxSideBytes from the reader is too large, as from this disk.
+        images.readWork = [&](const std::string&, std::string* out) {
+            out->assign(kMaxSideBytes + 1, 'x');
+            return FolderSearch::ReadStatus::Ok;
+        };
+        r = readUncommitted(host, run, images);
+        bool big = false;
+        for (const FileDiff& d : r.diffs)
+            if (d.file.path == "f.txt") big = d.file.tooLarge;
+        CHECK(big);
+    }
+
     GROUP("review-read:commit");
     {
         const std::string cdir = root + "/commits";

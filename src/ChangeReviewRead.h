@@ -78,6 +78,13 @@ struct Extra {
 struct ImageReading {
     std::function<ImageSide(const std::string& bytes)> size;
     double rowHeight = 16;
+    // Where a work tree file's bytes come from when the work tree is not on
+    // this machine (a window over SSH: the host's, read through its link).
+    // Called as FolderSearch::readFileStable is (the file's absolute path
+    // under the repository's top level, its bytes in *out, at most
+    // kMaxSideBytes, enforced by the caller: more is TooLarge); empty reads
+    // this disk.
+    std::function<FolderSearch::ReadStatus(const std::string& path, std::string* out)> readWork;
 };
 // Makes `f` a file shown as pictures when it is binary, its path is a
 // picture's and `images` reads every version it has (showAsImages), with

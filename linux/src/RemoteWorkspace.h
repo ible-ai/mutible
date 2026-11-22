@@ -96,6 +96,11 @@ public:
     bool hostRunsGit() const;
     bool git(const std::string& dir, const std::vector<std::string>& args, std::string input, double timeout,
              std::function<void(bool answered, const Shared::GitReply& reply)> done);
+    // A file of the host's work tree (absolute, under the folder): `done(ok,
+    // tooLarge, bytes)` once, on the main loop, never inside this call
+    // (Link::readTextAsync). False, calling nothing, when there is no live
+    // link or the path is outside the folder. A missing file is ok false.
+    bool readFile(const std::string& path, std::function<void(bool ok, bool tooLarge, std::string&& bytes)> done);
     // The window's "host:path" as its title names it ("" before a link).
     std::string label() const;
 
