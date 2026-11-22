@@ -37,7 +37,7 @@
 //     socket): the folder's `mutible host`, found by its socket or started
 //     from Contents/MacOS/mutible-cli, detached, and attached to over the
 //     socket; one per folder, shared by the windows on it;
-//   - a remote link (stage 8, `mutible ssh://host/path`, forRemote): `mutible
+//   - a remote link (stage 8, `mutible ssh://host/path`, connectRemote): `mutible
 //     host --stdio` on another machine through the user's own ssh, attached
 //     to over ssh's pipes; its window's files are read (readText) and saved
 //     there, its terminals run there, its tree, Quick Open and Find in
@@ -126,7 +126,7 @@ class Link {
 public:
     // InProcess: the process's host. Socket: a folder's headless host on
     // this Mac. Remote: `mutible host --stdio` on another machine, through
-    // the user's ssh (stage 8, forRemote).
+    // the user's ssh (stage 8, connectRemote).
     enum class Kind { InProcess, Socket, Remote };
     ~Link();
     Link(const Link&) = delete;
@@ -141,7 +141,8 @@ public:
     // The pid of the host this link started (0 when it found one running,
     // or in process).
     pid_t startedHost() const { return startedHost_; }
-    bool lost() const { return client_->lost(); }
+    // Gone, or let go of before it connected (no client).
+    bool lost() const { return !client_ || client_->lost(); }
     // A headless host, there: what a closing window leaves unsaved stays
     // after the app is gone (Keep Unsaved).
     bool keepsUnsaved() const { return kind_ == Kind::Socket && !lost(); }
@@ -168,6 +169,16 @@ public:
     // The address named a file not there yet (the Welcome's "new"): the
     // window opens it empty, and its first save makes it.
     bool askedFileNew() const { return askedFileNew_; }
+    // While it connects (connectRemote, reconnectRemote): how far it got,
+    // for the progress line (ssh's standard error heard for `--stdio`'s
+    // word that it started, the Welcome), and the address as parsed.
+    const Shared::ConnectProgress& progress();
+    const Shared::SshTarget& target() const { return target_; }
+    // The command carrying it (ssh): its pid, 0 when there is none.
+    pid_t commandPid() const;
+    // Stops connecting: ssh's process group killed by its pid and let go
+    // of, the try's `done` never called. Nothing once it has connected.
+    void cancelConnecting();
     // Which machine and account (Shared::sshMachineKey: ssh://[user@]host
     // [:port]), the same for every folder there.
     const std::string& machine() const { return machine_; }
@@ -233,16 +244,18 @@ public:
 private:
     friend std::shared_ptr<Link> forFolder(const std::string& root);
     friend std::shared_ptr<Link> processLink();
-    friend std::shared_ptr<Link> forRemote(const std::string& address, std::string* why);
+    friend std::shared_ptr<Link> connectRemote(const std::string& address,
+                                               std::function<void(std::shared_ptr<Link>, const std::string&)> done);
+    friend std::shared_ptr<Link> startConnecting(std::shared_ptr<Link> link, const std::string& name,
+                                                 std::function<void(std::shared_ptr<Link>, const std::string&)> done);
     friend void reconnectRemote(std::shared_ptr<Link> lost,
                                 std::function<void(std::shared_ptr<Link>, const std::string&)> done);
     Link() = default;
     Held free(bool all, const std::string& root);
     bool startSocket(std::string* why);
-    // ssh started and the client attached; with `wait`, its Welcome waited
-    // for and taken (takeWelcome), else that comes in dispatch() and
-    // finishConnecting says how it went.
-    bool startRemote(std::weak_ptr<Link> self, std::string* why, bool wait = true);
+    // ssh started and the client attached, not waited for: its Welcome
+    // comes in dispatch(), and finishConnecting says how it went.
+    bool startRemote(std::weak_ptr<Link> self, std::string* why);
     // The remote host's Welcome taken: false, with why, when it is too old
     // for a window over SSH.
     bool takeWelcome(std::string* why);
@@ -250,9 +263,10 @@ private:
     // the main queue through `self`; false (nothing kept) when the host's
     // Welcome does not come within `timeoutMs` (0: not waited for).
     bool attachClient(std::unique_ptr<Shared::HostLink> link, std::weak_ptr<Link> self, int timeoutMs);
-    // reconnectRemote's end: once, on the main queue.
+    // connectRemote's and reconnectRemote's end: once, on the main queue.
     void finishConnecting(bool ok, std::string why);
     bool connecting_ = false;
+    Shared::ConnectProgress progress_;
     std::function<void(bool ok, const std::string& why)> connected_;
     std::string resume_;   // a remote link's, the same on every link made again for it
 
@@ -285,11 +299,21 @@ std::shared_ptr<Link> processLink();
 // The live link for that machine and path when there is one, else a new
 // one: the user's ssh ($MUTIBLE_SSH names another program, for the checks)
 // running `mutible host --stdio <path>` there, attached to as a renderer
-// over its pipes. Null, with why in the window's words (ssh needed a
-// password or a host key confirmed, mutible missing or too old there, ssh's
-// own last line), when it cannot be had. Waits for the host's Welcome (at
-// most 30 s: ssh's connection).
-std::shared_ptr<Link> forRemote(const std::string& address, std::string* why);
+// over its pipes. Nothing waits on the main thread: ssh connecting and the
+// host starting there take up to 30 s on a slow or unreachable machine.
+// `done` is called once on the main queue, never inside this call, with the
+// link (its Welcome taken) or null and why in the window's words (ssh
+// needed a password or a host key confirmed, mutible missing or too old
+// there, ssh's own last line, 30 s with no Welcome); never when the try is
+// cancelled (Link::cancelConnecting). Returns the link connecting (for its
+// progress and Cancel), the live one, or null when ssh could not be run.
+std::shared_ptr<Link> connectRemote(const std::string& address,
+                                    std::function<void(std::shared_ptr<Link>, const std::string&)> done);
+// The name connectRemote keeps a link under (the machine and path as the
+// address names them; "" when it is no ssh:// address), and the machine's
+// alone (Shared::sshMachineKey).
+std::string remoteName(const std::string& address);
+std::string remoteMachine(const std::string& address);
 // A window over SSH whose connection dropped (stage 8): its address
 // connected to again without waiting on the main thread, since each try is
 // ssh connecting (up to 30 s). `done` is called once on the main queue,

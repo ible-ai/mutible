@@ -7,8 +7,21 @@
 // the "remote" environment, not the Mac's). The folder it serves is a
 // scratch folder of this Mac's, but the window reads, writes and stamps
 // nothing of it itself: every read and write goes through the host.
-//   - `ssh://standin/<folder>/notes.txt` through application:openURLs: (as
-//     the launcher's request delivers it): one window, on a remote link,
+//   - Connecting off the main thread, with the stand-in slow (it sleeps
+//     before it starts the host): `ssh://standin/<folder>/notes.txt`
+//     through application:openURLs: shows the connecting window at once
+//     (no editor window yet), its line "Connecting to standin…", while a
+//     timer goes on firing; Esc (its Cancel) kills the stand-in by its pid,
+//     and nothing opens and nothing is asked. With the stand-in refusing,
+//     the alert says why on the connecting window, which then closes.
+//   - Let through after a 2 s sleep: the same address again while it
+//     connects is that connect's (one window, one ssh), and src/util.c's
+//     waits for it; the line goes to "Starting mutible on standin…" (the
+//     host's word on ssh's standard error) and "Opening <folder> on
+//     standin…", then the editor window opens as before and util.c's
+//     address opens in it through its host, no ssh run for it.
+//   - `ssh://standin/<folder>/notes.txt` (as the launcher's request
+//     delivers it): one window, on a remote link,
 //     its title "notes.txt — standin:<folder> — mutible", the file's tab
 //     with its text, clean; ssh run with BatchMode, no pty, `--` before
 //     the host, and `mutible host --stdio '<file>'` as the remote command.
@@ -56,6 +69,7 @@
 #import "EditorTab.h"
 #import "FileTree.h"
 #import "PalettePanel.h"
+#import "RemoteConnect.h"
 #import "RemoteWorkspace.h"
 #import "Search.h"
 #import "SessionLink.h"
@@ -73,7 +87,11 @@
 
 namespace {
 
-NSString *gFolder, *gFile, *gSsh, *gArgs, *gPidFile, *gBlock, *gTries;
+NSString *gFolder, *gFile, *gSsh, *gArgs, *gPidFile, *gBlock, *gTries, *gSlow;
+MCRemoteConnect *gConnect;   // a connect under way
+NSTimer *gTicker;            // fires while it connects: the main thread turns
+NSUInteger gTicks, gTicksAtStart;
+using Stage = Shared::ConnectProgress::Stage;
 EditorController *gC, *gFreshWindow;
 TerminalView *gTerm;
 pid_t gHostA, gHostB, gHostFresh;
@@ -226,6 +244,7 @@ MC_GUI_SUITE(remote_ssh) {
         gPidFile = [scratch stringByAppendingPathComponent:@"ssh-pid.txt"];
         gBlock = [scratch stringByAppendingPathComponent:@"ssh-refuse"];
         gTries = [scratch stringByAppendingPathComponent:@"ssh-refused.txt"];
+        gSlow = [scratch stringByAppendingPathComponent:@"ssh-slow"];
         gSsh = [scratch stringByAppendingPathComponent:@"ssh-stand-in"];
         NSString *script = [NSString stringWithFormat:
             @"#!/bin/sh\n"
@@ -240,16 +259,19 @@ MC_GUI_SUITE(remote_ssh) {
             @"  echo 'ssh: connect to host standin port 22: Connection refused' >&2\n"
             @"  exit 255\n"
             @"fi\n"
+            @"echo $$ > '%@'\n"
+            @"# While the suite's slow file holds a number, ssh takes that many\n"
+            @"# seconds to connect.\n"
+            @"if [ -s '%@' ]; then sleep \"$(cat '%@')\"; fi\n"
             @"while [ $# -gt 0 ] && [ \"$1\" != -- ]; do shift; done\n"
             @"shift\n"
             @"shift\n"
-            @"echo $$ > '%@'\n"
             @"SSH_STANDIN=yes\n"
             @"export SSH_STANDIN\n"
             @"PATH='%@':$PATH\n"
             @"export PATH\n"
             @"exec /bin/sh -c \"$*\"\n",
-            gArgs, gBlock, gTries, gPidFile, bin];
+            gArgs, gBlock, gTries, gPidFile, gSlow, gSlow, bin];
         MCGuiWriteFile(gSsh, script);
         chmod(gSsh.fileSystemRepresentation, 0755);
         MCSetEnv("MUTIBLE_SSH", gSsh.fileSystemRepresentation);
@@ -258,16 +280,123 @@ MC_GUI_SUITE(remote_ssh) {
         // document is unsaved or a program runs).
         MCSetEnv("MUTIBLE_HOST_IDLE_MINUTES", "0.05");
     });
-    MCGuiStep(@"ssh://standin/<folder>/notes.txt opens a window on the remote host", ^{
+    // ---- connecting off the main thread
+    MCGuiStep(@"ssh://standin/<folder>/notes.txt with a slow ssh: the connecting window, at once", ^{
+        MCGuiWriteFile(gSlow, @"30\n");
+        [NSFileManager.defaultManager removeItemAtPath:gPidFile error:nil];
+        gWindowsBefore = MCGuiControllers().count;
+        gTicks = 0;
+        gTicker = [NSTimer timerWithTimeInterval:0.05 repeats:YES block:^(NSTimer *) { gTicks++; }];
+        [NSRunLoop.mainRunLoop addTimer:gTicker forMode:NSRunLoopCommonModes];
         NSURL *url = [NSURL URLWithString:[@"ssh://standin" stringByAppendingString:gFile]];
         GCHECK(url != nil);
         [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+        // Returned without waiting for ssh: no editor window yet, the
+        // connecting one instead.
+        GCHECK(RemoteWindow() == nil && MCGuiControllers().count == gWindowsBefore);
+        GCHECK(MCRemoteConnect.pending.count == 1);
+        gConnect = MCRemoteConnect.pending.firstObject;
+        GCHECK(gConnect != nil && gConnect.window != nil);
+        GCHECK(MCGuiWindowMadeKey() == gConnect.window);   // shown, in front
+        GCHECK_EQ_STR(gConnect.progressLine, @"Connecting to standin…");
+        GCHECK_EQ_STR(gConnect.window.title, ([NSString stringWithFormat:@"standin:%@ — mutible", gFile]));
+        gTicksAtStart = gTicks;
+    });
+    MCGuiWait(@"ssh started (the stand-in sleeping), and the main thread turns meanwhile", 15, ^BOOL {
+        return StandInPid() > 0 && gConnect.commandPid == StandInPid() && gTicks >= gTicksAtStart + 5;
+    });
+    MCGuiStep(@"Esc cancels: the stand-in killed by its pid", ^{
+        gHostA = StandInPid();
+        GCHECK(!Gone(gHostA) && RemoteWindow() == nil);
+        GCHECK_EQ_STR(gConnect.progressLine, @"Connecting to standin…");
+        GCHECK(gConnect.progress.stage() == Stage::Connecting);
+        // Esc in the connecting window, the key one (its Cancel's key).
+        MCGuiSetKeyWindow(gConnect.window);
+        const BOOL took = MCGuiPerformMenuKey(gConnect.window, 53, 0, @"\033", @"\033");
+        MCGuiSetKeyWindow(nil);
+        GCHECK(took);
+        if (!took) [gConnect cancel:nil];
+        GCHECK(gConnect.progress.stage() == Stage::Cancelled);
+        GCHECK(MCRemoteConnect.pending.count == 0);
+    });
+    MCGuiWait(@"the stand-in gone", 10, ^BOOL { return Gone(gHostA); });
+    MCGuiStep(@"no window, no alert; then the stand-in refusing", ^{
+        GCHECK(RemoteWindow() == nil && MCGuiControllers().count == gWindowsBefore);
+        GCHECK(NewAlerts().count == 0);
+        gHostA = 0;
+        // The failure's alert, on the connecting window.
+        [NSFileManager.defaultManager removeItemAtPath:gSlow error:nil];
+        MCGuiWriteFile(gBlock, @"");
+        NSURL *url = [NSURL URLWithString:[@"ssh://standin" stringByAppendingString:gFolder]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+        gConnect = MCRemoteConnect.pending.firstObject;
+        GCHECK(gConnect != nil);
+    });
+    MCGuiWait(@"it could not connect", 15, ^BOOL { return MCRemoteConnect.pending.count == 0; });
+    MCGuiStep(@"the alert says why, on the connecting window, which closed", ^{
+        NSArray<NSString *> *alerts = NewAlerts();
+        MCGuiNote(@"alerts: %@ (%@)", alerts, MCGuiLastAlertInformative());
+        GCHECK(alerts.count == 1);
+        GCHECK_EQ_STR(alerts.lastObject, ([NSString stringWithFormat:@"Could not open ssh://standin%@", gFolder]));
+        GCHECK([MCGuiLastAlertInformative() containsString:@"Connection refused"]);
+        GCHECK(MCGuiLastSheetWindow() == gConnect.window);
+        GCHECK(gConnect.progress.stage() == Stage::Failed);
+        GCHECK(RemoteWindow() == nil);
+        [NSFileManager.defaultManager removeItemAtPath:gBlock error:nil];
+        gAlertsBefore = MCGuiAlertsShown().count;
+    });
+    MCGuiStep(@"slow again (2 s): the same address and another file while it connects wait for it", ^{
+        MCGuiWriteFile(gSlow, @"2\n");
+        [NSFileManager.defaultManager removeItemAtPath:gPidFile error:nil];
+        NSURL *url = [NSURL URLWithString:[@"ssh://standin" stringByAppendingString:gFile]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+        gConnect = MCRemoteConnect.pending.firstObject;
+        GCHECK(gConnect != nil && RemoteWindow() == nil);
+        gTicksAtStart = gTicks;
+        // The same address is this connect's; util.c's (the same machine)
+        // waits, since the window it opens may hold it.
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+        NSURL *util = [NSURL URLWithString:[NSString stringWithFormat:@"ssh://standin%@/src/util.c", gFolder]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ util ]];
+        GCHECK(MCRemoteConnect.pending.count == 1);
+        GCHECK(gConnect.queued.count == 1 && [gConnect.queued.firstObject hasSuffix:@"/src/util.c"]);
+        GCHECK(NewAlerts().count == 0);
+    });
+    MCGuiWait(@"mutible starting there, after the stand-in's sleep", 20, ^BOOL {
+        return gConnect.progress.passed(Stage::Starting) || gConnect.progress.ended();
+    });
+    MCGuiStep(@"the main thread turned all along", ^{
+        MCGuiNote(@"timer fires while connecting: %lu; lines: %@", (unsigned long)(gTicks - gTicksAtStart),
+                  gConnect.linesShown);
+        GCHECK(gTicks >= gTicksAtStart + 10);   // 2 s of sleep, a fire each 50 ms
+        GCHECK([gConnect.linesShown containsObject:@"Connecting to standin…"]);
+    });
+    MCGuiWait(@"connected: the editor window, the connecting one gone", 20, ^BOOL {
+        return RemoteWindow() != nil && MCRemoteConnect.pending.count == 0;
+    });
+    MCGuiStep(@"opened as before", ^{
+        [gTicker invalidate];
+        gTicker = nil;
+        MCGuiNote(@"lines: %@", gConnect.linesShown);
+        GCHECK(gConnect.progress.stage() == Stage::Open);
+        GCHECK(gConnect.progress.passed(Stage::Starting) && gConnect.progress.passed(Stage::Opening));
+        GCHECK([gConnect.linesShown
+            containsObject:([NSString stringWithFormat:@"Opening %@ on standin…", gFolder])]);
+        gConnect = nil;
+        [NSFileManager.defaultManager removeItemAtPath:gSlow error:nil];
         gC = RemoteWindow();
         GCHECK(gC != nil);
         if (NewAlerts().count) MCGuiNote(@"alerts in this suite: %@ (%@)", NewAlerts(), MCGuiLastAlertInformative());
+        GCHECK(NewAlerts().count == 0);
+        GCHECK(MCGuiControllers().count == gWindowsBefore + 1);   // one window for the three addresses
         if (!gC) return;
         gHostA = StandInPid();
         GCHECK(gHostA > 0);
+        // util.c's address, which waited, opened in it through its host.
+        NSString *util = [gFolder stringByAppendingPathComponent:@"src/util.c"];
+        GCHECK_EQ_STR(gC.currentPath, util);
+        GCHECK_EQ_STR(TabFor(gC, util).currentText, @"// a needle here\n");
+        GCHECK([gC showFile:gFile]);
         GCHECK([gC.rootPath isEqualToString:gFolder]);
         NSString *label = [@"standin:" stringByAppendingString:gFolder];
         GCHECK_EQ_STR(gC.sessionRemoteLabel, label);
@@ -487,9 +616,13 @@ MC_GUI_SUITE(remote_ssh) {
     // stand-in serves the same disk, so only the machine differs), and a
     // file outside the folder. Each opens a window on the file's folder,
     // closed after with its host.
-    MCGuiStep(@"ssh://other/<folder>/src/util.c: another machine, a window of its own", ^{
+    MCGuiStep(@"ssh://other/<folder>/src/util.c: another machine", ^{
         NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"ssh://other%@/src/util.c", gFolder]];
         [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+        GCHECK(MCRemoteConnect.pending.count == 1);   // not the open window's machine: nothing waits
+    });
+    MCGuiWait(@"connected", 20, ^BOOL { return MCRemoteConnect.pending.count == 0; });
+    MCGuiStep(@"a window of its own", ^{
         GCHECK(NewAlerts().count == 0);
         gFreshWindow = RemoteWindowOn([gFolder stringByAppendingPathComponent:@"src"]);
         GCHECK(gFreshWindow != nil && gFreshWindow != gC);
@@ -513,6 +646,11 @@ MC_GUI_SUITE(remote_ssh) {
         MCGuiWriteFile(file, @"elsewhere\n");
         NSURL *url = [NSURL URLWithString:[@"ssh://standin" stringByAppendingString:file]];
         [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+    });
+    MCGuiWait(@"connected", 20, ^BOOL { return MCRemoteConnect.pending.count == 0; });
+    MCGuiStep(@"a window of its own on that folder", ^{
+        NSString *outside = [RealPath(MCGuiScratch()) stringByAppendingPathComponent:@"remote-outside"];
+        NSString *file = [outside stringByAppendingPathComponent:@"elsewhere.txt"];
         GCHECK(NewAlerts().count == 0);
         gFreshWindow = RemoteWindowOn(outside);
         GCHECK(gFreshWindow != nil && gFreshWindow != gC);

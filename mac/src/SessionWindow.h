@@ -104,6 +104,9 @@
 @property(nonatomic, assign) BOOL reconnecting;
 @property(nonatomic, assign) int reconnectAttempt;
 @property(nonatomic, assign) NSUInteger reconnectRound;
+// Over SSH, a press of Reconnect whose try (off the main thread) has not
+// answered yet.
+@property(nonatomic, assign) BOOL reconnectPressed;
 // The status bar's Reconnect, while the host is gone.
 @property(nonatomic, weak) NSButton *reconnectButton;
 @end

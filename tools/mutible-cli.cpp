@@ -638,6 +638,11 @@ int runHost(const Json &args) {
 // output: fd 1 is moved off the protocol's pipe, so what a library might
 // print goes to standard error instead.
 int runHostStdio(const Json &args) {
+    // Said first, on standard error (which ssh carries back), so a window
+    // connecting can say mutible is starting here rather than ssh still
+    // connecting (Shared::ConnectProgress).
+    std::fprintf(stderr, "%s\n", Shared::kStdioStartedLine);
+    std::fflush(stderr);
     const std::string asked = args["stdio"].asString();
     // A folder, a file, or a file not there yet in a folder that is (the
     // window opens it empty and its first save makes it).

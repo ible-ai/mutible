@@ -198,6 +198,11 @@ public:
     // when it is still there a second later.
     void close();
     bool closed() const { return closed_.load(); }
+    // A command's: its process group killed now (SIGKILL), when it has not
+    // ended yet, so the close() that follows does not wait for it to hang
+    // up: a window over SSH whose connecting the user cancelled, or that
+    // gave up on it. Nothing for a socket.
+    void terminate();
 
     // A command's: its pid (0 for a socket), and once the link closed and
     // the command ended, its wait status (-1 until then, and for a socket).
@@ -262,6 +267,48 @@ std::vector<std::string> sshCommand(const SshTarget& t, const std::string& ssh);
 // not installed there (exit 127) or too old (it did not know `--stdio`,
 // or `host`); else ssh's own last line.
 std::string explainSshFailure(const SshTarget& t, int status, const std::string& stderrText);
+
+// ---- a window over SSH connecting (stage 8), as its progress line tells it
+//
+// `mutible host --stdio` says kStdioStartedLine on its standard error (which
+// ssh carries back) as soon as it runs, so a window waiting for its first
+// Welcome can tell ssh's connection made (mutible starting there) from ssh
+// still connecting. A host from before this says nothing, and the window's
+// line goes from connecting straight to opening. explainSshFailure leaves
+// the line out of what it quotes.
+extern const char* const kStdioStartedLine;
+// Whether `stderrText` holds kStdioStartedLine as a line of its own.
+bool stdioStarted(const std::string& stderrText);
+// The first connect of a window over SSH: where it is, what its line says,
+// and every stage it has been through (so a stage too short to be seen is
+// still known to have passed). Connecting until mutible is heard starting
+// there, Starting until the host's Welcome, Opening while the window is
+// made on the folder the Welcome named, then Open; Failed or Cancelled end
+// it from any stage before Open. Once ended it moves no more.
+class ConnectProgress {
+public:
+    enum class Stage { Connecting, Starting, Opening, Open, Failed, Cancelled };
+    Stage stage() const { return stage_; }
+    bool passed(Stage s) const { return (passed_ & (1u << unsigned(s))) != 0; }
+    bool ended() const { return stage_ == Stage::Open || stage_ == Stage::Failed || stage_ == Stage::Cancelled; }
+    // What the command (ssh) has said on its standard error so far.
+    void heard(const std::string& stderrText);
+    // The host's Welcome, naming its folder.
+    void welcomed(const std::string& folder);
+    void opened();
+    void failed();
+    // False when it had ended already (opened, failed or cancelled).
+    bool cancel();
+    // The line a window shows for it: "Connecting to eric@pi…", "Starting
+    // mutible on eric@pi…", "Opening /home/eric/proj on eric@pi…", ...
+    std::string line(const SshTarget& t) const;
+
+private:
+    void moveTo(Stage s);
+    Stage stage_ = Stage::Connecting;
+    unsigned passed_ = 1u << unsigned(Stage::Connecting);
+    std::string folder_;
+};
 
 // ---- a host that outlives the connection (stage 8)
 //

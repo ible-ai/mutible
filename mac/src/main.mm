@@ -27,6 +27,7 @@
 #import "ClaudeHooksOffer.h"
 #import "RecentFolders.h"
 #import "Migration.h"
+#import "RemoteConnect.h"
 #include "ProcessEnv.h"
 #include "Rename.h"
 
@@ -120,7 +121,7 @@ NSURL * (^MCDockFolderChooser)(void) = nil;
     // the conversation with Claude where it was.
     NSDictionary *restart = MCTakeRestartRecord();
     if (restart && [NSProcessInfo processInfo].arguments.count < 2 &&
-        self.controllers.count == 0 && [self reopenAfterRestart:restart]) {
+        self.controllers.count == 0 && MCRemoteConnect.pending.count == 0 && [self reopenAfterRestart:restart]) {
         if (!MCBenchActive()) [NSApp activateIgnoringOtherApps:YES];
         return;
     }
@@ -132,7 +133,7 @@ NSURL * (^MCDockFolderChooser)(void) = nil;
     NSArray *args = [[NSProcessInfo processInfo] arguments];
     // Launched by Finder or the Dock to open something: those windows are
     // already open, and the cwd (/ for such a launch) would only add another.
-    if (args.count < 2 && self.controllers.count > 0) {
+    if (args.count < 2 && (self.controllers.count > 0 || MCRemoteConnect.pending.count > 0)) {
         if (!MCBenchActive()) [NSApp activateIgnoringOtherApps:YES];
         return;
     }
@@ -483,10 +484,14 @@ static NSArray<NSString *> *MCTakeOpenRequest(NSURL *url, BOOL *reuse,
 // own folder brings that window to front; the open windows' hosts say
 // where the address is, by the remote's own ~ and real places. Else a new
 // window on the address's folder (a file's folder for a file), or the
-// window already on that link. When ssh or the host there cannot be had,
-// an alert says why (run `ssh host` once in a terminal, mutible not
-// installed there, ...) and nothing opens.
-- (EditorController *)openRemoteAddress:(NSString *)address {
+// window already on that link. A new window connects off the main thread
+// (MCRemoteConnect: its small window says how far it got, Cancel ends ssh),
+// and an address on a machine being connected to waits for that connect,
+// then goes where the window it opened holds it. When ssh or the host
+// there cannot be had, an alert on that small window says why (run `ssh
+// host` once in a terminal, mutible not installed there, ...) and nothing
+// opens.
+- (void)openRemoteAddress:(NSString *)address {
     EditorController *held = nil;
     NSString *heldPath = nil;
     BOOL heldNew = NO;
@@ -505,17 +510,34 @@ static NSArray<NSString *> *MCTakeOpenRequest(NSURL *url, BOOL *reuse,
     if (held) {
         [held.window makeKeyAndOrderFront:nil];
         if (heldPath && [held showRemoteFile:heldPath isNew:heldNew]) [held focusActiveDocument];
-        return held;
+        return;
     }
-    std::string why;
-    std::shared_ptr<MCSession::Link> link = MCSession::forRemote(address.UTF8String ?: "", &why);
-    if (!link) {
-        NSAlert *a = [NSAlert new];
-        a.messageText = [NSString stringWithFormat:@"Could not open %@", address];
-        a.informativeText = @(why.c_str()) ?: @"";
-        [a runModal];
-        return nil;
+    // Being connected to already (the same machine, account and path): that
+    // connect's window to front.
+    if (MCRemoteConnect *same = [MCRemoteConnect pendingForAddress:address]) {
+        [same.window makeKeyAndOrderFront:nil];
+        return;
     }
+    // Another address on a machine being connected to: it waits, since the
+    // window that connect opens may hold it.
+    if (MCRemoteConnect *machine = [MCRemoteConnect pendingOnMachineOf:address]) {
+        [machine queueAddress:address];
+        [machine.window makeKeyAndOrderFront:nil];
+        return;
+    }
+    __weak AppDelegate *weakSelf = self;
+    [MCRemoteConnect connectTo:address
+        opened:^(MCSessionLinkRef *link) { [weakSelf openWindowOnRemoteLink:link]; }
+        ended:^(NSArray<NSString *> *queued) {
+            for (NSString *a in queued) [weakSelf openRemoteAddress:a];
+        }];
+}
+
+// A remote link connected (openRemoteAddress:): the window on its folder,
+// made, or the one already on that link; and the file the address named.
+- (EditorController *)openWindowOnRemoteLink:(MCSessionLinkRef *)ref {
+    std::shared_ptr<MCSession::Link> link = ref.link;
+    if (!link) return nil;
     NSString *folder = @(link->folder().c_str());
     NSString *key = @(link->key().c_str());
     EditorController *c = nil;
@@ -524,7 +546,7 @@ static NSArray<NSString *> *MCTakeOpenRequest(NSURL *url, BOOL *reuse,
     if (!c) {
         // Its tree lists through the host, never this Mac's disk at that path.
         c = [[EditorController alloc] initWithRootPath:folder listTree:NO];
-        [c useRemoteSessionLink:[[MCSessionLinkRef alloc] initWithLink:link]];
+        [c useRemoteSessionLink:ref];
         [self.controllers addObject:c];
         [c showWindow];
     }

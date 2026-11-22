@@ -562,6 +562,7 @@ NSUInteger MCDirtyFromHostMarks = 0;
                                                      w.link.link->label().c_str(), why.empty() ? "." : ": ",
                                                      why.c_str()]];
         w.reconnecting = YES;
+        w.reconnectPressed = NO;
         w.reconnectAttempt = 0;
         w.reconnectRound++;
         [self showReconnectButton:NO];
@@ -664,19 +665,31 @@ NSUInteger MCDirtyFromHostMarks = 0;
         return;
     }
     if (w.link.link->kind() == MCSession::Link::Kind::Remote) {
-        // Over SSH: the same address again (the tries by itself over). A
-        // host that cannot be had says why and the window waits, its text
-        // kept, for another try.
+        // Over SSH: the same address again (the tries by itself over), off
+        // the main thread as those were (MCSession::reconnectRemote). A host
+        // that cannot be had says why and the window waits, its text kept,
+        // for another try.
+        if (w.reconnectPressed) return;   // one try at a time
         w.reconnecting = NO;
-        w.reconnectRound++;
-        std::string why;
-        std::shared_ptr<MCSession::Link> link = MCSession::forRemote(w.link.link->address(), &why);
-        if (!link) {
-            [self flashStatus:[NSString stringWithFormat:@"Could not reconnect to %s: %s",
-                                                         w.link.link->label().c_str(), why.c_str()]];
-            return;
-        }
-        [EditorController moveWindowsToLink:[[MCSessionLinkRef alloc] initWithLink:link] folder:w.link.link->key()];
+        const NSUInteger round = ++w.reconnectRound;
+        w.reconnectPressed = YES;
+        [self showReconnectButton:NO];
+        const std::string label = w.link.link->label(), key = w.link.link->key();
+        [self flashStatus:[NSString stringWithFormat:@"Reconnecting to %s…", label.c_str()]];
+        __weak EditorController *weakSelf = self;
+        MCSession::reconnectRemote(w.link.link, [weakSelf, round, label, key](std::shared_ptr<MCSession::Link> link,
+                                                                              const std::string &why) {
+            EditorController *s = weakSelf;
+            MCSessionWindow *now = [s existingSessionWindow];
+            if (now.reconnectRound == round) now.reconnectPressed = NO;
+            if (link) {
+                [EditorController moveWindowsToLink:[[MCSessionLinkRef alloc] initWithLink:link] folder:key];
+                return;
+            }
+            if (!s || !now || now.reconnectRound != round || !now.link.link->lost()) return;
+            [s flashStatus:[NSString stringWithFormat:@"Could not reconnect to %s: %s", label.c_str(), why.c_str()]];
+            [s showReconnectButton:YES];
+        });
         return;
     }
     // A host that cannot be had again: the process's own, so nothing typed
