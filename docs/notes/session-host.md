@@ -3546,11 +3546,43 @@ through its host, so this is mostly a transport.
   password database, else /bin/sh) as a login shell, in its environment
   with the renderer's few variables laid over it (`ownShellSpec`,
   HostPty.h). The Mac's remote terminals send only TERM, COLORTERM and
-  TERM_PROGRAM, no nonce and no ZDOTDIR: the integration is a file of the
-  Mac's, so a remote shell has no marks (TerminalView's `_remote`, which
-  also keeps local pid lookups away: `proc_name`, background jobs, the
-  Claude check and `shellPid` for the Processes panel, since a remote pid
-  names some other process here).
+  TERM_PROGRAM, and no ZDOTDIR: the Mac's integration is a file of the
+  Mac's. TerminalView's `_remote` also keeps local pid lookups away
+  (`proc_name`, background jobs, the Claude check, the exec-into-another-
+  shell watch, and `shellPid` for the Processes panel), since a remote pid
+  names some other process here.
+- **The remote's own integration** (2026-11-21; TermSpec's `integration`,
+  Welcome flag 128, `src/HostIntegration.{h,cpp}`): the remote's mutible
+  has the same scripts where it is installed, so its host sets them up
+  itself. `mutible host` finds them by the Linux port's rule
+  (`shippedFile`: the program's path with its links resolved, then the
+  file beside it, `../Resources/` in the Mac's bundle, or
+  `../share/mutible/` from the Linux package) and passes them as
+  `HostOptions::zshIntegration` and `bashIntegration`; a host with either
+  says flag 128. To such a host the Mac's remote terminal sends its nonce
+  and `integration: ["zsh"]` (its grid follows zsh's marks and line
+  editor keys alone); an older host gets neither and the shell runs
+  unmarked as before. The host, after `ownShellSpec`, lays the
+  integration over the login shell when its name is one the renderer
+  asked for and the host has that script (`integrateShell`, pure): zsh
+  keeps `-zsh` with ZDOTDIR at the host's folder (the script's copy and
+  `zshenvStub(true)`), the user's ZDOTDIR handed back through
+  MUTIBLE_USER_ZDOTDIR, and MUTIBLE_NONCE; bash becomes `bash --rcfile
+  <copy>` with MUTIBLE_BASH_LOGIN=1, which makes the bash script read
+  /etc/profile and the first of ~/.bash_profile, ~/.bash_login and
+  ~/.profile in place of ~/.bashrc (a login bash never reads --rcfile).
+  Any other shell runs as before. The copies are made once, at the first
+  terminal that wants one, in `Mutible-host-<pid>-<start>` (0700, owner
+  checked) under TMPDIR or /tmp, made again if the system cleared them,
+  removed with the host, and those of hosts gone are removed by the next.
+  TermOpened's `name` says which shell got it ("" none); the client calls
+  `termIntegrated` before `termOpened`, and the Mac's `hostIntegrated:`
+  then believes the marks (`_integrated`) and keeps the nonce in
+  `HostNonces` under the remote link's key and the terminal's id (#337's
+  key), so a window taking the terminal up after a drop still believes
+  them. TermOpened comes before any output, so no mark is missed. The
+  nonce stays the renderer's: the host's own TermShell reads the same
+  marks with it.
 - **The transport** (`HostLink::spawn`, SessionServer.h): a command
   started with `posix_spawn` in a session of its own (no other descriptor
   of the app's, signals at their defaults), spoken to over its stdin and
@@ -3604,6 +3636,16 @@ through its host, so this is mostly a transport.
   flags, folder and file; a document typed into and saved by the host; a
   hostShell terminal with the host's environment under the renderer's and
   the host as its parent; the input closing ends the host and its shell),
+  `hostserver:integration-shell` (`integrateShell` for zsh and bash, and
+  each case that leaves the spec alone), `hostserver:integration-files`
+  (`shippedFile`'s three places and a link, the host's copies, their
+  folder's mode, a gone host's folder removed, copies made again, the
+  folder gone with the host), `hostserver:integration` (a host on two
+  pipes with `resources/`'s zsh script: flag 128, TermOpened naming zsh,
+  the user's ZDOTDIR and .zshrc read, the nonce out of the environment, a
+  command busy and then status 1 by the renderer's own stream; bash's
+  alone asked for, or nothing, sets nothing up), `bash:integration`'s
+  login branch (Linux CI, bash 4.4 or later),
   `hostserver:spawn` (a command's pipes as a link, its exit status and
   stderr; one that outlives its input hung up by close; a program not
   there), `hostserver:ssh-url`, `hostserver:ssh-command` (the argv, the
@@ -3618,6 +3660,18 @@ through its host, so this is mostly a transport.
   Reconnect (a new host with everything typed, saved there, a new shell),
   and the host ending with the window. Not run here (the builder had no
   screen to use): CI runs it.
+- `remote_ssh`'s remote integration (2026-11-21; the stand-in exports
+  SHELL=/bin/zsh, and the lasting host finds build/'s copy of the zsh
+  script beside mutible-cli): the window's client sees flag 128; the
+  remote terminal reaches a marked prompt (`integrated`), its nonce the
+  view's and kept under the remote link's key; `$ZDOTDIR` is the
+  harness's, MUTIBLE_NONCE out of the environment; `sleep 5` is busy
+  with its command named, `false` typed meanwhile waits for the prompt,
+  then sleep ends with 0 and false with 1; a local terminal on the
+  app's own host (the setting turned on for it) has a nonce of its own
+  under its own key, neither found under the other's key with the
+  other's id; after the drop and reconnect the marks are still believed
+  and `sleep 600` counts as busy. Not run here: CI runs it.
 
 #### The window's tree, Quick Open and Find in Folder over SSH (2026-11-21, second slice)
 
@@ -3842,7 +3896,12 @@ which `openRemoteAddress`es it; no other argument is read as a path.
   `hostShell = true`, `TERM`, `COLORTERM` and `TERM_PROGRAM` only, no
   nonce and no integration (bash's `--rcfile` and zsh's `ZDOTDIR` are this
   machine's files), so a remote shell has no marks; `shellDirectory` never
-  reads `/proc/<pid>/cwd` for a pid that is the other machine's.
+  reads `/proc/<pid>/cwd` for a pid that is the other machine's. **To do
+  (the Linux session):** since 2026-11-21 a host with flag 128
+  (`Client::hostIntegrates`) sets up its own machine's integration ("The
+  Mac over SSH", "The remote's own integration"): send the nonce and
+  `integration = {"zsh", "bash"}`, keep `nonce_`, and set `bashShell_`
+  from `termIntegrated`'s shell name (empty: clear `nonce_`, as now).
 - **A dropped connection**: the link's lost listener says so in the status
   bar (the core's `explainSshFailure` of the reaped status, "Disconnected
   from host:path: ... Your text is kept here; Reconnect opens it there
@@ -4536,9 +4595,9 @@ ivars: its state is an associated `MCRemoteFileCache`),
   disk (the host leaves a document an app's window holds to the window,
   which has no stamps of a remote file); the host's listing carrying
   sizes, dates and the execute bit for the tree's columns and icons;
-  connecting off the main thread with a progress line; the shell
-  integration's marks on the remote (the remote mutible's own integration
-  file, a nonce from the Mac); an HTML page and the LaTeX
+  connecting off the main thread with a progress line; the GTK port asking
+  for the remote's integration (the host side is in, "The remote's own
+  integration"); an HTML page and the LaTeX
   preview over SSH (viewers for pictures, PDFs, media, SQLite and Quick
   Look are in, "Viewers over SSH"); a new window over SSH taking up what a crashed
   app, or a window closed while disconnected, left on the lasting host

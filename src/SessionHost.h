@@ -143,6 +143,7 @@
 #include "Backups.h"
 #include "DiskWatch.h"
 #include "Document.h"
+#include "HostIntegration.h"
 #include "HostPty.h"
 #include "SavePlan.h"
 #include "SessionProtocol.h"
@@ -233,6 +234,16 @@ public:
         ownEnv_ = std::move(env);
         ownShell_ = std::move(shell);
     }
+    // This machine's installed shell integration scripts (HostIntegration.h,
+    // shippedFile's; "" for one not installed), which it sets up itself
+    // for such a terminal when its TermSpec asks (`integration`); the
+    // Welcome's flag 128 says it can. Set once, before any renderer, by
+    // `mutible host`; `base` (checks) is where its copies go.
+    void setIntegrationScripts(std::string zsh, std::string bash, std::string base = "") {
+        integration_.setScripts(std::move(zsh), std::move(bash));
+        integration_.setBase(std::move(base));
+    }
+    const std::string& integrationFolder() const { return integration_.folder(); }
 
     // ---- backups of what no app's window shows (see the top of the file).
     struct BackupKeeping {
@@ -402,6 +413,7 @@ private:
     std::uint64_t watchGen_ = 0;
     std::vector<std::string> ownEnv_;   // setOwnShell's
     std::string ownShell_;
+    HostIntegration integration_;       // setIntegrationScripts'
     std::string askedFile_;
     bool askedFileNew_ = false;
     std::function<void(ClientId)> drop_;   // setDrop's
@@ -451,6 +463,7 @@ private:
         TerminalScreen screen;
         TerminalStream stream;
         std::string nonce;
+        std::string integrated;       // the shell whose integration the host set up, "" none
         TermShell shell, sent;
         bool told = false;            // TermShell was sent once
         std::chrono::steady_clock::time_point nextLook;
@@ -629,6 +642,9 @@ public:
     // The host's own shell and environment (Host::setOwnShell), on its
     // thread; before any renderer connects.
     void setOwnShell(std::vector<std::string> env, std::string shell);
+    // The machine's shell integration scripts (Host::setIntegrationScripts),
+    // on its thread; before any renderer connects.
+    void setIntegrationScripts(std::string zsh, std::string bash);
     // Told (on its thread) of a renderer a resuming one replaced, whose
     // connection is to be closed (Host::setDrop); before any renderer.
     void setDrop(std::function<void(ClientId)> drop);

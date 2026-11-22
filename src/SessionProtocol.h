@@ -184,7 +184,9 @@ enum class Kind {
                  // terminal in its own machine's login shell and environment
                  // (TermSpec's hostShell), what a window over SSH needs (stage 8);
                  // flag 64: it does a tree's file operations (FsRead's "rename",
-                 // "move", "delete", "newFile", "newFolder")
+                 // "move", "delete", "newFile", "newFolder"); flag 128: it has
+                 // its machine's shell integration scripts and sets them up
+                 // itself for a hostShell terminal (TermSpec's integration)
     DocOpened,   // doc, v (and text16 when it was open already: another renderer's)
     DocEdited,   // doc, v, by, seq, ops, ops16, flag (1 undo, 2 redo), select
     DocUndone,   // doc, req, outcome
@@ -193,7 +195,8 @@ enum class Kind {
     State,       // req, json
     Pong,        // req
     Error,       // doc, name (what went wrong)
-    TermOpened,  // term, v: the shell's pid
+    TermOpened,  // term, v: the shell's pid; name: the shell whose integration
+                 // the host set up (TermSpec's integration), "" none
     TermOutput,  // term, bytes, v: the cursor's line (TermMark's count), flag 1: alternate screen
     TermShell,   // term, json (TermShell's fields)
     TermMarks,   // term, json: {"commands": [[prompt, output, end, status], ...]}
@@ -313,6 +316,14 @@ struct TermSpec {
     // a host whose Welcome has flag 32 (Client::hostRunsOwnShell); an older
     // host would run `program` "" and the shell would never start.
     bool hostShell = false;
+    // With hostShell: the shells whose integration the renderer follows
+    // ("zsh", "bash"; the Mac's grid follows zsh's alone), which the host
+    // sets up itself from its own machine's installed scripts
+    // (HostIntegration.h) when the login shell it starts is one of them,
+    // with `nonce` in MUTIBLE_NONCE. Its TermOpened's name says which it
+    // set up, "" none. Sent only to a host whose Welcome has flag 128
+    // (Client::hostIntegrates); empty, nothing is laid over the shell.
+    std::vector<std::string> integration;
 };
 Json termSpecJson(const TermSpec& s);
 TermSpec termSpecFrom(const Json& j);

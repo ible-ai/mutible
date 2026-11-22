@@ -374,6 +374,7 @@ Json termSpecJson(const TermSpec& s) {
     j.set("scrollback", Json(s.scrollback));
     j.set("nonce", Json(s.nonce));
     if (s.hostShell) j.set("hostShell", Json(true));
+    if (!s.integration.empty()) j.set("integration", stringsJson(s.integration));
     return j;
 }
 
@@ -388,6 +389,7 @@ TermSpec termSpecFrom(const Json& j) {
     if (j["scrollback"].isNumber()) s.scrollback = (int)j["scrollback"].asInt();
     s.nonce = j["nonce"].asString();
     s.hostShell = j["hostShell"].asBool();
+    s.integration = stringsFrom(j["integration"]);
     return s;
 }
 

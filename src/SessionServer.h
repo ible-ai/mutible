@@ -101,6 +101,10 @@ struct HostOptions {
     // and the renderer's environment alone.
     std::vector<std::string> shellEnv;
     std::string loginShell;
+    // This machine's installed shell integration scripts (HostIntegration.h's
+    // shippedFile), which the host sets up itself for such a terminal when
+    // its renderer asks (TermSpec's integration); "" for one not installed.
+    std::string zshIntegration, bashIntegration;
     // `mutible host --stdio` given a file: its path (spelled under `folder`),
     // which the Welcome names so the renderer shows it; `askedFileNew` when
     // there is no file there yet (the Welcome says "new").

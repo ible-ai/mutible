@@ -86,7 +86,10 @@ goes here first, with tests; the GUI only displays it.
   socket, `HostServer`, one per folder by a lock file, ending after its
   idle time with no renderer and nothing unsaved or running; `HostLink`, a
   renderer's connection; `dumpSession`, `mutible attach --dump`'s text;
-  `hostserver:*`; docs/notes/session-host.md), and `SessionFiles` (stage
+  `hostserver:*`; docs/notes/session-host.md), `HostIntegration` (stage
+  8: the shell integration a host sets up itself from its machine's
+  installed scripts for a remote renderer's terminal, `shippedFile` and
+  `integrateShell`; `hostserver:integration*`), and `SessionFiles` (stage
   7's first read: `FsRead` lists one folder of the session's, confined to
   it by `confinedPath`, with the apps' trees' dotfile, order and ignore
   rules, for the browser's tree; `host:fs-list`; and its first write,

@@ -372,6 +372,10 @@ public:
     public:
         virtual ~TermListener() = default;
         virtual void termOpened(TermId, int /*pid*/) {}
+        // Just before termOpened, when the host set up the integration
+        // TermSpec's `integration` asked for: the shell's name ("zsh",
+        // "bash"), whose marks carry the spec's nonce.
+        virtual void termIntegrated(TermId, const std::string& /*shell*/) {}
         // Output to feed the emulator, in order; `replay` for the bytes that
         // rebuild a terminal attached to. `cursorLine` is the host screen's
         // cursor line after these bytes (TermMark's count), `alt` whether a
@@ -448,6 +452,10 @@ public:
     // environment (its Welcome's flag 32, TermSpec's hostShell): what a
     // window on another machine needs (stage 8, the Mac over SSH).
     bool hostRunsOwnShell() const { return (hostFlags_ & 32) != 0; }
+    // Whether it has its machine's shell integration and sets it up itself
+    // for such a terminal (its Welcome's flag 128, TermSpec's integration):
+    // a remote shell with mutible's marks.
+    bool hostIntegrates() const { return (hostFlags_ & 128) != 0; }
     // The folder the host serves (its Welcome's name: a headless host's,
     // resolved on its machine; "" for an app's own), and what else its
     // Welcome said (its json: `mutible host --stdio` given a file names it,

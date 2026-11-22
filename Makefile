@@ -44,7 +44,7 @@ CORE_SRC := src/SyntaxHighlighter.cpp src/MarkdownParser.cpp src/MarkdownEmoji.c
             src/LspEdits.cpp \
             src/TermLinks.cpp src/FolderSearch.cpp src/TextFind.cpp src/TextScan.cpp src/Regex.cpp \
             src/EditSpans.cpp src/FindRules.cpp src/Text.cpp src/Document.cpp src/UndoHistory.cpp \
-            src/Ot.cpp src/SessionProtocol.cpp src/SessionHost.cpp src/SessionClient.cpp src/SessionServer.cpp src/HostPty.cpp src/DiskWatch.cpp \
+            src/Ot.cpp src/SessionProtocol.cpp src/SessionHost.cpp src/SessionClient.cpp src/SessionServer.cpp src/HostPty.cpp src/HostIntegration.cpp src/DiskWatch.cpp \
             src/SessionWeb.cpp src/SessionWebPage.cpp src/SessionWebViewers.cpp src/SessionWebTypeset.cpp src/SessionWebGit.cpp src/SessionWebAccess.cpp src/SessionFiles.cpp src/SessionSearch.cpp src/SqliteRead.cpp \
             src/MarkdownEdit.cpp src/MarkdownTasks.cpp \
             src/GitStatus.cpp src/GitGraph.cpp src/GitModel.cpp src/MathTex.cpp src/EditorTabs.cpp \
@@ -74,7 +74,7 @@ OBJDIR   := build/obj
 # What `mutible host` and `mutible attach` (the headless session host,
 # SessionServer.h) need of the core, linked into the command line's client.
 SESSION_HOST_SRC := src/SessionServer.cpp src/SessionHost.cpp src/SessionClient.cpp src/DiskWatch.cpp \
-            src/SessionProtocol.cpp src/Ot.cpp src/HostPty.cpp src/TerminalScreen.cpp \
+            src/SessionProtocol.cpp src/Ot.cpp src/HostPty.cpp src/HostIntegration.cpp src/TerminalScreen.cpp \
             src/TerminalStream.cpp src/Document.cpp src/UndoHistory.cpp src/Text.cpp \
             src/EditSpans.cpp src/FolderSearch.cpp src/EditorTabs.cpp src/TextFind.cpp src/TextScan.cpp \
             src/Regex.cpp src/MarkdownTasks.cpp src/MarkdownParser.cpp src/MarkdownEmoji.cpp \

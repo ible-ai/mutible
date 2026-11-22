@@ -24,7 +24,9 @@
 #include "ControlProtocol.h"
 #include "ClaudeHooks.h"
 #include "ClaudeStatusLine.h"
+#include "HostIntegration.h"
 #include "SessionServer.h"
+#include "ShellIntegration.h"
 #include "SessionWeb.h"
 #ifdef __APPLE__
 #include "ProcessTable.h"
@@ -554,6 +556,16 @@ std::string selfPath() {
 // ignored, and MUTIBLE_HOST_IDLE_MINUTES (else four hours) as its idle time.
 int runHostStdio(const Json &args);
 
+// The shell integration scripts this mutible ships (beside it in a build,
+// in the bundle's Resources on the Mac, in share/mutible from the Linux
+// package), which the host sets up itself for a terminal a window on
+// another machine opens (HostIntegration.h).
+void ownIntegration(Shared::HostOptions &o) {
+    const std::string self = Shared::ownProgramPath();
+    o.zshIntegration = Shared::shippedFile(self, ShellIntegration::kZshScriptName);
+    o.bashIntegration = Shared::shippedFile(self, ShellIntegration::kBashScriptName);
+}
+
 int runHost(const Json &args) {
     if (args.has("stdio")) return runHostStdio(args);
     const std::string asked = args["folder"].asString();
@@ -582,6 +594,7 @@ int runHost(const Json &args) {
     // The terminals a window on another machine asks for (stage 8): this
     // machine's login shell in this process's environment.
     for (char **e = environ; e && *e; e++) o.shellEnv.push_back(*e);
+    ownIntegration(o);
     takeStopSignals(!lasting);
     Shared::HostServer server;
     std::string error;
@@ -700,6 +713,7 @@ int runHostStdio(const Json &args) {
     // The terminals a renderer on another machine asks for: this machine's
     // login shell (SHELL, as sshd sets it) in this process's environment.
     for (char **e = environ; e && *e; e++) o.shellEnv.push_back(*e);
+    ownIntegration(o);
     takeStopSignals();
     Shared::HostServer server;
     std::string error;

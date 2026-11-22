@@ -621,6 +621,7 @@ static NSString *const kDefaultFgAttribute = @"MCTerminalDefaultForeground";
 struct MCHostTermListener : Shared::Client::TermListener {
     __weak TerminalView *view = nil;
     void termOpened(Shared::TermId t, int pid) override;
+    void termIntegrated(Shared::TermId t, const std::string &shell) override;
     void termOutput(Shared::TermId t, const std::string &bytes, long long cursorLine, bool alt,
                     bool replay) override;
     void termShell(Shared::TermId t, const Shared::TermShell &shell) override;
@@ -675,8 +676,10 @@ struct MCHostTermListener : Shared::Client::TermListener {
                                  // file was written and the shell is still zsh
     BOOL _integrationFile;       // the shell integration file was written
     BOOL _remote;                // its shell is on another machine (stage 8, a
-                                 // window over SSH): no pid of this Mac's, no
-                                 // integration, the remote's own shell
+                                 // window over SSH): no pid of this Mac's, the
+                                 // remote's own shell, with the integration only
+                                 // when the remote's host set up its own
+                                 // (hostIntegrated:)
     NSTimer *_shellWatch;        // while a command runs: is the shell still zsh?
     struct winsize _winsize;
     CGFloat _fontSize;           // the font size the views were last given
@@ -730,6 +733,7 @@ struct MCHostTermListener : Shared::Client::TermListener {
 @property(nonatomic, strong) NSTextField *input;
 @property(nonatomic, strong) NSSecureTextField *secureInput;
 - (void)hostOpened:(Shared::TermId)term pid:(int)pid;
+- (void)hostIntegrated:(Shared::TermId)term shell:(const std::string &)shell;
 - (void)hostOutput:(Shared::TermId)term bytes:(const std::string &)bytes replay:(BOOL)replay;
 - (void)hostShell:(Shared::TermId)term state:(const Shared::TermShell &)shell;
 - (void)hostExited:(Shared::TermId)term status:(int)status error:(const std::string &)error;
@@ -1549,6 +1553,12 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
 
 - (BOOL)onSessionHost { return _onHost; }
 - (unsigned long long)sessionTerminal { return _hostTerm; }
+- (BOOL)integrated { return _integrated; }
+- (NSString *)integrationNonce { return @(_markNonce.c_str()); }
++ (NSString *)nonceForHost:(NSString *)key terminal:(unsigned long long)term {
+    auto it = HostNonces().find({std::string(key.UTF8String ?: ""), (Shared::TermId)term});
+    return it == HostNonces().end() ? nil : @(it->second.c_str());
+}
 
 - (BOOL)busy {
     if (_pendingCommands.count) return YES;
@@ -1933,7 +1943,8 @@ static BOOL MCIsOtherShell(pid_t pid) {
 }
 
 - (void)watchShell {
-    if (_shellWatch || !_integrated || _shellPid <= 0) return;
+    // A remote shell's pid names no process of this Mac's.
+    if (_shellWatch || !_integrated || _shellPid <= 0 || _remote) return;
     __weak TerminalView *weakSelf = self;
     _shellWatch = [NSTimer scheduledTimerWithTimeInterval:0.5 repeats:YES
                                                     block:^(NSTimer *t) {
@@ -2562,7 +2573,8 @@ static NSString *MCBrowserHelperPath(void) {
     [self stopShell];
 
     // The integration is a file of this Mac's, which a shell on another
-    // machine cannot read (stage 8): a remote shell runs without its marks.
+    // machine cannot read (stage 8): a remote shell gets the remote's own,
+    // set up by its host when it can (hostIntegrated:), else none.
     NSString *zdot = _remote ? nil : IntegrationDirectory(!_lineMode);
     _integrated = zdot != nil;
     _integrationFile = _integrated;
@@ -2708,11 +2720,18 @@ static NSString *MCBrowserHelperPath(void) {
             spec.argv.clear();
             spec.env = {"TERM=xterm-256color", "COLORTERM=truecolor", "TERM_PROGRAM=Mutible"};
             spec.hostShell = true;
-            spec.nonce.clear();
+            // And the remote's own integration, which its host sets up from
+            // its installed scripts (Welcome flag 128) with this nonce, when
+            // its login shell is zsh: the grid follows zsh's alone (its line
+            // editor's keys). TermOpened says whether it did
+            // (hostIntegrated:); an older host runs the shell unmarked.
+            if ([self hostClient].hostIntegrates()) spec.integration = {"zsh"};
+            else spec.nonce.clear();
         }
         _hostTerm = [self hostClient].newId();   // from the client's range on the host
-        // A shell without the integration (a remote one) has no nonce: one
-        // left from an ended host's terminal of the same id goes.
+        // A shell without the integration (a remote one until its host says
+        // it set its own up) has no nonce: one left from an ended host's
+        // terminal of the same id goes.
         if (_integrated) HostNonces()[{_link->key(), _hostTerm}] = nonce;
         else HostNonces().erase({_link->key(), _hostTerm});
         _hostShell = Shared::TermShell();
@@ -2955,6 +2974,18 @@ static NSString *MCBrowserHelperPath(void) {
 - (void)hostOpened:(Shared::TermId)term pid:(int)pid {
     if (term != _hostTerm || _closed) return;
     _shellPid = pid;
+}
+
+// A remote host set up its own machine's integration over the shell
+// (TermSpec's integration, which asked for zsh's alone): its marks carry
+// this view's nonce, so they are believed from now on, and a window taking
+// the terminal over after a drop finds the nonce under this host's key.
+// Before any output: the host sends TermOpened first.
+- (void)hostIntegrated:(Shared::TermId)term shell:(const std::string &)shell {
+    if (term != _hostTerm || _closed || !_remote || shell != "zsh" || _markNonce.empty()) return;
+    _integrated = YES;
+    _integrationFile = YES;
+    HostNonces()[{_link->key(), _hostTerm}] = _markNonce;
 }
 
 // The pty's output, as the host read it: parsed in slices as MCPty's is,
@@ -3355,6 +3386,9 @@ static NSString *MCBrowserHelperPath(void) {
 
 // ---------------------------------------------------------------- the host's terminal
 void MCHostTermListener::termOpened(Shared::TermId t, int pid) { [view hostOpened:t pid:pid]; }
+void MCHostTermListener::termIntegrated(Shared::TermId t, const std::string &shell) {
+    [view hostIntegrated:t shell:shell];
+}
 void MCHostTermListener::termOutput(Shared::TermId t, const std::string &bytes, long long, bool, bool replay) {
     [view hostOutput:t bytes:bytes replay:replay];
 }

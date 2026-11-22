@@ -661,7 +661,10 @@ void Client::onTerminal(Message& m) {
     if (it == terms_.end() || !it->second) return;
     TermListener* l = it->second;
     switch (m.kind) {
-    case Kind::TermOpened: l->termOpened(m.term, (int)m.v); break;
+    case Kind::TermOpened:
+        if (!m.name.empty()) l->termIntegrated(m.term, m.name);
+        l->termOpened(m.term, (int)m.v);
+        break;
     case Kind::TermOutput:
     case Kind::TermReplay:
         l->termOutput(m.term, m.bytes, (long long)m.v, m.flag & 1, m.kind == Kind::TermReplay);

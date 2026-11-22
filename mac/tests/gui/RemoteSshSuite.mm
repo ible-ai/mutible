@@ -74,13 +74,21 @@
 //     mutible) in the host's environment (the stand-in's variable). The
 //     host is the folder's lasting one, which `--stdio` started detached
 //     and relays to (its pid is not the stand-in's).
+//   - The remote's own shell integration (the stand-in's SHELL is zsh; the
+//     host sets up build/'s copy of the script, Welcome flag 128): a marked
+//     prompt, the nonce the view's and kept under the remote link's key,
+//     the harness's ZDOTDIR and no MUTIBLE_NONCE in the shell; `sleep 5`
+//     busy with its command named, `false` queued meanwhile, then statuses
+//     0 and 1 by the marks; a local terminal on the app's own host beside
+//     it with a nonce of its own under its own key.
 //   - The connection drops (the stand-in's process group killed: the relay
 //     only), with the stand-in refusing to connect for a while: the window
 //     says it is reconnecting (its title, no Reconnect button), the text
 //     stays and takes more typing, and its tries fail. Once the stand-in
 //     connects again, the window takes up the same host by itself: the
 //     terminal under its id, its earlier output replayed and the program
-//     it ran still running (then Ctrl+C, and the same shell's pid); the
+//     it ran still running, its marks still believed (then Ctrl+C, the
+//     prompt again, and the same shell's pid); the
 //     document with everything typed, unsaved, the host's text the tab's,
 //     and undo going back past the drop into what the host recorded
 //     before it, then redo; Cmd+S saves it there; the tree follows the
@@ -104,6 +112,7 @@
 #import "SessionWindow.h"
 #import "Terminal.h"
 #import "TerminalGridView.h"
+#import "TerminalPanel.h"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -138,6 +147,10 @@ pid_t gLasting;              // the folder's lasting host, the terminal's shell'
 NSString *gShellPid;         // that shell's pid, as it said it
 unsigned long long gTermId;  // the terminal's id on the host
 NSUInteger gTriesBefore;
+NSString *gRemoteNonce;      // the remote terminal's integration nonce, this view's
+int gEndedBefore;            // commands the remote terminal's marks ended before a step's
+EditorController *gLocalC;   // a local window's terminal on its own host, beside it
+TerminalView *gLocalTerm;
 NSUInteger gWindowsBefore;   // the windows before an address the open one holds
 NSString *gPng, *gPdf, *gHuge;   // files the viewers show through copies
 NSString *gCopies;               // the window's folder of copies
@@ -310,9 +323,26 @@ NSArray<NSString *> *NewAlerts() {
                                      : @[];
 }
 
+// Commands a terminal's marks say ended, and the last that ran (its status).
+int Ended(TerminalView *t) {
+    TerminalGridView *g = [t valueForKey:@"grid"];
+    int n = 0;
+    for (const TermCommand &c : g.screen->commands()) n += c.ended;
+    return n;
+}
+TermCommand LastEnded(TerminalView *t) {
+    TerminalGridView *g = [t valueForKey:@"grid"];
+    TermCommand last{};
+    for (const TermCommand &c : g.screen->commands())
+        if (c.ended) last = c;
+    return last;
+}
+NSString *LinkKey(MCSessionLinkRef *ref) { return ref.link ? @(ref.link->key().c_str()) : @""; }
+
 // `command` typed into the terminal until `expect` shows on its screen,
-// again every 3 s: a remote shell has no integration's marks to say its
-// line editor is ready, and one starting may drop what came before it.
+// again every 3 s: a shell starting may drop what came before it (and,
+// before the remote's integration, no mark said its line editor was
+// ready).
 void RunUntil(NSString *what, NSString *command, NSString *expect) {
     __block double sent = 0;
     MCGuiWait(what, 30, ^BOOL {
@@ -379,6 +409,10 @@ MC_GUI_SUITE(remote_ssh) {
             @"shift\n"
             @"SSH_STANDIN=yes\n"
             @"export SSH_STANDIN\n"
+            @"# The login shell sshd would name: zsh, whose integration the\n"
+            @"# remote's host sets up from its own scripts (build/'s copy).\n"
+            @"SHELL=/bin/zsh\n"
+            @"export SHELL\n"
             @"PATH='%@':$PATH\n"
             @"export PATH\n"
             @"exec /bin/sh -c \"$*\"\n",
@@ -1135,6 +1169,89 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(gShellPid.intValue > 0 && gLasting > 0 && gLasting != gHostA);
         GCHECK(gTermId != 0);
     });
+    // ---- the remote's own shell integration (its host's scripts, Welcome
+    // flag 128, TermSpec's integration): marks, a running program, exit
+    // status, a nonce no local terminal shares.
+    MCGuiStep(@"the remote host sets up its own integration", ^{
+        MCSessionLinkRef *ref = [gC sessionRemoteLink];
+        GCHECK(ref.link && ref.link->client().hostIntegrates());
+    });
+    MCGuiWait(@"the remote shell's marks believed: at its prompt", 20, ^BOOL {
+        return gTerm.integrated && gTerm.atPrompt && !gTerm.busy;
+    });
+    MCGuiStep(@"its nonce is this view's, kept under the remote host's key; the user's ZDOTDIR", ^{
+        gRemoteNonce = gTerm.integrationNonce;
+        GCHECK(gRemoteNonce.length == 32);
+        GCHECK_EQ_STR([TerminalView nonceForHost:LinkKey([gC sessionRemoteLink]) terminal:gTerm.sessionTerminal],
+                      gRemoteNonce);
+        gEndedBefore = Ended(gTerm);
+        [gTerm runCommand:@"echo \"zdot-[$ZDOTDIR] nonce-[${MUTIBLE_NONCE-unset}]\""];
+    });
+    MCGuiWait(@"the user's ZDOTDIR handed back, the nonce out of the environment, the command marked", 15, ^BOOL {
+        NSString *want = [NSString stringWithFormat:@"zdot-[%s] nonce-[unset]", getenv("ZDOTDIR") ?: ""];
+        return [[gTerm recentText:30] containsString:want] && Ended(gTerm) > gEndedBefore && gTerm.atPrompt;
+    });
+    MCGuiStep(@"sleep 5", ^{
+        gEndedBefore = Ended(gTerm);
+        [gTerm runCommand:@"sleep 5"];
+    });
+    MCGuiWait(@"a running program, by the marks: busy, its command named", 10, ^BOOL {
+        return gTerm.busy && !gTerm.atPrompt && [[gTerm valueForKey:@"commandStarted"] boolValue] &&
+               [gTerm.runningCommand hasPrefix:@"sleep 5"];
+    });
+    MCGuiStep(@"while it runs, a command waits for the prompt", ^{
+        GCHECK(gTerm.busy && Ended(gTerm) == gEndedBefore);
+        [gTerm runCommand:@"false"];
+        GCHECK([gTerm.pendingCommands containsObject:@"false"]);
+    });
+    MCGuiWait(@"sleep ends, then false runs: its exit status seen", 20, ^BOOL {
+        return Ended(gTerm) == gEndedBefore + 2 && gTerm.atPrompt && !gTerm.busy && gTerm.pendingCommands.count == 0;
+    });
+    MCGuiStep(@"false's status is 1, sleep's 0", ^{
+        TerminalGridView *g = [gTerm valueForKey:@"grid"];
+        std::vector<TermCommand> ended;
+        for (const TermCommand &c : g.screen->commands())
+            if (c.ended) ended.push_back(c);
+        GCHECK(ended.size() >= 2);
+        if (ended.size() >= 2) {
+            GCHECK(ended[ended.size() - 2].status == 0);
+            GCHECK(ended.back().status == 1);
+        }
+        GCHECK(LastEnded(gTerm).status == 1);
+    });
+    MCGuiStep(@"a local terminal on its own host beside it", ^{
+        MCGuiSetSettings(@"lsp.enabled = false\neditor.session-host = on\n");
+        gLocalC = nil;
+        for (EditorController *c in MCGuiControllers())
+            if (c != gC && ![c sessionRemoteLink]) gLocalC = c;   // the harness's own window
+        GCHECK(gLocalC != nil);
+        if (!gLocalC) return;
+        [gLocalC newTerminal:nil];
+        gLocalTerm = [gLocalC valueForKey:@"terminal"];
+        GCHECK(gLocalTerm != nil && gLocalTerm != gTerm && gLocalTerm.onSessionHost);
+    });
+    MCGuiWait(@"its prompt, by this Mac's integration", 20, ^BOOL {
+        return gLocalTerm.integrated && gLocalTerm.atPrompt && !gLocalTerm.busy;
+    });
+    MCGuiStep(@"each nonce its own, each under its own host's key", ^{
+        NSString *localKey = LinkKey(gLocalTerm.sessionLink), *remoteKey = LinkKey([gC sessionRemoteLink]);
+        MCGuiNote(@"local %@ term %llu, remote %@ term %llu", localKey, gLocalTerm.sessionTerminal, remoteKey,
+                  gTerm.sessionTerminal);
+        GCHECK(localKey.length && ![localKey isEqualToString:remoteKey]);
+        GCHECK(gLocalTerm.integrationNonce.length == 32 && ![gLocalTerm.integrationNonce isEqualToString:gRemoteNonce]);
+        GCHECK_EQ_STR([TerminalView nonceForHost:localKey terminal:gLocalTerm.sessionTerminal],
+                      gLocalTerm.integrationNonce);
+        GCHECK_EQ_STR([TerminalView nonceForHost:remoteKey terminal:gTerm.sessionTerminal], gRemoteNonce);
+        // A terminal of the same id on the other host never finds this one's.
+        NSString *cross = [TerminalView nonceForHost:localKey terminal:gTerm.sessionTerminal];
+        GCHECK(cross == nil || ![cross isEqualToString:gRemoteNonce]);
+        cross = [TerminalView nonceForHost:remoteKey terminal:gLocalTerm.sessionTerminal];
+        GCHECK(cross == nil || ![cross isEqualToString:gLocalTerm.integrationNonce]);
+        GCHECK([(MCTerminalPanel *)[gLocalC valueForKey:@"terminalPanel"] closeTerminal:gLocalTerm]);
+        gLocalTerm = nil;
+        MCGuiSetSettings(@"lsp.enabled = false\n");
+        GCHECK(gTerm.integrated);
+    });
     // Earlier output, and a program left running across the drop.
     RunUntil(@"output before the drop", @"echo \"before-drop-$((6*7))\"", @"before-drop-42");
     MCGuiStep(@"a program runs; typed text is unsaved; the connection drops", ^{
@@ -1199,12 +1316,18 @@ MC_GUI_SUITE(remote_ssh) {
         return [[gTerm recentText:60] containsString:@"before-drop-42"];
     });
     MCGuiWait(@"sleep still runs there", 10, ^BOOL { return gTerm.programHasTerminal; });
+    MCGuiStep(@"the marks still believed: the nonce found under the remote host's key", ^{
+        GCHECK(gTerm.integrated && [gTerm.integrationNonce isEqualToString:gRemoteNonce]);
+        GCHECK(gTerm.busy && !gTerm.atPrompt);
+    });
     MCGuiStep(@"Ctrl+C ends it", ^{
         const char etx = 0x03;
         TerminalGridView *grid = [gTerm valueForKey:@"grid"];
         grid.onInput([NSData dataWithBytes:&etx length:1]);
     });
-    MCGuiWait(@"the shell has the terminal again", 10, ^BOOL { return !gTerm.programHasTerminal; });
+    MCGuiWait(@"the shell has the terminal again, at its prompt", 10, ^BOOL {
+        return !gTerm.programHasTerminal && gTerm.atPrompt;
+    });
     RunUntil(@"the same shell types on", @"echo \"again-$$-$((7*8))\"", @"-56");
     MCGuiStep(@"the same shell's pid; the document as it was, with what was typed meanwhile", ^{
         GCHECK_EQ_STR(ScreenWord(@"again-"), ([NSString stringWithFormat:@"%@-56", gShellPid]));
