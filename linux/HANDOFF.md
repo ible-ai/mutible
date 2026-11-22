@@ -22,6 +22,20 @@ Read these first:
 - `../android/README.md`: the Android port solved the same problems more
   recently, without AppKit, so it is often the closer model.
 
+## Unreleased on main (for the next release)
+
+The last release is v1.6.24 (14d5273, 2026-11-22). The Mac, where
+`scripts/release.sh` runs, is away from 2026-11-22 for about a week, so
+nothing is released meanwhile; the next Mac session releases what is
+listed here (and clears this list). Each PR merged on green CI with no
+FLAKY line.
+
+- #359 GTK over SSH: the review pages and revision comparisons run on the
+  host; core hook `ChangeReview::ImageReading::readWork` (item 166).
+- #360 GTK over SSH: language servers run by the host (item 167).
+- #361 (the Mac session's) formatters over SSH (FsRead "format", Welcome
+  flag 1024) and fetch, pull and push through the host's git.
+
 ## Where it stands
 
 Items 1 to 14 below are done (September and October 2026), so the port
