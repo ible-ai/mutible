@@ -81,6 +81,13 @@ bool RemoteWorkspace::listFolder(const std::string& path, std::function<void(boo
     });
 }
 
+bool RemoteWorkspace::hostDoesFileOps() const { return live() && link_->client().hostDoesFileOps(); }
+
+bool RemoteWorkspace::fileOp(Json request, std::function<void(bool, const Json&)> done) {
+    if (!hostDoesFileOps()) return false;
+    return link_->fileOpAsync(std::move(request), std::move(done));
+}
+
 void RemoteWorkspace::watchFolders(std::vector<std::string> paths) {
     std::vector<std::string> rels;
     for (const std::string& p : paths) {

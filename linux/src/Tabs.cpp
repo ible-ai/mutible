@@ -845,12 +845,13 @@ bool Editor::reopenClosedTab() {
 
 // ---------------------------------------------------------------- moves and the Trash
 
-void Editor::pathMoved(const std::string& from, const std::string& to) {
+void Editor::pathMoved(const std::string& from, const std::string& to, bool onHost) {
     for (Document* d : documents()) {
         if (d->kind() == Document::Kind::Diff || !isInside(d->path(), from)) continue;
         const std::string now = to + d->path().substr(from.size());
         const bool wasPreview = d->showsPreview();
-        d->setPath(now);
+        if (onHost) d->setPathFromHost(now);
+        else d->setPath(now);
 #ifdef MUTIBLE_ENABLE_PDF
         if (d->latexPreview()) d->latexPreview()->setPath(now);   // the preview follows
 #endif

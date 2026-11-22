@@ -167,6 +167,12 @@ public:
     // The same for a "read": the piece's bytes come with the answer.
     using BytesFn = std::function<void(bool ok, const Json& answer, std::string&& bytes)>;
     bool readBytesAsync(Json request, BytesFn done);
+    // A tree's file operation on the host (Client::requestFileOp: rename,
+    // move, delete, newFile, newFolder): `done(ok, answer)` as readAsync's,
+    // the answer {"ok": true, ...} or {"error", "reason"}. False, calling
+    // nothing, when the link is lost or the host does not do them
+    // (Client::hostDoesFileOps: an older mutible there).
+    bool fileOpAsync(Json request, std::function<void(bool ok, const Json& answer)> done);
     // A remote file's text without waiting (stage 8, third slice): the
     // pieces are asked one after another from the main loop, then
     // `done(text)` runs from dispatch() (never inside the call), with
