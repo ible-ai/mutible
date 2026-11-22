@@ -36,6 +36,8 @@ class CodeView;
 class FoldUi;
 class EditorConflicts;
 class MediaView;
+class RemoteCopies;
+class RemoteWorkspace;
 class CsvTable;
 class HtmlView;
 class SqliteView;
@@ -151,6 +153,14 @@ public:
     // folder, after its tabs closed: the old link hears the window close.
     SessionLink::Link* sessionLink() const { return link_.get(); }
     void setSessionLink(std::shared_ptr<SessionLink::Link> link);
+    // A window over SSH (EditorRemoteViewers.cpp): the viewers' copies of its
+    // files (RemoteCopies.h) and the host's disk notices that refresh them.
+    // `ws` is the window's RemoteWorkspace, null for a window on this machine.
+    void setRemoteWorkspace(std::shared_ptr<RemoteWorkspace> ws);
+    // The window's folder of copies, null until a file was copied (for checks).
+    RemoteCopies* remoteCopies() const { return copies_.get(); }
+    // The window closes: the folder of copies goes.
+    void removeRemoteCopies();
     static Model::Session& session();
     // A tab's preview state (a session coming back), and the window's
     // answers for Document::isPreviewTab and lastUsed.
@@ -615,6 +625,7 @@ public:
         pathMoved(from, now, true);
     }
     void documentLoaded(Document* d, int result, bool blank) override;   // LargeFileView.cpp
+    bool documentBytesRead(Document* d, std::string& bytes) override;     // EditorRemoteViewers.cpp
     Model::Preview documentPreview(const Document* d) const override;
     uint64_t documentLastUsed(const Document* d) const override;
 
@@ -855,6 +866,16 @@ private:
     Model::Session::WindowId winId_ = 0;
     Model::Window*         win_ = nullptr;
     std::shared_ptr<SessionLink::Link> link_;
+    // A window over SSH (EditorRemoteViewers.cpp).
+    std::shared_ptr<RemoteWorkspace> remoteWs_;
+    std::unique_ptr<RemoteCopies> copies_;
+    bool remote() const { return link_ && link_->kind() == SessionLink::Link::Kind::Remote; }
+    RemoteCopies* copiesForWrite();
+    void watchCopies();
+    void remoteFoldersChanged(const std::vector<std::string>& folders);
+    // The remote file's bytes read again into its copy; `done(changed)`.
+    void fetchCopy(const std::string& path, std::function<void(bool changed)> done);
+    std::string remotePicture(const std::string& src, const std::string& docFolder);
     std::map<uint64_t, Document*> docs_;
     Document*              active_ = nullptr;
     Document*              diffDoc_ = nullptr;   // the tab diffs and commits share

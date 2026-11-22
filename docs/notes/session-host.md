@@ -4940,3 +4940,84 @@ the status bar, changing nothing; the local actions are unchanged.
 - **Checked** (`remote_ssh`): each op through the stand-in, disk and tree
   rows and tabs, a refused rename (the host's sentence, nothing changed), and
   the question's Cancel.
+
+#### The GTK window over SSH, viewers (2026-11-21, eighth slice)
+
+The Mac's #348 on GTK: a picture, PDF, audio or video file or SQLite
+database in a window over SSH shows from a copy read through the host,
+while the tab, the title and the tree keep the remote path. Before, such a
+file said "Cannot display" (its bytes are not text). Core rules are the
+Mac's, `src/RemoteCache.{h,cpp}` (no src/ change); GTK:
+`RemoteCopies.{h,cpp}` (the folder of copies, as `MCRemoteFileCache`) and
+`EditorRemoteViewers.cpp` (what `EditorController+RemoteViewers.mm` is).
+
+- **One read decides, without waiting.** `Editor::loadInto` already asks the
+  host for the file's bytes (`Document::beginLoading`, `Link::readTextAsync`,
+  64 MB, the pieces in turn from `dispatch()`). Before the bytes go to the
+  worker that decodes them, `DocumentHost::documentBytesRead` asks the
+  editor: `MediaView::handles` (a picture, PDF, video or audio by name; a
+  PDF only in a build with poppler) or a SQLite head (`FileSniff`) takes
+  them, the editor writes the copy (`RemoteCopies::store`), calls
+  `setMedia` or `setDatabase` and `Document::setViewerPath(copy)`, and the
+  document is no longer loading. `showActive` opens `viewerPath()` (the copy
+  over SSH, else the path). Everything else is decoded as text as before, so
+  CSV and TSV tables, the JSON outline and notebooks (decided from the text
+  by the document) already worked and need nothing here. The copy is a
+  synchronous write on the main thread (a 64 MB file is the worst case; the
+  Mac's is the same).
+- **The copies.** `<$XDG_RUNTIME_DIR, else the temp folder>/mutible-ssh-
+  copies-<uid>/w<pid>-<n>` (`RemoteCache::windowFolderName`), made 0700 (the
+  folder of folders too, refused when it is not ours or not private), each
+  copy at its place from the remote folder (`RemoteCache::placeOf`, so its
+  name and extension choose the viewer and two files of a name never share),
+  0600, through a `mkstemp` file in its folder renamed over. The folder goes
+  in `Editor::closeOnHost` (window close), in the destructor of the editor's
+  `RemoteCopies`, and `RemoteCopies::removeLeftovers()` at launch removes
+  the ones whose process is gone (`RemoteCache::ownerOfFolder`, `kill(pid,
+  0)`), nothing else. A viewer's tab renamed by the tree keeps its copy
+  (`pathMoved` does not `setPath` the viewer).
+- **Following the host's disk.** `RemoteWorkspace::watchAlso` adds the
+  copied files' folders to the tree's in the one FsRead "watch";
+  `RemoteWorkspace::onFiles` (a second callback, the tree owns `onChanged`)
+  gives the editor the folders of a notice. `RemoteCopies::foldersChanged`
+  marks the copies stale (`RemoteCache::mayHaveChanged`); each is read again
+  (`Editor::fetchCopy`, `readTextAsync`, one at a time per path, a notice
+  during a read reads once more) and written only when its fingerprint
+  differs. The viewers already watch their file: `MediaView` and
+  `SqliteView` reload from the rewritten copy (a PDF keeps its page), so the
+  editor does not show it again itself. A tab not on show is refreshed too,
+  at once, not when it comes back.
+- **Too large, refusals.** Over 64 MB the first piece's answer says so and
+  nothing more is read: the tab says "... is too large to open over SSH"
+  (`Editor::textRead`, no alert, no copy; the core's
+  `tooLargeMessage` names this Mac, so the GTK sentence is its own). A file
+  the host cannot read is "Could not open" as before. A picture, PDF or
+  player that does not decode from its copy says "Cannot display" (it is
+  never read from this machine's disk at the remote path).
+- **Markdown pictures.** A remote window's `Markdown::Hooks::remotePicture`
+  (also the side preview's, `MarkdownSide::remotePicture`) is asked for each
+  picture that is not a web or data: address: `Editor::remotePicture` makes
+  the remote file with `RemoteCache::markdownPicture` (inside the window's
+  folder only; nothing of this machine's disk, no `~`, no file://), and
+  returns its copy's file (shown through a file URI, so characters of the
+  name are never taken for an escape) or "" while it is fetched, when the
+  alt text stands in; the page is drawn again when it arrives and changed.
+  A stale copy is shown and read again. One that could not be read is not
+  asked again until its folder changes. Video and audio a page names do not
+  play from the host (GTK's preview has none, as on the Mac).
+- **Read-only.** A copy is never written back; the viewers edit nothing (a
+  CSV's edits are the tab's text, saved through the host as any text). A
+  database is shown as copied, without a -wal file there. The LaTeX preview
+  is not touched by this slice (see the Linux notes).
+- **Checked** (`remote_ssh`): a PNG in a subfolder from the tree's folder
+  (37 by 23, the copy 0600 in a 0700 window folder under the root, the tab
+  and title on the remote path, no stamp), rewritten at 50 by 40 on the host
+  and shown again (`refreshes`), a three-page PDF (`pageCount`), a CSV's
+  table, a JSON's outline, a Markdown page whose in-folder picture shows
+  (20 by 10) and whose picture outside the folder and one by `..` stay alt
+  text, a database in its viewer from a copy, a sound opened without an
+  alert, a sparse 65 MB file's note with no copy, and the window's folder of
+  copies gone once the window closes.
+- **Not done.** Real ssh never run; the look of the note and of a PDF
+  refreshed under the reader needs the owner's eyes. Quick Look-only
+  documents have no viewer on GTK (as locally): they say "Cannot display".

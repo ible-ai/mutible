@@ -779,7 +779,13 @@ Markdown::Page Markdown::renderRuns(GtkTextView* view, GtkTextBuffer* buffer,
             int w = 0, h = 0;
             GtkWidget* pic = nullptr;
             const bool web = WebImages::isFetchable(r.src);
-            if (!web) {
+            if (!web && hooks->remotePicture && r.src.rfind("data:", 0) != 0) {
+                const std::string copy = hooks->remotePicture(r.src);
+                if (char* uri = copy.empty() ? nullptr : g_filename_to_uri(copy.c_str(), nullptr, nullptr)) {
+                    pic = loadPicture(uri, "", &w, &h);
+                    g_free(uri);
+                }
+            } else if (!web) {
                 pic = loadPicture(r.src, hooks->folder, &w, &h);
             } else if (hooks->webImages) {
                 if (WebImages::PicturePtr kept = WebImages::cached(r.src))

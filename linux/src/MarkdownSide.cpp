@@ -255,6 +255,7 @@ void MarkdownSide::apply(Job* job) {
     if (stale_ || !hooks_) {   // a new context: new hooks, every piece built
         hooks_ = std::make_shared<Markdown::Hooks>();
         hooks_->folder = folder_;
+        hooks_->remotePicture = remotePicture;
         hooks_->webImages = webImages_ && WebImages::available();
         hooks_->mermaid = mermaid_ && Mermaid::available();
         hooks_->mermaidDark = dark_;

@@ -400,6 +400,7 @@ void Document::clearSource() {
     markdown_ = latex_ = false;
     showsPreview_ = false;
     page_ = Markdown::Page();
+    viewerPath_.clear();
 }
 
 // Set whole: never undone into (the history starts over), and while it
@@ -450,6 +451,9 @@ void Document::sniffCsv(const std::string& text) {
 #ifdef MUTIBLE_ENABLE_BROWSER
     html_ = k == FileSniff::Kind::Html;
     showsPage_ = html_ && !text.empty();   // an empty file opens in its source
+    // Over SSH its page would load the file from this machine's disk: the
+    // source shows (as on the Mac).
+    if (remote()) html_ = showsPage_ = false;
 #endif
 }
 

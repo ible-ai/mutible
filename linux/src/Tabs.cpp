@@ -8,6 +8,7 @@
 // drops unsaved changes without being told to.
 #include "AgentNotes.h"
 #include "SessionLink.h"
+#include "RemoteCache.h"
 #include "Appearance.h"
 #include "Editor.h"
 
@@ -172,6 +173,13 @@ bool Editor::textRead(Document* d, const std::string& path, int result,
     case Document::Read::NotRegular:
         return refuse("Not a regular file.");
     case Document::Read::TooLarge:
+        if (link_ && link_->kind() == SessionLink::Link::Kind::Remote) {
+            d->setMessage(path, "\n  “" + name + "” is too large to open over SSH.\n\n  It is over " +
+                                    std::to_string(RemoteCache::kMaxBytes >> 20) +
+                                    " MB, and a file that size is not copied from " + link_->label() +
+                                    " to this machine. The terminal runs there.");
+            return false;
+        }
         return refuse("Larger than 256 MB, too large to edit here.");
     case Document::Read::NotText:
         return refuse("Binary file or unsupported encoding.");
@@ -380,6 +388,7 @@ void Editor::rehost(std::shared_ptr<SessionLink::Link> link, const std::set<uint
 }
 
 void Editor::closeOnHost() {
+    removeRemoteCopies();
     for (Document* d : documents())
         if (d->sessionLink() == link_.get()) d->closeOnHost();
 }
@@ -856,8 +865,9 @@ void Editor::pathMoved(const std::string& from, const std::string& to, bool onHo
         if (d->latexPreview()) d->latexPreview()->setPath(now);   // the preview follows
 #endif
         if (d != active_) continue;
-        if (d->kind() == Document::Kind::Media) media_->setPath(now);   // watched under its new name
-        if (d->kind() == Document::Kind::Database) sqlite_->setPath(now);
+        // A copy over SSH keeps its own name: only the tab's path moved.
+        if (d->kind() == Document::Kind::Media && !d->showsCopy()) media_->setPath(now);   // watched under its new name
+        if (d->kind() == Document::Kind::Database && !d->showsCopy()) sqlite_->setPath(now);
         if (wasPreview && !d->showsPreview()) {
             // No longer Markdown or LaTeX: the source back in the slot.
             if (buffer_ != d->buffer()) {

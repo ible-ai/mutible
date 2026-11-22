@@ -119,6 +119,11 @@ public:
         (void)result;
         (void)blank;
     }
+    // The bytes of a file of a window over SSH came (Document::beginLoading),
+    // before they are read as text: true when the host showed them another
+    // way (a viewer's copy, a note), the document taken over and not loaded
+    // as text.
+    virtual bool documentBytesRead(Document*, std::string& /* bytes */) { return false; }
     // Whether its tab is a preview tab, and when it was last on show: the
     // window's tabs (a Model::Window, Editor.h) keep both.
     virtual Model::Preview documentPreview(const Document*) const { return Model::Preview::None; }
@@ -180,6 +185,14 @@ public:
     void setMessage(const std::string& path, const std::string& message);
     void setMedia(const std::string& path);
     void setDatabase(const std::string& path);
+    // A tab of a window over SSH that shows a copy of its file in a viewer
+    // (RemoteCopies.h): the copy the viewer opens, while path() stays the
+    // remote one. Set after setMedia or setDatabase; any other source clears
+    // it.
+    void setViewerPath(const std::string& copy) { viewerPath_ = copy; }
+    // What a viewer opens: the copy over SSH, else the file itself.
+    const std::string& viewerPath() const { return viewerPath_.empty() ? path_ : viewerPath_; }
+    bool showsCopy() const { return !viewerPath_.empty(); }
     void setDiff(const std::string& title, const std::string& bytes, bool commit);
     // A tab come back from a session whose file is not read until it is
     // first shown (Editor::showActive reads it): a Message with nothing in
@@ -668,6 +681,7 @@ private:
     guint     dirtyIdle_ = 0;
     Kind          kind_ = Kind::Text;
     std::string   path_, ext_;
+    std::string   viewerPath_;   // the copy a viewer opens over SSH (setViewerPath)
     bool          markdown_ = false, latex_ = false;
     bool          showsPreview_ = false;
     bool          sideWanted_ = false;

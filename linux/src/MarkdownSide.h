@@ -43,6 +43,8 @@ public:
     // current when this is called. A task box clicked, likewise.
     std::function<void(int line, int column, const GdkRectangle& at)> onEdit;
     std::function<void(int line)> onTask;
+    // A window over SSH: the pictures' copies (Markdown::Hooks::remotePicture).
+    std::function<std::string(const std::string& src)> remotePicture;
 
     // What the pieces are built from. A change makes the next render whole.
     bool setContext(const std::string& folder, bool webImages, bool mermaid = false,

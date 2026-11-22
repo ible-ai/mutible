@@ -351,3 +351,10 @@ text is in place in its section.
 - JSON outline: Trap: an attributed string's own default paragraph style word-wraps and overrides the field's `lineBreakMode`, so a long value (or one with line breaks) wrapped inside its fixed-height row and drew over the rows below; `previews` checks every row's field sits in its row and needs one line (`cellSizeForBounds:`).
 - Over SSH: **Trap**: every viewer here takes a path and reads it itself, so in a window over SSH any path handed to a viewer must be the copy's (`viewerPathOf:`), never the tab's: the GUI check's stand-in serves this Mac's disk, so the tab's path would pass there and show nothing (or another file) on a real remote.
 - Viewers in the editor's slot (Mac): Trap: laying both panes out to size them took 1.5 s on the main thread for 50,000 lines a side; every row has one fixed height (a paragraph style), so sizes and row rects are arithmetic and layout is non-contiguous.
+- GTK over SSH (2026-11-21, `EditorRemoteViewers.cpp`, `RemoteCopies.cpp`;
+  docs/notes/session-host.md, "The GTK window over SSH, viewers"): the
+  editor's `MediaView` and `SqliteView` open `Document::viewerPath()`, the
+  copy, never `path()`. **Trap**: the stand-in's folder is this machine's,
+  so a viewer handed the tab's path would pass the check and show nothing
+  (or another file) on a real remote; and `MediaView::setPath` on a
+  rename must not be given the remote path (`pathMoved` skips a copy).

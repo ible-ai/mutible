@@ -88,12 +88,33 @@ bool RemoteWorkspace::fileOp(Json request, std::function<void(bool, const Json&)
     return link_->fileOpAsync(std::move(request), std::move(done));
 }
 
-void RemoteWorkspace::watchFolders(std::vector<std::string> paths) {
+namespace {
+std::vector<std::string> relatives(const RemoteWorkspace& ws, const std::vector<std::string>& paths) {
     std::vector<std::string> rels;
     for (const std::string& p : paths) {
         std::string rel;
-        if (relative(p, &rel)) rels.push_back(rel);
+        if (ws.relative(p, &rel)) rels.push_back(rel);
     }
+    return rels;
+}
+}  // namespace
+
+void RemoteWorkspace::watchFolders(std::vector<std::string> paths) {
+    treeRels_ = relatives(*this, paths);
+    askWatch();
+}
+
+void RemoteWorkspace::watchAlso(std::vector<std::string> paths) {
+    std::vector<std::string> rels = relatives(*this, paths);
+    std::sort(rels.begin(), rels.end());
+    if (rels == alsoRels_) return;
+    alsoRels_ = std::move(rels);
+    askWatch();
+}
+
+void RemoteWorkspace::askWatch() {
+    std::vector<std::string> rels = treeRels_;
+    rels.insert(rels.end(), alsoRels_.begin(), alsoRels_.end());
     std::sort(rels.begin(), rels.end());
     rels.erase(std::unique(rels.begin(), rels.end()), rels.end());
     watchPaths_ = std::move(rels);
@@ -126,6 +147,7 @@ void RemoteWorkspace::tookNotice(const Json& changed) {
     for (const Json& l : changed["listings"].elements()) folders.push_back(absolute(l["path"].asString()));
     notices++;
     if (!folders.empty() && onChanged) onChanged(folders);
+    if (!folders.empty() && onFiles) onFiles(folders);
 }
 
 void RemoteWorkspace::listFiles(std::function<void(std::vector<std::string>, bool)> done) {
