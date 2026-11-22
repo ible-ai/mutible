@@ -5124,10 +5124,8 @@ seam as the Mac's but at the thread rather than the queue.
   panel `refresh()`, the bars `refreshSoon()` and the colors `lookSoon()`;
   Reconnect calls it too. Nothing is watched on this disk (the panel's
   `watch`, the gutter's and the colors' `GitDirWatch`, off).
-- **What differs.** No Review Changes: the panel hides its button, sets no
-  `onReview`/`onReviewCommit` (a row and a commit open the raw diff and
-  `git show` in the diff tab, hunk actions working there), and
-  `showChangeReview` says so. Discard, one row, several, the menu bar's and a
+- **What differs.** (Review Changes and the commit pages were refused in
+  this slice and are routed in the next one, below.) Discard, one row, several, the menu bar's and a
   hunk's, use `GitUi::discardBatchPlanOverSsh`, `discardPlanOverSsh`,
   `hunkPlanOverSsh`: `keepCopyArgs` first, the object named in the words
   (`keptCopiesText`), nothing for Undo Discard; an untracked file is
@@ -5135,16 +5133,9 @@ seam as the Mac's but at the thread rather than the queue.
   (autofetch nothing). The gutter's `sourceOverSshFor` takes the file's path
   in its repository from `rev-parse --show-prefix`, asks the index entry at
   every look and reads the blob again only when its object changed.
-- **Refused, not routed.** Anything that would read this computer's
-  repository or disk on the host's paths is refused in a remote window with a
-  note in the same voice ("... does not work in a window over SSH yet"), so
-  a path that exists here too (ssh to localhost, a home folder spelled the
-  same) never shows this machine's repository as the host's: the review page
-  and a commit's (`showChangeReview`, `showCommitReview`, `reviewChanges`),
-  every comparison (`Editor::openComparison`, `onOverSshRefusal`), `mutible
-  diff`, and the agents' worktrees (none made). A graph row opens the
-  commit's raw `git show` from the host. Not done: those through the host,
-  and line history. A host too old for flag 256 (`gitTooOldText`) could not
+- **Refused, not routed** (this slice; the next one routes the pages and
+  comparisons): `mutible diff`, the agents' worktrees (none made) and
+  Apply to Main. A host too old for flag 256 (`gitTooOldText`) could not
   be made by the stand-in: remote_ssh checks the no-host answer
   (`gitLostText`) and Push's, not that one.
 - **Checks.** remote_ssh's git block (a window on a repository of its own
@@ -5158,6 +5149,49 @@ seam as the Mac's but at the thread rather than the queue.
   and push refused with nothing sent, a graph row showing the host's `git show`
   and no page, Review Changes and Compare refused with their notes and
   nothing opened, and a runner without a host.
+
+#### The GTK window over SSH, the review pages and comparisons (2026-11-22, stage 9's second slice on GTK)
+
+Review Changes, a commit's review page and a revision's comparison are the
+host's now, not refused. No new request: the same FsRead "git" and "read".
+
+- **The pages' git** is the panel's: `ChangeReviewPage::reload` and every
+  action run through `GitPanel::runOnGitThread`, which is `post()`, so they
+  already sit in the panel's `GitRunScope` and the core's `readUncommitted`
+  and `readCommit` ask the host for `ls-files`, `cat-file --batch`, `diff`
+  and `show` without a line changed. The panel shows its Review Changes
+  button and sets `onReview`/`onReviewCommit` over SSH too. Stage and
+  Unstage (a block, a line, a file) are git only and work as locally.
+- **The work tree's bytes** (the changed files, a conflict's file) are not
+  git: `GitRunner` (GitRun.h) is now a `std::function` with a `readFile`,
+  `hostGitRunner`'s, which asks `RemoteWorkspace::readFile`
+  (`Link::readTextAsync`) from an idle and waits on the git thread;
+  `hostWorkReader()` gives the thread's. The page hands it to the core as
+  `ChangeReview::ImageReading::readWork` (src/ChangeReviewRead.h, the one
+  src change: the three-line `workFile` in ChangeReviewRead.cpp; core test
+  `review-read:host-work-tree`), which `readUncommitted` uses instead of
+  `readFileStable`. The Mac can set the same hook from its
+  `MCGitRunnerQueue`.
+- **Still refused on the page** (a note on the page's message line):
+  Discard of a block or lines, and Keep Current/Incoming/Both on a conflict
+  (they write this computer's disk through `writeDiscard`/`keepConflict`;
+  the panel's file Discard is the routed one), and the worktree page (Apply
+  to Main, not made over SSH). Mark Resolved is git only and works.
+- **Comparisons** (`Editor::openComparison`): over SSH the thread runs in
+  `GitRunScope(hostGitRunner(remoteWs_))`; `sideText` then reads a file side
+  through `hostWorkReader()` and a revision side with `rev-parse
+  --show-toplevel` and `show rev:path` in the host's folder (no realpath).
+  The review page's Side by Side carries its texts and shows as locally. An
+  agent's proposed change (`decisionPrompt`) stays refused, as does `mutible
+  diff` (it reads this computer's files). GTK has no Compare with a Revision
+  command or line history: remake of a recorded comparison
+  (`Editor::remakeComparison`) is the revision path, and what remote_ssh
+  checks. Session restore of pages stays off over SSH (no session there).
+- **Checks.** remote_ssh's git block: Review Changes opens the page with the
+  modified file and its host-read text (`gitRuns` rises), a row opens the
+  page, Stage on a block stages it there (`git diff --cached` on disk), a
+  graph row opens the commit's page with its files, a comparison with the
+  first commit's text and the work tree's, an agent's decision refused.
 
 #### The GTK window over SSH, viewers (2026-11-21, eighth slice)
 

@@ -145,6 +145,42 @@ gboolean askHost(gpointer p) {
     return G_SOURCE_REMOVE;
 }
 
+// One work tree file read crossing to the main loop and back.
+struct FileWait {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false;
+    FolderSearch::ReadStatus status = FolderSearch::ReadStatus::Unreadable;
+    std::string bytes;
+    void finish(FolderSearch::ReadStatus s, std::string b) {
+        std::lock_guard<std::mutex> lock(m);
+        if (done) return;
+        status = s;
+        bytes = std::move(b);
+        done = true;
+        cv.notify_all();
+    }
+};
+struct FileAsk {
+    std::weak_ptr<RemoteWorkspace> ws;
+    std::string path;
+    std::shared_ptr<FileWait> wait;
+};
+gboolean askFile(gpointer p) {
+    std::unique_ptr<FileAsk> a(static_cast<FileAsk*>(p));
+    std::shared_ptr<RemoteWorkspace> ws = a->ws.lock();
+    std::shared_ptr<FileWait> w = a->wait;
+    if (!ws || !ws->live() ||
+        !ws->readFile(a->path, [w](bool ok, bool tooLarge, std::string&& bytes) {
+            w->finish(tooLarge ? FolderSearch::ReadStatus::TooLarge
+                      : ok     ? FolderSearch::ReadStatus::Ok
+                               : FolderSearch::ReadStatus::Missing,
+                      std::move(bytes));
+        }))
+        w->finish(FolderSearch::ReadStatus::Unreadable, "");
+    return G_SOURCE_REMOVE;
+}
+
 }  // namespace
 
 GitRunScope::GitRunScope(const GitRunnerPtr& runner) : previous_(tRunner) {
@@ -152,11 +188,14 @@ GitRunScope::GitRunScope(const GitRunnerPtr& runner) : previous_(tRunner) {
 }
 GitRunScope::~GitRunScope() { tRunner = previous_; }
 bool gitRunsOnHost() { return tRunner != nullptr; }
+std::function<FolderSearch::ReadStatus(const std::string&, std::string*)> hostWorkReader() {
+    return tRunner ? tRunner->readFile : nullptr;
+}
 
 GitRunnerPtr hostGitRunner(const std::shared_ptr<RemoteWorkspace>& wsShared) {
     std::weak_ptr<RemoteWorkspace> weak = wsShared;
     const std::string label = wsShared->label();
-    return std::make_shared<const GitRunner>(
+    auto runner = std::make_shared<GitRunner>(
         [weak, label](const std::string& dir, const std::vector<std::string>& args, double limit,
                       const std::string* input) -> GitResult {
             // Nothing is sent: they would want credentials nobody can type there.
@@ -182,6 +221,19 @@ GitRunnerPtr hostGitRunner(const std::shared_ptr<RemoteWorkspace>& wsShared) {
             }
             return std::move(wait->result);
         });
+    runner->readFile = [weak](const std::string& path, std::string* out) -> FolderSearch::ReadStatus {
+        if (g_main_context_is_owner(g_main_context_default())) return FolderSearch::ReadStatus::Unreadable;
+        auto wait = std::make_shared<FileWait>();
+        g_idle_add_full(G_PRIORITY_DEFAULT, askFile, new FileAsk{weak, path, wait}, nullptr);
+        std::unique_lock<std::mutex> lock(wait->m);
+        if (!wait->cv.wait_for(lock, std::chrono::seconds(60), [&wait] { return wait->done; })) {
+            wait->done = true;   // a late answer is dropped
+            return FolderSearch::ReadStatus::Unreadable;
+        }
+        *out = std::move(wait->bytes);
+        return wait->status;
+    };
+    return runner;
 }
 
 const std::string& gitExecutable() {

@@ -270,7 +270,6 @@ void GitPanel::setHost(GitRunnerPtr runner, const std::string& label) {
     runner_ = std::move(runner);
     hostLabel_ = label;
     unwatch();
-    gtk_widget_set_visible(reviewButton_, FALSE);
     if (!rootDir_.empty()) refresh();
 }
 
@@ -856,7 +855,7 @@ void GitPanel::applySnapshot(const GitUi::Snapshot& s) {
     {
         bool any = false;
         for (const GitUi::Row& r : rows_) any = any || !r.header;
-        gtk_widget_set_visible(reviewButton_, s.inRepository && any && !runner_);
+        gtk_widget_set_visible(reviewButton_, s.inRepository && any);
     }
     if (!graph && graph_) {
         graph_.reset();

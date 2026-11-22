@@ -73,6 +73,7 @@
 #include <thread>
 #include <vector>
 
+#include "ChangeReviewPage.h"
 #include "ComparePanes.h"
 #include "ConnectWindow.h"
 #include "GitChecks.h"
@@ -377,6 +378,12 @@ GitPanel* gitPanel() { return gitchecks::Panel(); }
 RemoteWorkspace* gitWs() { return gitchecks::RepoWindow().remoteWs; }
 int gitRow(const std::string& description) { return gitchecks::RowOf(description); }
 
+ChangeReviewPage* reviewPage() {
+    Editor* e = gitchecks::RepoWindow().editor;
+    return e ? dynamic_cast<ChangeReviewPage*>(e->currentPage()) : nullptr;
+}
+Document* gCompared = nullptr;
+
 void gitOverSsh() {
     using namespace gitchecks;
     MCGuiStep("git over SSH: a repository there", [] {
@@ -414,8 +421,8 @@ void gitOverSsh() {
     MCGuiWait("it lists the change, from git run by the host", 20, [] {
         return Rows({"# Changes  1", "W M a.txt"}) && gitWs() && gitWs()->gitRuns > 0;
     });
-    MCGuiStep("no Review Changes over SSH (it reads this disk)", [] {
-        GCHECK(!gitPanel()->reviewButtonShown());
+    MCGuiStep("Review Changes is offered over SSH too", [] {
+        GCHECK(gitPanel()->reviewButtonShown());
         GCHECK(!gitPanel()->errorLine().size() || gitPanel()->errorLine().find("newer mutible") == std::string::npos);
     });
     MCGuiWait("the branch in the panel, the tree's change count", 20, [] {
@@ -426,10 +433,14 @@ void gitOverSsh() {
         GitGutter* bars = RepoWindow().changeBars;
         return bars && bars->barCount() == 1 && bars->barDescriptions()[0].rfind("modified ", 0) == 0;
     });
-    MCGuiStep("a row opens its git diff (no review page over SSH)", [] { gitPanel()->reviewRow(gitRow("W M a.txt"), true); });
-    MCGuiWait("the diff, run there", 15, [] {
-        return DiffOnShow() && Diff()->text().find("+TWO") != std::string::npos &&
-               Diff()->text().find("-two") != std::string::npos;
+    MCGuiStep("a row opens the review page, read from the host", [] {
+        gGitRunsBefore = gitWs()->gitRuns;
+        gitPanel()->reviewRow(gitRow("W M a.txt"), true);
+    });
+    MCGuiWait("the page lists a.txt with its change, from the host's git and work tree", 20, [] {
+        ChangeReviewPage* p = reviewPage();
+        return p && p->loaded() && p->pageText().find("TWO") != std::string::npos &&
+               gitWs()->gitRuns > gGitRunsBefore;
     });
     MCGuiStep("stage a.txt", [] {
         gGitRunsBefore = gitWs()->gitRuns;
@@ -500,40 +511,71 @@ void gitOverSsh() {
         }
         GCHECK(gitWs()->gitRuns == gGitRunsBefore);
     });
-    // What reads this computer's repository or disk is refused there, not run
-    // on the host's paths (the stand-in's folder is this machine's, so a page
-    // made from this machine's repository would pass for the host's).
-    MCGuiStep("a graph row: the commit's diff from the host, no commit page", [] {
+    // The review and commit pages and the comparisons are read from the host
+    // (the stand-in's folder is this machine's too: the host's runs and
+    // reads are told by gitRuns and by the files changing on disk).
+    MCGuiStep("b.txt changed again there; Review Changes", [] {
+        MCGuiWriteFile(gGitFolder + "/b.txt", "bee four\n");
+    });
+    MCGuiWait("listed", 20, [] { return Rows({"# Changes  2", "W M b.txt", "W U new.txt"}); });
+    MCGuiStep("Review Changes", [] {
+        gGitRunsBefore = gitWs()->gitRuns;
+        gitPanel()->reviewChanges();
+    });
+    MCGuiWait("the page lists b.txt and the new file, with b.txt's change", 20, [] {
+        ChangeReviewPage* p = reviewPage();
+        return p && p->loaded() && !p->isCommit() && p->pageText().find("bee four") != std::string::npos &&
+               gitWs()->gitRuns > gGitRunsBefore;
+    });
+    MCGuiStep("Stage on b.txt's block; the host stages it", [] {
+        ChangeReviewPage* p = reviewPage();
+        GCHECK(p && p->blockCount() > 0);
+        if (!p || p->blockCount() == 0) return;
+        // The first block in page order belongs to b.txt (new.txt follows).
+        GCHECK(p->press("Stage", (size_t)p->rowOfBlock(0)));
+    });
+    MCGuiWait("git there has b.txt staged", 20, [] {
+        return GitText({"diff", "--cached", "--name-only"}) == "b.txt\n";
+    });
+    MCGuiStep("Unstage it again, so the later checks start clean", [] {
+        GitText({"reset", "-q"});
+    });
+    MCGuiStep("a graph row opens the commit's review page", [] {
         std::string hash = GitText({"rev-parse", "HEAD"});
         while (!hash.empty() && hash.back() == '\n') hash.pop_back();
         GCHECK(hash.size() == 40);
         gGitRunsBefore = gitWs()->gitRuns;
-        gGitDocsBefore = RepoWindow().editor->documents().size();
         gitPanel()->pressedGraphCommit(hash, false);
     });
-    MCGuiWait("its show, run there", 15, [] {
-        return DiffOnShow() && Diff()->text().find("second, over ssh") != std::string::npos &&
+    MCGuiWait("the commit's files, read there", 20, [] {
+        ChangeReviewPage* p = reviewPage();
+        return p && p->loaded() && p->isCommit() && p->headerTitle().find("second, over ssh") != std::string::npos &&
+               p->fileCount() == 1 && p->pageText().find("a.txt") != std::string::npos &&
                gitWs()->gitRuns > gGitRunsBefore;
     });
-    MCGuiStep("no review page of this computer's repository", [] {
-        for (Document* d : RepoWindow().editor->documents()) GCHECK(!d->editorPage());
-        GCHECK(RepoWindow().editor->documents().size() <= gGitDocsBefore + 1);
+    MCGuiStep("Compare with the first commit: its text from the host, the file's from the host too", [] {
+        std::string first = GitText({"rev-list", "--max-parents=0", "HEAD"});
+        while (!first.empty() && first.back() == '\n') first.pop_back();
+        gGitDocsBefore = RepoWindow().editor->documents().size();
+        TabSessions::PageTab pt;
+        pt.kind = "compare";
+        pt.title = "a.txt (first commit)";
+        pt.fileName = "a.txt";
+        pt.left = {gGitFolder + "/a.txt", first, "first"};
+        pt.right = {gGitFolder + "/a.txt", "", "a.txt"};
+        gCompared = nullptr;
+        RepoWindow().editor->remakeComparison(pt, -1, true, [](Document* d) { gCompared = d; });
     });
-    MCGuiStep("Review Changes says it does not work over SSH yet, and opens nothing", [] {
-        const size_t docs = RepoWindow().editor->documents().size();
-        gitPanel()->reviewChanges();
-        GCHECK(gitPanel()->errorLine().find("Review Changes does not work in a window over SSH yet") !=
-               std::string::npos);
-        GCHECK(RepoWindow().editor->documents().size() == docs);
-        for (Document* d : RepoWindow().editor->documents()) GCHECK(!d->editorPage());
+    MCGuiWait("the comparison opens, with the old text and the file's", 20, [] {
+        return gCompared && gCompared->compare() &&
+               gCompared->compare()->spec.leftText == "one\ntwo\nthree\n" &&
+               gCompared->compare()->spec.rightText == "one\nTWO\nthree\n";
     });
-    MCGuiStep("Compare with a revision says so in the status bar, and opens nothing", [] {
+    MCGuiStep("an agent's proposed change (a decision) stays refused", [] {
         const size_t docs = RepoWindow().editor->documents().size();
         CompareSpec spec;
-        spec.title = "a.txt (HEAD)";
-        spec.path = gGitFolder + "/a.txt";
-        spec.left = {gGitFolder + "/a.txt", "HEAD", ""};
-        spec.right = {gGitFolder + "/a.txt", "", ""};
+        spec.title = "a.txt (proposed)";
+        spec.decisionPrompt = "Accept?";
         RepoWindow().editor->showComparison(spec);
         const std::string said = gtk_label_get_text(GTK_LABEL(RepoWindow().statusLabel));
         GCHECK(said.find("does not work in a window over SSH yet") != std::string::npos);

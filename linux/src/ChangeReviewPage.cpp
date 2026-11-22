@@ -533,14 +533,17 @@ void ChangeReviewPage::reload() {
     const ChangeReview::Opened opened = opened_;
     const std::string worktree = worktree_, mainRef = mainRef_, commit = commit_;
     const unsigned serial = ++readsStarted_;
-    ChangeReview::ImageReading images;
-    images.size = imageSizeOf;
-    images.rowHeight = rowHeight_;
+    ChangeReview::ImageReading images0;
+    images0.size = imageSizeOf;
+    images0.rowHeight = rowHeight_;
     const int width = gtk_widget_get_width(view_);
-    panel_->runOnGitThread([this, root, opened, worktree, mainRef, commit, serial, images, width,
+    panel_->runOnGitThread([this, root, opened, worktree, mainRef, commit, serial, images0, width,
                             alive = alive_] {
         auto d = std::make_shared<Data>();
         d->serial = serial;
+        // Over SSH the changed files are read from the host's work tree.
+        ChangeReview::ImageReading images = images0;
+        images.readWork = hostWorkReader();
         if (!commit.empty()) {
             ChangeReview::CommitRead c = ChangeReview::readCommit(root, commit, runner, images);
             d->read = std::move(c.read);
@@ -1555,6 +1558,12 @@ void ChangeReviewPage::writeIndex(std::u16string text, size_t fi, std::shared_pt
 // to be what the view was drawn from.
 void ChangeReviewPage::writeDiscard(std::u16string text, size_t fi, std::shared_ptr<Data> d,
                                     const GitUi::ActionPlan& plan) {
+    if (panel_->overSsh()) {   // it would write this computer's disk
+        actedPending_ = false;
+        finish("Discarding a block does not work in a window over SSH yet: discard the file from "
+               "Source Control.", false);
+        return;
+    }
     const std::string done = plan.doneText;
     actionPosted();
     panel_->runOnGitThread([this, text, fi, d, done, alive = alive_] {
@@ -1694,6 +1703,10 @@ void ChangeReviewPage::keepConflict(MergeConflicts::Keep keep, size_t fi, long b
     auto d = data_;
     if (!d || fi >= d->read.diffs.size()) return;
     const FileDiff& fd = d->read.diffs[fi];
+    if (panel_->overSsh()) {   // it would write this computer's disk
+        finish("Resolving a conflict block does not work in a window over SSH yet.", false);
+        return;
+    }
     if (block < 0 || (size_t)block >= fd.conflicts.size()) {
         gtk_widget_error_bell(root_);
         return;

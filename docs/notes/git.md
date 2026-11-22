@@ -547,7 +547,9 @@ thread the window's `GitRunner`, and `runGitWithin` hands every command to
 it; `hostGitRunner` waits on that thread for `RemoteWorkspace::git`'s answer
 and never runs on the main thread. Each object's `setHost` also turns off
 what reads this disk: the panel's and the gutter's and the colors' watches,
-the review page and Trash (Discard uses `discardPlanOverSsh` and keeps a
-git object). Over SSH, the commit and review pages, comparisons, `mutible diff` and the agents' worktrees are refused with a note (they would read this
-computer's repository); line history is not routed.
+Trash (Discard uses `discardPlanOverSsh` and keeps a
+git object). Over SSH the review and commit pages and the comparisons of a
+revision run through the same runner and a host file reader (session-host.md,
+"the review pages and comparisons"); `mutible diff`, the agents' worktrees,
+Apply to Main and a page's Discard of a block are refused with a note; line history is not routed.
 - Over SSH on GTK: **the stand-in's folder is this machine's**, so remote_ssh counts the host's runs (`RemoteWorkspace::gitRuns`) and reads git's results apart from the window. A runner is called only on a git thread: a call from the main thread answers an error rather than hang.
