@@ -78,6 +78,7 @@
 #include <atomic>
 #include <deque>
 #include <map>
+#include <set>
 #include <memory>
 #include <utility>
 #include <signal.h>
@@ -699,6 +700,16 @@ struct MCHostTermListener : Shared::Client::TermListener {
     NSDictionary<NSString *, NSString *> *_extraEnvironment;   // added to the shell's
     BOOL _zleReady;              // grid mode: ZLE reads input (133;B, no C since)
     NSString *_pendingTyped;     // grid mode: typeCommand: waiting for ZLE
+    // A remote bash with its host's integration (hostIntegrated:): the
+    // linux port's bash script's marks (no 133;B, so canTypeNow waits its
+    // 0.3 s and the raw tty), its push key the same ESC [9999~, and no line
+    // editor keys of zsh's (ESC [9998~ is its pop: the half-typed line
+    // set aside, given back once the command's prompt is back, as the GTK
+    // port's giveLineBack). Lines owed back, and the prompt count when the
+    // first of them was set aside.
+    BOOL _bashShell;
+    NSInteger _popOwed;
+    long long _pushPrompts, _promptCount;
     std::string _markNonce;      // this shell's marks carry it (setMarkNonce)
     CFTimeInterval _promptTime;  // when the last 133;A came
     BOOL _retryScheduled;        // flushPendingInput will run again soon
@@ -918,6 +929,12 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
     static auto *m = new std::map<MCHostNonceKey, std::string>();
     return *m;
 }
+// Those of them whose shell is a remote bash (hostIntegrated:), by the same
+// key: a window taking one over after a drop types to it as to a bash.
+static std::set<MCHostNonceKey> &HostBashShells() {
+    static auto *s = new std::set<MCHostNonceKey>();
+    return *s;
+}
 
 // A terminal the host holds (initWithDirectory:environment:place:): its
 // shell runs on, so this view attaches (TermAttach), the host's replay drawn
@@ -937,6 +954,8 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
     if (known != HostNonces().end()) nonce = known->second;
     _integrated = !nonce.empty();
     _integrationFile = _integrated;
+    _bashShell = _integrated && HostBashShells().count({_link->key(), h.heldTerm});
+    _popOwed = 0;
     if (nonce.empty()) {
         // One nobody has, so no mark is believed.
         unsigned char raw[16];
@@ -1326,7 +1345,7 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
         _screen.feed("\x1b[H\x1b[2J");
         return;
     }
-    if (!_lineMode && _integrated && _zleReady && _shellPid > 0 && !_screen.altScreen()) {
+    if (!_lineMode && _integrated && !_bashShell && _zleReady && _shellPid > 0 && !_screen.altScreen()) {
         _screen.clearAll();
         [self sendBytes:ShellIntegration::kZleClearKey length:strlen(ShellIntegration::kZleClearKey)];
     } else {
@@ -1386,7 +1405,8 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
 // reads input; otherwise Ctrl+A, Ctrl+E and Ctrl+U, which readline, Python's
 // prompt and Claude Code read that way.
 - (void)lineEdit:(MCLineEdit)edit {
-    BOOL zle = _integrated && _zleReady && !_screen.altScreen();
+    // A bash binds ESC [9998~ to its pop: readline's own keys there.
+    BOOL zle = _integrated && !_bashShell && _zleReady && !_screen.altScreen();
     const char *bytes;
     switch (edit) {
     case MCLineEditStart: bytes = zle ? ShellIntegration::kZleLineStartKey : "\x01"; break;
@@ -1554,6 +1574,7 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
 - (BOOL)onSessionHost { return _onHost; }
 - (unsigned long long)sessionTerminal { return _hostTerm; }
 - (BOOL)integrated { return _integrated; }
+- (BOOL)integratedBash { return _integrated && _bashShell; }
 - (NSString *)integrationNonce { return @(_markNonce.c_str()); }
 + (NSString *)nonceForHost:(NSString *)key terminal:(unsigned long long)term {
     auto it = HostNonces().find({std::string(key.UTF8String ?: ""), (Shared::TermId)term});
@@ -1851,6 +1872,10 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
 // can take it; until then this looks again every 0.1 s, since the foreground
 // or the raw tty that canTypeNow waits on sends no event of its own.
 - (void)flushPendingInput {
+    if (!_closed && !_lineMode && !_pendingCommands.count && !_pendingTyped && [self owesLine]) {
+        [self giveLineBack];
+        return;
+    }
     if (_closed || (!_pendingCommands.count && !_pendingTyped)) return;
     if (_lineMode) {
         if (_pendingCommands.count && [self canSubmitNow]) {
@@ -1875,8 +1900,30 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
     [self schedulePendingRetry];
 }
 
+// A remote bash's half-typed lines the app set aside, owed back at a
+// prompt after the one they were set aside at.
+- (BOOL)owesLine {
+    return _bashShell && _integrated && _popOwed > 0 && _promptCount > _pushPrompts;
+}
+
+// They go back (ESC [9998~ each, the bash script's pop) once the bash's
+// line editor reads (canTypeNow: 0.3 s after the prompt mark, the tty
+// raw); until then this looks again, while the prompt lasts.
+- (void)giveLineBack {
+    if (![self owesLine]) return;
+    if (!_atPrompt || _commandStarted) return;   // the next prompt calls again
+    if (![self canTypeNow]) {
+        [self schedulePendingRetry];
+        return;
+    }
+    std::string out;
+    for (; _popOwed > 0; --_popOwed) out += ShellIntegration::kBashPopKey;
+    [self sendBytes:out.data() length:out.size()];
+}
+
 - (void)schedulePendingRetry {
-    if (_retryScheduled || _closed || _shellPid <= 0 || (!_pendingCommands.count && !_pendingTyped))
+    if (_retryScheduled || _closed || _shellPid <= 0 ||
+        (!_pendingCommands.count && !_pendingTyped && !([self owesLine] && _atPrompt && !_commandStarted)))
         return;
     _retryScheduled = YES;
     __weak TerminalView *weakSelf = self;
@@ -1896,6 +1943,12 @@ static std::map<MCHostNonceKey, std::string> &HostNonces() {
 // turned into a space.
 - (void)typeLine:(NSString *)line run:(BOOL)run {
     std::string out = _integrated ? ShellIntegration::kZlePushKey : "";
+    // zsh gives the line back by itself at the next prompt; a bash is sent
+    // its pop then (giveLineBack), once for each push.
+    if (_integrated && _bashShell) {
+        if (_popOwed == 0) _pushPrompts = _promptCount;
+        ++_popOwed;
+    }
     const char *utf8 = line.UTF8String;
     if (!utf8) return;
     // Typed outside brackets, a control character is a key: ESC would start
@@ -2722,10 +2775,10 @@ static NSString *MCBrowserHelperPath(void) {
             spec.hostShell = true;
             // And the remote's own integration, which its host sets up from
             // its installed scripts (Welcome flag 128) with this nonce, when
-            // its login shell is zsh: the grid follows zsh's alone (its line
-            // editor's keys). TermOpened says whether it did
-            // (hostIntegrated:); an older host runs the shell unmarked.
-            if ([self hostClient].hostIntegrates()) spec.integration = {"zsh"};
+            // its login shell is zsh or bash (4.4 or later). TermOpened says
+            // whether it did and for which (hostIntegrated:); an older host
+            // runs the shell unmarked.
+            if ([self hostClient].hostIntegrates()) spec.integration = {"zsh", "bash"};
             else spec.nonce.clear();
         }
         _hostTerm = [self hostClient].newId();   // from the client's range on the host
@@ -2734,6 +2787,9 @@ static NSString *MCBrowserHelperPath(void) {
         // terminal of the same id goes.
         if (_integrated) HostNonces()[{_link->key(), _hostTerm}] = nonce;
         else HostNonces().erase({_link->key(), _hostTerm});
+        HostBashShells().erase({_link->key(), _hostTerm});
+        _bashShell = NO;
+        _popOwed = 0;
         _hostShell = Shared::TermShell();
         _hostInput.clear();
         _shellStarted = [NSDate date];
@@ -2977,15 +3033,19 @@ static NSString *MCBrowserHelperPath(void) {
 }
 
 // A remote host set up its own machine's integration over the shell
-// (TermSpec's integration, which asked for zsh's alone): its marks carry
-// this view's nonce, so they are believed from now on, and a window taking
-// the terminal over after a drop finds the nonce under this host's key.
-// Before any output: the host sends TermOpened first.
+// (TermSpec's integration: zsh's or bash's): its marks carry this view's
+// nonce, so they are believed from now on, and a window taking the
+// terminal over after a drop finds the nonce (and whether it is a bash)
+// under this host's key. Before any output: the host sends TermOpened
+// first.
 - (void)hostIntegrated:(Shared::TermId)term shell:(const std::string &)shell {
-    if (term != _hostTerm || _closed || !_remote || shell != "zsh" || _markNonce.empty()) return;
+    if (term != _hostTerm || _closed || !_remote || _markNonce.empty()) return;
+    if (shell != "zsh" && shell != "bash") return;
     _integrated = YES;
     _integrationFile = YES;
+    _bashShell = shell == "bash";
     HostNonces()[{_link->key(), _hostTerm}] = _markNonce;
+    if (_bashShell) HostBashShells().insert({_link->key(), _hostTerm});
 }
 
 // The pty's output, as the host read it: parsed in slices as MCPty's is,
@@ -3013,7 +3073,7 @@ static NSString *MCBrowserHelperPath(void) {
         [self scheduleDrain];
     }
     [self updateGridHiddenInput];
-    if (_pendingCommands.count || _pendingTyped) [self flushPendingInput];
+    if (_pendingCommands.count || _pendingTyped || [self owesLine]) [self flushPendingInput];
 }
 
 - (void)hostExited:(Shared::TermId)term status:(int)status error:(const std::string &)error {
@@ -3137,6 +3197,7 @@ static NSString *MCBrowserHelperPath(void) {
             [self replaceLiveLine:e.runs ended:e.ended];
             break;
         case TermEvent::PromptStart:
+            ++_promptCount;
             _atPrompt = YES;
             _seenPrompt = YES;
             _commandStarted = NO;
@@ -3196,6 +3257,7 @@ static NSString *MCBrowserHelperPath(void) {
         case TermEvent::Line:
             break;
         case TermEvent::PromptStart:
+            ++_promptCount;
             _atPrompt = YES;
             _seenPrompt = YES;
             _commandStarted = NO;
@@ -3250,7 +3312,7 @@ static NSString *MCBrowserHelperPath(void) {
     [self updateGridHiddenInput];
     // What waited for the prompt goes in once ZLE reads input, unless a
     // program has the screen or the terminal.
-    if (_pendingCommands.count || _pendingTyped) [self flushPendingInput];
+    if (_pendingCommands.count || _pendingTyped || [self owesLine]) [self flushPendingInput];
 }
 
 // A line from the panel itself: in the log (line mode), or written on the

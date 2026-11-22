@@ -81,6 +81,13 @@
 //     busy with its command named, `false` queued meanwhile, then statuses
 //     0 and 1 by the marks; a local terminal on the app's own host beside
 //     it with a nonce of its own under its own key.
+//   - A remote whose login shell is bash (the stand-in's shell file names
+//     Homebrew's bash 4.4 or later; skipped without one): a window on a
+//     folder of its own, its terminal's marks believed as a bash's, the
+//     nonce and MUTIBLE_BASH_LOGIN out of its environment, `sleep 5` busy,
+//     `false` queued then status 1, a half-typed line set aside while the
+//     app runs a command and given back at the next prompt (the pop key),
+//     `sh run.sh` run as Run File types it, the host ending with the window.
 //   - The connection drops (the stand-in's process group killed: the relay
 //     only), with the stand-in refusing to connect for a while: the window
 //     says it is reconnecting (its title, no Reconnect button), the text
@@ -113,6 +120,8 @@
 #import "Terminal.h"
 #import "TerminalGridView.h"
 #import "TerminalPanel.h"
+
+#include "HostIntegration.h"
 
 #include <fcntl.h>
 #include <signal.h>
@@ -147,6 +156,12 @@ pid_t gLasting;              // the folder's lasting host, the terminal's shell'
 NSString *gShellPid;         // that shell's pid, as it said it
 unsigned long long gTermId;  // the terminal's id on the host
 NSUInteger gTriesBefore;
+NSString *gShellFile;        // names the stand-in's login shell when not empty (zsh when none)
+NSString *gBash;             // a bash 4.4 or later on this Mac, nil when none
+NSString *gBashFolder;       // the folder its window is on
+EditorController *gBashC;
+TerminalView *gBashTerm;
+pid_t gBashHost;             // that folder's lasting host, the bash's parent
 NSString *gRemoteNonce;      // the remote terminal's integration nonce, this view's
 int gEndedBefore;            // commands the remote terminal's marks ended before a step's
 EditorController *gLocalC;   // a local window's terminal on its own host, beside it
@@ -227,11 +242,11 @@ NSUInteger RefusedTries() {
     return t.length ? [t componentsSeparatedByString:@"\n"].count - 1 : 0;
 }
 
-// What follows the last `prefix` on the terminal's screen that a digit
+// What follows the last `prefix` on a terminal's screen that a digit
 // follows (output, not the command line that printed it), up to the next
 // space or line's end; "" when there is none.
-NSString *ScreenWord(NSString *prefix) {
-    NSString *text = [gTerm recentText:60];
+NSString *ScreenWordIn(TerminalView *term, NSString *prefix) {
+    NSString *text = [term recentText:60];
     NSRange within = NSMakeRange(0, text.length);
     for (;;) {
         NSRange r = [text rangeOfString:prefix options:NSBackwardsSearch range:within];
@@ -247,6 +262,8 @@ NSString *ScreenWord(NSString *prefix) {
         within = NSMakeRange(0, r.location);
     }
 }
+
+NSString *ScreenWord(NSString *prefix) { return ScreenWordIn(gTerm, prefix); }
 
 // A picture of `w` by `h` pixels, written as a PNG (through a temporary
 // file renamed over it, as an editor saves).
@@ -339,6 +356,22 @@ TermCommand LastEnded(TerminalView *t) {
 }
 NSString *LinkKey(MCSessionLinkRef *ref) { return ref.link ? @(ref.link->key().c_str()) : @""; }
 
+// A bash 4.4 or later (the bash script's marks need PS0): the Mac's
+// /bin/bash is 3.2, so Homebrew's; nil when there is none.
+NSString *FindBash() {
+    for (NSString *b in @[ @"/opt/homebrew/bin/bash", @"/usr/local/bin/bash", @"/bin/bash" ])
+        if ([NSFileManager.defaultManager isExecutableFileAtPath:b] && Shared::bashVersion(b.UTF8String) >= 404)
+            return b;
+    return nil;
+}
+
+// What follows the last "pushed-6" on a terminal's screen.
+NSString *AfterPushed(TerminalView *t) {
+    NSString *text = [t recentText:30];
+    NSRange r = [text rangeOfString:@"pushed-6" options:NSBackwardsSearch];
+    return r.location == NSNotFound ? @"" : [text substringFromIndex:NSMaxRange(r)];
+}
+
 // `command` typed into the terminal until `expect` shows on its screen,
 // again every 3 s: a shell starting may drop what came before it (and,
 // before the remote's integration, no mark said its line editor was
@@ -387,6 +420,7 @@ MC_GUI_SUITE(remote_ssh) {
         gTries = [scratch stringByAppendingPathComponent:@"ssh-refused.txt"];
         gSlow = [scratch stringByAppendingPathComponent:@"ssh-slow"];
         gSsh = [scratch stringByAppendingPathComponent:@"ssh-stand-in"];
+        gShellFile = [scratch stringByAppendingPathComponent:@"ssh-shell"];
         NSString *script = [NSString stringWithFormat:
             @"#!/bin/sh\n"
             @"# A stand-in for ssh (RemoteSshSuite.mm): its arguments recorded,\n"
@@ -409,14 +443,15 @@ MC_GUI_SUITE(remote_ssh) {
             @"shift\n"
             @"SSH_STANDIN=yes\n"
             @"export SSH_STANDIN\n"
-            @"# The login shell sshd would name: zsh, whose integration the\n"
-            @"# remote's host sets up from its own scripts (build/'s copy).\n"
-            @"SHELL=/bin/zsh\n"
+            @"# The login shell sshd would name: zsh, or the one the suite's\n"
+            @"# shell file names (a bash), whose integration the remote's host\n"
+            @"# sets up from its own scripts (build/'s copies).\n"
+            @"if [ -s '%@' ]; then SHELL=\"$(cat '%@')\"; else SHELL=/bin/zsh; fi\n"
             @"export SHELL\n"
             @"PATH='%@':$PATH\n"
             @"export PATH\n"
             @"exec /bin/sh -c \"$*\"\n",
-            gArgs, gBlock, gTries, gPidFile, gSlow, gSlow, bin];
+            gArgs, gBlock, gTries, gPidFile, gSlow, gSlow, gShellFile, gShellFile, bin];
         MCGuiWriteFile(gSsh, script);
         chmod(gSsh.fileSystemRepresentation, 0755);
         MCSetEnv("MUTIBLE_SSH", gSsh.fileSystemRepresentation);
@@ -1375,10 +1410,116 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiWait(@"its relay ends with it", 15, ^BOOL { return Gone(gHostB); });
     MCGuiWait(@"the lasting host ends after its idle time, nothing left in it", 30, ^BOOL { return Gone(gLasting); });
+    // ---- a remote whose login shell is bash (Ubuntu's default): its host
+    // sets up the bash script (build/'s copy, 4.4 or later), and the Mac
+    // follows its marks: a running program, exit status, the typing queue,
+    // a half-typed line set aside and given back (the pop key), and Run
+    // File's way in (runCommand:). A window on a folder of its own, so its
+    // lasting host starts with the stand-in's bash.
+    MCGuiStep(@"a remote with a bash login shell", ^{
+        gBash = FindBash();
+        if (!gBash) {
+            MCGuiNote(@"no bash 4.4 or later on this Mac: the bash remote's checks skipped");
+            return;
+        }
+        MCGuiWriteFile(gShellFile, [gBash stringByAppendingString:@"\n"]);
+        NSString *made = [MCGuiScratch() stringByAppendingPathComponent:@"remote-bash"];
+        [NSFileManager.defaultManager createDirectoryAtPath:made withIntermediateDirectories:YES attributes:nil error:nil];
+        gBashFolder = RealPath(made);
+        MCGuiWriteFile([gBashFolder stringByAppendingPathComponent:@"run.sh"], @"echo ran-$((5*5))\n");
+        NSURL *url = [NSURL URLWithString:[@"ssh://standin" stringByAppendingString:gBashFolder]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+    });
+    MCGuiWait(@"connected", 20, ^BOOL { return !gBash || MCRemoteConnect.pending.count == 0; });
+    MCGuiStep(@"its window, a terminal", ^{
+        if (!gBash) return;
+        GCHECK(NewAlerts().count == 0);
+        gBashC = RemoteWindowOn(gBashFolder);
+        GCHECK(gBashC != nil);
+        if (!gBashC) { gBash = nil; return; }
+        GCHECK([gBashC sessionRemoteLink].link->client().hostIntegrates());
+        [gBashC newTerminal:nil];
+        gBashTerm = [gBashC valueForKey:@"terminal"];
+        GCHECK(gBashTerm != nil && gBashTerm.onSessionHost);
+    });
+    MCGuiWait(@"the bash's marks believed: at its prompt", 20, ^BOOL {
+        return !gBash || (gBashTerm.integrated && gBashTerm.integratedBash && gBashTerm.atPrompt && !gBashTerm.busy);
+    });
+    MCGuiStep(@"its nonce kept under its host's key; a login bash, the nonce out of its environment", ^{
+        if (!gBash) return;
+        GCHECK(gBashTerm.integrationNonce.length == 32 && ![gBashTerm.integrationNonce isEqualToString:gRemoteNonce]);
+        GCHECK_EQ_STR([TerminalView nonceForHost:LinkKey([gBashC sessionRemoteLink]) terminal:gBashTerm.sessionTerminal],
+                      gBashTerm.integrationNonce);
+        gEndedBefore = Ended(gBashTerm);
+        [gBashTerm runCommand:@"echo \"nonce-[${MUTIBLE_NONCE-unset}] login-[${MUTIBLE_BASH_LOGIN-unset}] host-$PPID\""];
+    });
+    MCGuiWait(@"run, marked, and back at the prompt", 15, ^BOOL {
+        return !gBash || ([[gBashTerm recentText:30] containsString:@"nonce-[unset] login-[unset] host-"] &&
+                          Ended(gBashTerm) > gEndedBefore && gBashTerm.atPrompt && !gBashTerm.busy);
+    });
+    MCGuiStep(@"sleep 5", ^{
+        if (!gBash) return;
+        gBashHost = (pid_t)ScreenWordIn(gBashTerm, @"host-").intValue;
+        GCHECK(gBashHost > 0);
+        gEndedBefore = Ended(gBashTerm);
+        [gBashTerm runCommand:@"sleep 5"];
+    });
+    MCGuiWait(@"a running program, by the marks: busy, its command named", 10, ^BOOL {
+        return !gBash || (gBashTerm.busy && !gBashTerm.atPrompt && [[gBashTerm valueForKey:@"commandStarted"] boolValue] &&
+                          [gBashTerm.runningCommand hasPrefix:@"sleep 5"]);
+    });
+    MCGuiStep(@"while it runs, false waits for the prompt", ^{
+        if (!gBash) return;
+        GCHECK(gBashTerm.busy && Ended(gBashTerm) == gEndedBefore);
+        [gBashTerm runCommand:@"false"];
+        GCHECK([gBashTerm.pendingCommands containsObject:@"false"]);
+    });
+    MCGuiWait(@"sleep ends, then false runs", 20, ^BOOL {
+        return !gBash || (Ended(gBashTerm) == gEndedBefore + 2 && gBashTerm.atPrompt && !gBashTerm.busy &&
+                          gBashTerm.pendingCommands.count == 0);
+    });
+    MCGuiStep(@"false's status is 1; a half-typed line, then a command the app runs", ^{
+        if (!gBash) return;
+        GCHECK(LastEnded(gBashTerm).status == 1);
+        gEndedBefore = Ended(gBashTerm);
+        TerminalGridView *grid = [gBashTerm valueForKey:@"grid"];
+        grid.onInput([@"echo half-$((4*5))" dataUsingEncoding:NSUTF8StringEncoding]);
+        [gBashTerm runCommand:@"echo pushed-$((2*3))"];
+    });
+    MCGuiWait(@"the command ran alone, and the half-typed line is back at the prompt", 15, ^BOOL {
+        return !gBash || (Ended(gBashTerm) == gEndedBefore + 1 && gBashTerm.atPrompt &&
+                          [AfterPushed(gBashTerm) containsString:@"echo half-$((4*5))"]);
+    });
+    MCGuiStep(@"Return runs it", ^{
+        if (!gBash) return;
+        TerminalGridView *grid = [gBashTerm valueForKey:@"grid"];
+        grid.onInput([@"\r" dataUsingEncoding:NSUTF8StringEncoding]);
+    });
+    MCGuiWait(@"half-20", 10, ^BOOL {
+        return !gBash || ([AfterPushed(gBashTerm) containsString:@"half-20"] && gBashTerm.atPrompt && !gBashTerm.busy);
+    });
+    MCGuiStep(@"Run File's way in: the command typed at the prompt", ^{
+        if (!gBash) return;
+        gEndedBefore = Ended(gBashTerm);
+        [gBashTerm runCommand:@"sh run.sh"];
+    });
+    MCGuiWait(@"ran, status 0", 10, ^BOOL {
+        return !gBash || ([[gBashTerm recentText:10] containsString:@"ran-25"] && Ended(gBashTerm) == gEndedBefore + 1 &&
+                          LastEnded(gBashTerm).status == 0 && gBashTerm.atPrompt);
+    });
+    MCGuiStep(@"its window closes", ^{
+        if (!gBash) return;
+        gBashTerm = nil;
+        [gBashC.window performClose:nil];
+        gBashC = nil;
+    });
+    MCGuiWait(@"its lasting host ends after its idle time", 30, ^BOOL { return !gBash || gBashHost <= 0 || Gone(gBashHost); });
     MCGuiStep(@"nothing left", ^{
         // The suite's own, by their recorded pids.
         if (gHostB > 0 && !Gone(gHostB)) kill(-gHostB, SIGKILL);
         if (gLasting > 0 && !Gone(gLasting)) kill(gLasting, SIGKILL);
+        if (gBashHost > 0 && !Gone(gBashHost)) kill(gBashHost, SIGKILL);
+        [NSFileManager.defaultManager removeItemAtPath:gShellFile error:nil];
         [NSFileManager.defaultManager removeItemAtPath:gBlock error:nil];
         MCSetEnv("MUTIBLE_SSH", nullptr);
         MCSetEnv("MUTIBLE_HOST_IDLE_MINUTES", nullptr);

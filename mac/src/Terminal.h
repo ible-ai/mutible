@@ -156,6 +156,8 @@ extern NSNotificationName const MCTerminalClaudeDidStartNotification;
 // checks. The nonce this process gave the terminal `term` of the host whose
 // link has `key` (MCSession::Link::key), nil when none.
 @property(nonatomic, readonly) BOOL integrated;
+// Whether that shell is a remote bash (its host's integration for bash).
+@property(nonatomic, readonly) BOOL integratedBash;
 @property(nonatomic, readonly, copy) NSString *integrationNonce;
 + (NSString *)nonceForHost:(NSString *)key terminal:(unsigned long long)term;
 // The first of them, or nil.

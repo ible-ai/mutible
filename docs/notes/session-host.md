@@ -3560,9 +3560,8 @@ through its host, so this is mostly a transport.
   `../share/mutible/` from the Linux package) and passes them as
   `HostOptions::zshIntegration` and `bashIntegration`; a host with either
   says flag 128. To such a host the Mac's remote terminal sends its nonce
-  and `integration: ["zsh"]` (its grid follows zsh's marks and line
-  editor keys alone); an older host gets neither and the shell runs
-  unmarked as before. The host, after `ownShellSpec`, lays the
+  and `integration: ["zsh", "bash"]`; an older host gets neither and the
+  shell runs unmarked as before. The host, after `ownShellSpec`, lays the
   integration over the login shell when its name is one the renderer
   asked for and the host has that script (`integrateShell`, pure): zsh
   keeps `-zsh` with ZDOTDIR at the host's folder (the script's copy and
@@ -3570,8 +3569,11 @@ through its host, so this is mostly a transport.
   MUTIBLE_USER_ZDOTDIR, and MUTIBLE_NONCE; bash becomes `bash --rcfile
   <copy>` with MUTIBLE_BASH_LOGIN=1, which makes the bash script read
   /etc/profile and the first of ~/.bash_profile, ~/.bash_login and
-  ~/.profile in place of ~/.bashrc (a login bash never reads --rcfile).
-  Any other shell runs as before. The copies are made once, at the first
+  ~/.profile in place of ~/.bashrc (a login bash never reads --rcfile);
+  only a bash 4.4 or later (the marks need PS0), asked once per program
+  (`bashVersion`, `bash -c`, 3 s at most), since an older one, the Mac's
+  /bin/bash 3.2, would load the script and never mark while the renderer
+  waited for marks. Any other shell runs as before. The copies are made once, at the first
   terminal that wants one, in `Mutible-host-<pid>-<start>` (0700, owner
   checked) under TMPDIR or /tmp, made again if the system cleared them,
   removed with the host, and those of hosts gone are removed by the next.
@@ -3579,8 +3581,19 @@ through its host, so this is mostly a transport.
   `termIntegrated` before `termOpened`, and the Mac's `hostIntegrated:`
   then believes the marks (`_integrated`) and keeps the nonce in
   `HostNonces` under the remote link's key and the terminal's id (#337's
-  key), so a window taking the terminal up after a drop still believes
-  them. TermOpened comes before any output, so no mark is missed. The
+  key), and a bash in `HostBashShells` by the same key, so a window
+  taking the terminal up after a drop still believes them and types to
+  it as to a bash. **A remote bash on the Mac** (`_bashShell`): its
+  marks have no 133;B, so `canTypeNow` takes its existing path (0.3 s
+  after the prompt mark, the tty raw); `typeLine:` sends the same push
+  key (the bash script binds ESC [9999~ to a stack), and the line comes
+  back with the script's pop (`ShellIntegration::kBashPopKey`, ESC
+  [9998~) once a later prompt is there and readline reads
+  (`giveLineBack`, from `flushPendingInput` and its 0.1 s retry, as the
+  GTK port's `giveLineBack`); since those bytes are zsh's line-start key,
+  Cmd+Left, Cmd+Right, Cmd+Delete and Cmd+K send readline's own keys
+  (Ctrl+A, Ctrl+E, Ctrl+U; the screen cleared to the cursor's line) to a
+  bash. TermOpened comes before any output, so no mark is missed. The
   nonce stays the renderer's: the host's own TermShell reads the same
   marks with it.
 - **The transport** (`HostLink::spawn`, SessionServer.h): a command
@@ -3644,7 +3657,12 @@ through its host, so this is mostly a transport.
   pipes with `resources/`'s zsh script: flag 128, TermOpened naming zsh,
   the user's ZDOTDIR and .zshrc read, the nonce out of the environment, a
   command busy and then status 1 by the renderer's own stream; bash's
-  alone asked for, or nothing, sets nothing up), `bash:integration`'s
+  alone asked for, or nothing, sets nothing up),
+  `hostserver:integration-bash` (a real login bash 4.4 or later:
+  TermOpened naming bash, ~/.bash_profile read and not ~/.bashrc, the
+  nonce and MUTIBLE_BASH_LOGIN gone, busy then status 1, a half-typed line
+  pushed, a command run, the line popped back and run; the Mac's
+  /bin/bash 3.2 gets none), `bash:integration`'s
   login branch (Linux CI, bash 4.4 or later),
   `hostserver:spawn` (a command's pipes as a link, its exit status and
   stderr; one that outlives its input hung up by close; a program not
@@ -3671,7 +3689,15 @@ through its host, so this is mostly a transport.
   app's own host (the setting turned on for it) has a nonce of its own
   under its own key, neither found under the other's key with the
   other's id; after the drop and reconnect the marks are still believed
-  and `sleep 600` counts as busy. Not run here: CI runs it.
+  and `sleep 600` counts as busy. Then a window on another folder whose
+  lasting host starts with a bash login shell (the stand-in's shell file
+  names Homebrew's bash 4.4 or later, skipped without one; build/ has the
+  bash script's copy): `integratedBash`, its nonce under its key,
+  MUTIBLE_NONCE and MUTIBLE_BASH_LOGIN gone, `sleep 5` busy, `false`
+  queued then status 1, a half-typed line set aside while
+  `runCommand:` runs a command and back at the next prompt, Return
+  running it, `sh run.sh` run with status 0, and its host ending with the
+  window. Not run here: CI runs it.
 
 #### The window's tree, Quick Open and Find in Folder over SSH (2026-11-21, second slice)
 

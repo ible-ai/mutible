@@ -1,9 +1,16 @@
 // HostIntegration.cpp — see HostIntegration.h.
 #include "HostIntegration.h"
 
+#include <cerrno>
+#include <chrono>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <dirent.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <spawn.h>
+#include <sys/wait.h>
 #include <fstream>
 #include <sstream>
 #include <sys/stat.h>
@@ -114,6 +121,65 @@ std::string ownProgramPath() {
     return realpath(exe.c_str(), real) ? std::string(real) : exe;
 }
 
+int bashVersion(const std::string& program) {
+    if (program.empty()) return 0;
+    int out[2];
+    if (pipe(out) != 0) return 0;
+    posix_spawn_file_actions_t fa;
+    posix_spawn_file_actions_init(&fa);
+    posix_spawn_file_actions_adddup2(&fa, out[1], 1);
+    posix_spawn_file_actions_addclose(&fa, out[0]);
+    posix_spawn_file_actions_addclose(&fa, out[1]);
+    posix_spawn_file_actions_addopen(&fa, 0, "/dev/null", O_RDONLY, 0);
+    posix_spawn_file_actions_addopen(&fa, 2, "/dev/null", O_WRONLY, 0);
+    posix_spawnattr_t attr;
+    posix_spawnattr_init(&attr);
+    sigset_t none, all;
+    sigemptyset(&none);
+    sigfillset(&all);
+    posix_spawnattr_setsigmask(&attr, &none);
+    posix_spawnattr_setsigdefault(&attr, &all);
+    posix_spawnattr_setflags(&attr, POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    const char* argv[] = {program.c_str(), "--noprofile", "--norc", "-c",
+                          "echo $((BASH_VERSINFO[0] * 100 + BASH_VERSINFO[1]))", nullptr};
+    const char* envp[] = {"PATH=/usr/bin:/bin", nullptr};
+    pid_t pid = -1;
+    const int err = posix_spawnp(&pid, program.c_str(), &fa, &attr, const_cast<char* const*>(argv),
+                                 const_cast<char* const*>(envp));
+    posix_spawn_file_actions_destroy(&fa);
+    posix_spawnattr_destroy(&attr);
+    close(out[1]);
+    if (err != 0) {
+        close(out[0]);
+        return 0;
+    }
+    std::string text;
+    bool ended = false;   // its output closed: it is exiting
+    const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+    for (;;) {
+        const auto left = std::chrono::duration_cast<std::chrono::milliseconds>(end - std::chrono::steady_clock::now());
+        if (left.count() <= 0) break;
+        struct pollfd pf = {out[0], POLLIN, 0};
+        const int r = poll(&pf, 1, (int)left.count());
+        if (r < 0 && errno == EINTR) continue;
+        if (r <= 0) break;
+        char buf[64];
+        const ssize_t n = read(out[0], buf, sizeof buf);
+        if (n < 0 && errno == EINTR) continue;
+        if (n <= 0) {
+            ended = n == 0;
+            break;
+        }
+        text.append(buf, (std::size_t)n);
+        if (text.size() > 64) break;
+    }
+    close(out[0]);
+    int status = 0;
+    if (!ended) kill(pid, SIGKILL);   // it hung: never wait on it
+    while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
+    return std::atoi(text.c_str());
+}
+
 std::string shippedFile(const std::string& exe, const std::string& name) {
     if (exe.empty() || name.empty()) return "";
     char real[PATH_MAX];
@@ -167,7 +233,13 @@ void HostIntegration::setScripts(std::string zsh, std::string bash) {
 std::string HostIntegration::apply(PtySpec& p, const std::vector<std::string>& accepted,
                                    const std::string& nonce) {
     if (accepted.empty() || nonce.empty() || !any() || !prepare()) return "";
-    return integrateShell(p, folder_, zsh_, bash_, accepted, nonce);
+    bool bash = bash_;
+    if (bash && baseName(p.program) == "bash") {
+        auto it = bashVersions_.find(p.program);
+        if (it == bashVersions_.end()) it = bashVersions_.emplace(p.program, bashVersion(p.program)).first;
+        bash = it->second >= 404;
+    }
+    return integrateShell(p, folder_, zsh_, bash, accepted, nonce);
 }
 
 bool HostIntegration::prepare() {

@@ -9,7 +9,8 @@
 //         (ShellIntegration::zshenvStub, grid mode) sources the script's
 //         copy there and hands the user's ZDOTDIR back
 //         (MUTIBLE_USER_ZDOTDIR when there was one); still a login shell.
-//   bash  `bash --rcfile <the copy>`, which bash reads only when it is not
+//   bash  4.4 or later (the marks need PS0; an older one runs as it would
+//         have), as `bash --rcfile <the copy>`, which bash reads only when it is not
 //         a login shell, so MUTIBLE_BASH_LOGIN=1 asks the script to read
 //         what a login bash reads (/etc/profile, then the first of
 //         ~/.bash_profile, ~/.bash_login and ~/.profile) in place of
@@ -29,6 +30,7 @@
 // gone (a SIGKILL). POSIX; the host's thread.
 #pragma once
 
+#include <map>
 #include <string>
 #include <vector>
 
@@ -45,6 +47,12 @@ namespace Shared {
 std::string shippedFile(const std::string& exe, const std::string& name);
 // This process's program, links resolved; "" when it cannot be told.
 std::string ownProgramPath();
+// A bash's version as major * 100 + minor (504 for 5.4), asked of the
+// program itself (`bash -c`, at most 3 s); 0 when it did not say. The
+// script's marks need 4.4 (PS0): an older bash (the Mac's /bin/bash 3.2)
+// would load it and never mark, and a renderer told it was set up would
+// wait for marks that never come.
+int bashVersion(const std::string& program);
 
 // The integration laid over `p` (ownShellSpec's: argv[0] "-zsh" or
 // "-bash" for a login shell) for its shell, when that shell's name is in
@@ -69,11 +77,13 @@ public:
 
     // integrateShell with this host's copies, made at the first call that
     // could use one. "" when none was laid over `p`.
+    // A bash older than 4.4 gets none (bashVersion, asked once a program).
     std::string apply(PtySpec& p, const std::vector<std::string>& accepted, const std::string& nonce);
     const std::string& folder() const { return folder_; }
 
 private:
     bool prepare();
+    std::map<std::string, int> bashVersions_;
     std::string zshScript_, bashScript_, base_, folder_;
     bool tried_ = false, zsh_ = false, bash_ = false;
 };

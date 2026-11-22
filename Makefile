@@ -174,6 +174,15 @@ $(ZSH_INTEGRATION): resources/mutible-zsh-integration.zsh
 	@mkdir -p $(@D)
 	@cp $< $@
 
+# The Linux port's bash script, beside mutible-cli for the GUI checks only:
+# remote_ssh's stand-in remote is this Mac, whose host sets it up for a
+# bash login shell (HostIntegration.h). Not in the bundle.
+BASH_INTEGRATION := build/mutible-bash-integration.bash
+
+$(BASH_INTEGRATION): linux/resources/mutible-bash-integration.bash
+	@mkdir -p $(@D)
+	@cp $< $@
+
 # After a `make clean` in the same run the folders and flags.txt are gone.
 $(OBJDIR)/flags.txt:
 	@mkdir -p $(@D) && printf '%s\n' '$(APPCMD)' > $@
@@ -390,7 +399,7 @@ fakelsp: $(FAKELSP)
 # guitest-build builds what the checks need without running them: CI builds
 # it with the app and the core tests in one make, then runs build/guitest
 # as two processes at once (.github/workflows/ci.yml).
-guitest-build: build/guitest $(CLI) $(FAKELSP) $(BROWSER_HELPER) $(ZSH_INTEGRATION)
+guitest-build: build/guitest $(CLI) $(FAKELSP) $(BROWSER_HELPER) $(ZSH_INTEGRATION) $(BASH_INTEGRATION)
 
 guitest: guitest-build
 	@./build/guitest $(SUITES)

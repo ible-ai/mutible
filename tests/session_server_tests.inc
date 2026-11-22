@@ -925,6 +925,106 @@ static void testSessionServer() {
         }
     }
 
+    GROUP("hostserver:integration-bash");
+    {
+        // The same with a login bash (Ubuntu's default, the owner's
+        // ThinkPad): TermOpened names bash, the login files read and not
+        // ~/.bashrc, the nonce and MUTIBLE_BASH_LOGIN out of the
+        // environment, a command busy and then status 1, and a half-typed
+        // line set aside by the push key, a command run, and the line given
+        // back by the pop key (ShellIntegration::kBashPopKey) after the
+        // prompt, then run. A bash older than 4.4 gets none.
+        std::string bash;
+        for (const char* b : {"/bin/bash", "/usr/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"})
+            if (bash.empty() && access(b, X_OK) == 0 && Shared::bashVersion(b) >= 404) bash = b;
+        char cwd[PATH_MAX];
+        const std::string here = getcwd(cwd, sizeof cwd) ? cwd : ".";
+        const std::string bashScript = here + "/linux/resources/" + ShellIntegration::kBashScriptName;
+        const int binBash = access("/bin/bash", X_OK) == 0 ? Shared::bashVersion("/bin/bash") : 0;
+        if (binBash > 0 && binBash < 404 && access(bashScript.c_str(), R_OK) == 0) {
+            // The Mac's /bin/bash 3.2: the script would load and never mark.
+            Shared::HostIntegration old;
+            old.setBase(Shared::resolveFolder(scratchFolder()));
+            old.setScripts("", bashScript);
+            Shared::PtySpec p = Shared::ownShellSpec("/bin/bash", {"PATH=/bin"}, {}, "/", 80, 24);
+            CHECK(old.apply(p, {"zsh", "bash"}, "n").empty() && p.argv == std::vector<std::string>{"-bash"});
+        }
+        if (bash.empty() || access(bashScript.c_str(), R_OK) != 0) {
+            std::printf("  (no bash 4.4 or later, or no linux/resources/%s here; skipped)\n",
+                        ShellIntegration::kBashScriptName);
+        } else {
+            signal(SIGPIPE, SIG_IGN);
+            const std::string proj = Shared::resolveFolder(scratchFolder());
+            mkdir((proj + "/home").c_str(), 0700);
+            std::ofstream(proj + "/home/.bash_profile") << "export FROM_PROFILE=yes\nPS1='$ '\n";
+            std::ofstream(proj + "/home/.bashrc") << "export FROM_BASHRC=yes\n";
+            int toHost[2], fromHost[2];
+            CHECK(pipe(toHost) == 0 && pipe(fromHost) == 0);
+            auto server = std::make_unique<Shared::HostServer>();
+            Shared::HostOptions o;
+            o.folder = proj;
+            o.shellEnv = {"PATH=/usr/bin:/bin", "HOME=" + proj + "/home", "LANG=C", "SHELL=" + bash};
+            o.bashIntegration = bashScript;
+            std::string error;
+            CHECK(server->startStdio(o, toHost[0], fromHost[1], &error) == Shared::HostServer::Start::Ok);
+            std::atomic<int> result{-1};
+            std::thread run([&] { result = server->run() ? 1 : 0; });
+            PipeRenderer r;
+            r.connect(toHost[1], fromHost[0]);
+            CHECK(r.client->settle(5000));
+            CHECK(r.client->hostIntegrates());
+            const std::string nonce = "fedcba9876543210fedcba9876543210";
+            r.marks.setMarkNonce(nonce);
+            Shared::TermSpec spec;
+            spec.hostShell = true;
+            spec.env = {"TERM=xterm-256color"};
+            spec.cwd = proj;
+            spec.nonce = nonce;
+            spec.integration = {"zsh", "bash"};
+            r.client->openTerminal(7, spec, &r);
+            CHECK(r.wait([&] { return r.pid.load() > 0; }));
+            CHECK(r.integrated == "bash");
+            // At a prompt, with readline reading (a moment after the mark).
+            auto atPrompt = [&](long long prompts) {
+                const bool ok = r.wait([&] { return r.shell.known && r.shell.atPrompt && r.shell.prompts >= prompts; });
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                return ok;
+            };
+            CHECK(atPrompt(1));
+            r.client->terminalInput(7, "echo \"p=$FROM_PROFILE r=${FROM_BASHRC-unset} n=${MUTIBLE_NONCE-unset} "
+                                       "l=${MUTIBLE_BASH_LOGIN-unset}-end\"\r");
+            const std::string want = "p=yes r=unset n=unset l=unset-end";
+            CHECK(r.wait([&] { return r.screen.text().find(want) != std::string::npos; }));
+            if (r.screen.text().find(want) == std::string::npos)
+                std::printf("  screen: %s\n", r.screen.text().c_str());
+            CHECK(atPrompt(2));
+            const long long doneBefore = r.shell.done;
+            r.client->terminalInput(7, "sleep 1; false\r");
+            CHECK(r.wait([&] { return r.shell.busy && r.shell.command == "sleep 1; false"; }));
+            CHECK(r.wait([&] { return !r.shell.busy && r.shell.done == doneBefore + 1 && r.shell.atPrompt; }));
+            CHECK(r.shell.status == 1);
+            CHECK(atPrompt(3));
+            // A half-typed line, set aside while the app runs a command, and
+            // given back after it.
+            r.client->terminalInput(7, "echo half-$((4*5))");
+            r.client->terminalInput(7, std::string(ShellIntegration::kZlePushKey) + "echo pushed-$((2*3))\r");
+            CHECK(r.wait([&] { return r.screen.text().find("pushed-6") != std::string::npos && r.shell.prompts >= 4; }));
+            CHECK(r.shell.status == 0);
+            CHECK(atPrompt(4));
+            r.client->terminalInput(7, ShellIntegration::kBashPopKey);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            r.client->terminalInput(7, "\r");
+            CHECK(r.wait([&] { return r.screen.text().find("half-20") != std::string::npos && r.shell.prompts >= 5; }));
+            if (r.screen.text().find("half-20") == std::string::npos)
+                std::printf("  screen: %s\n", r.screen.text().c_str());
+
+            r.closeInput();
+            CHECK(waitUntil([&] { return result.load() != -1; }, 5000));
+            if (run.joinable()) run.join();
+            server.reset();
+        }
+    }
+
     GROUP("hostserver:read-file");
     {
         // A window over SSH opening a file (Client::readFile): one wait,

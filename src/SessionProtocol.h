@@ -317,7 +317,7 @@ struct TermSpec {
     // host would run `program` "" and the shell would never start.
     bool hostShell = false;
     // With hostShell: the shells whose integration the renderer follows
-    // ("zsh", "bash"; the Mac's grid follows zsh's alone), which the host
+    // ("zsh", "bash"; the Mac and GTK follow both), which the host
     // sets up itself from its own machine's installed scripts
     // (HostIntegration.h) when the login shell it starts is one of them,
     // with `nonce` in MUTIBLE_NONCE. Its TermOpened's name says which it
