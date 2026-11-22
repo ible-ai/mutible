@@ -15,6 +15,8 @@
 // GIT_TERMINAL_PROMPT=0 (GitUi::gitEnvironment).
 #pragma once
 
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,36 @@ struct GitResult {
     bool timedOut = false;   // stopped at its time limit; err says so
     bool ok() const { return status == 0; }
 };
+
+// ---- a window over SSH (stage 9): its git runs on the other machine
+// through the window's host (SessionGit.h, Client::requestGit). A git
+// thread (the panel's, the change bars', the tree colors') runs inside a
+// GitRunScope holding the window's runner; runGitWithin then hands the
+// command to it instead of spawning git here. The runner is called on that
+// thread and waits there for the answer, which crosses the main loop
+// (hostGitRunner); never on the main thread.
+using GitRunner = std::function<GitResult(const std::string& dir, const std::vector<std::string>& args,
+                                          double limit, const std::string* input)>;
+using GitRunnerPtr = std::shared_ptr<const GitRunner>;
+class GitRunScope {
+public:
+    explicit GitRunScope(const GitRunnerPtr& runner);
+    ~GitRunScope();
+    GitRunScope(const GitRunScope&) = delete;
+    GitRunScope& operator=(const GitRunScope&) = delete;
+
+private:
+    const GitRunner* previous_;
+};
+// Whether the calling thread's git runs on a host.
+bool gitRunsOnHost();
+
+class RemoteWorkspace;
+// The runner for a window over SSH: asks `ws` (held weakly) on the main loop
+// and waits for the answer. Fetch, pull and push, a lost connection and a
+// host too old to run git are answered at once in Shared::gitRemoteOpText's,
+// gitLostText's and gitTooOldText's words, status -1.
+GitRunnerPtr hostGitRunner(const std::shared_ptr<RemoteWorkspace>& ws);
 
 // Where git is, found once on PATH. Empty when it is not installed.
 const std::string& gitExecutable();

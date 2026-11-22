@@ -63,15 +63,22 @@
 #include <sys/stat.h>
 #include <vte/vte.h>
 
+#include <atomic>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <thread>
 #include <vector>
 
+#include "ComparePanes.h"
 #include "ConnectWindow.h"
+#include "GitChecks.h"
+#include "GitGutter.h"
+#include "GitPanel.h"
+#include "TreeGitColors.h"
 #include "ControlPaths.h"
 #include "DocumentView.h"
 #include "Editor.h"
@@ -351,6 +358,217 @@ void fails(const std::string& what, const std::string& body, const std::string& 
         dismissAlert();
     });
     MCGuiWait(what + ": the alert gone", 10, [] { return alertText().empty(); });
+}
+
+// ---- git over SSH (stage 9; skipped without git): a window on a repository
+// of its own there, whose Source Control, change bars, tree colors and
+// branch come from git run by its host (Welcome flag 256). The stand-in's
+// folder is this machine's, so git run here on the window's path would find
+// the same repository and every check pass with the routing broken: the
+// window's workspace counts the host's runs (gitRuns, gitNotices), and what
+// git there says is read apart from the window (gitchecks::GitText).
+std::string gGitFolder, gKeptObject;
+size_t gGitRunsBefore = 0, gGitNoticesBefore = 0, gGitDocsBefore = 0;
+std::atomic<bool> gLostAnswered{false};
+std::string gLostText;
+GitResult gLostResult;
+
+GitPanel* gitPanel() { return gitchecks::Panel(); }
+RemoteWorkspace* gitWs() { return gitchecks::RepoWindow().remoteWs; }
+int gitRow(const std::string& description) { return gitchecks::RowOf(description); }
+
+void gitOverSsh() {
+    using namespace gitchecks;
+    MCGuiStep("git over SSH: a repository there", [] {
+        const std::string made = rp(MCGuiScratch()) + "/remote-git";
+        g_mkdir_with_parents(made.c_str(), 0700);
+        gGitFolder = rp(made);
+        Repo() = gGitFolder;
+        MCGuiWriteFile(gGitFolder + "/a.txt", "one\ntwo\nthree\n");
+        MCGuiWriteFile(gGitFolder + "/b.txt", "bee\n");
+    });
+    Shell("git init, add, commit there", "set -e; cd '" + rp(MCGuiScratch()) + "/remote-git' && " + G() +
+                                             " init -q -b main && " + G() + " add -A && " + G() +
+                                             " commit -qm first");
+    MCGuiStep("a.txt changed there; ssh://standin/<repo>/a.txt", [] {
+        MCGuiWriteFile(gGitFolder + "/a.txt", "one\nTWO\nthree\n");
+        gErrors.clear();
+        gWindowsBefore = MCGuiAppWindows().size();
+        MCGuiCommandLine({"ssh://standin" + gGitFolder + "/a.txt"}, gFolder, &gErrors);
+    });
+    MCGuiWait("its window, with a.txt", 30, [] {
+        MCGuiAppWindow w = RepoWindow();
+        return MCGuiAppWindows().size() == gWindowsBefore + 1 && w.editor && w.editor->currentPath() == gGitFolder + "/a.txt";
+    });
+    MCGuiStep("its host runs git for it; Ctrl+Shift+G", [] {
+        MCGuiSetKeyWindow(nullptr);
+        GCHECK(gErrors.empty());
+        GCHECK(alertText().empty());
+        GCHECK(gitPanel() != nullptr);
+        if (!gitPanel()) return;
+        GCHECK(gitPanel()->overSsh());
+        GCHECK(RepoWindow().editor->sessionLink()->runsGit());
+        MCGuiKey("ctrl+shift+g");
+    });
+    MCGuiWait("the panel shows", 10, [] { return gitPanel() && gitPanel()->active(); });
+    MCGuiWait("it lists the change, from git run by the host", 20, [] {
+        return Rows({"# Changes  1", "W M a.txt"}) && gitWs() && gitWs()->gitRuns > 0;
+    });
+    MCGuiStep("no Review Changes over SSH (it reads this disk)", [] {
+        GCHECK(!gitPanel()->reviewButtonShown());
+        GCHECK(!gitPanel()->errorLine().size() || gitPanel()->errorLine().find("newer mutible") == std::string::npos);
+    });
+    MCGuiWait("the branch in the panel, the tree's change count", 20, [] {
+        return gitPanel()->branchText().find("main") != std::string::npos && RepoWindow().treeColors &&
+               RepoWindow().treeColors->changeCount() == 1;
+    });
+    MCGuiWait("a change bar on a.txt, against the index there", 20, [] {
+        GitGutter* bars = RepoWindow().changeBars;
+        return bars && bars->barCount() == 1 && bars->barDescriptions()[0].rfind("modified ", 0) == 0;
+    });
+    MCGuiStep("a row opens its git diff (no review page over SSH)", [] { gitPanel()->reviewRow(gitRow("W M a.txt"), true); });
+    MCGuiWait("the diff, run there", 15, [] {
+        return DiffOnShow() && Diff()->text().find("+TWO") != std::string::npos &&
+               Diff()->text().find("-two") != std::string::npos;
+    });
+    MCGuiStep("stage a.txt", [] {
+        gGitRunsBefore = gitWs()->gitRuns;
+        gitPanel()->toggleStage(gitRow("W M a.txt"));
+    });
+    MCGuiWait("staged, by the host", 15, [] {
+        return Rows({"# Staged changes  1", "S M a.txt"}) && gitWs()->gitRuns > gGitRunsBefore;
+    });
+    MCGuiStep("git there says a.txt is staged", [] {
+        GCHECK_EQ_STR(GitText({"diff", "--cached", "--name-only"}), "a.txt\n");
+        gitPanel()->setMessage("second, over ssh");
+        gitPanel()->commit();
+    });
+    MCGuiWait("committed: nothing left to list", 20, [] {
+        return Panel()->inRepository() && RowsNow().empty() && Panel()->message().empty();
+    });
+    MCGuiStep("git there has the commit, and nothing changed", [] {
+        GCHECK_EQ_STR(GitText({"log", "-1", "--format=%s"}), "second, over ssh\n");
+        GCHECK_EQ_STR(GitText({"status", "--porcelain"}), "");
+    });
+    MCGuiWait("the change bar gone, the tree's colors too", 20, [] {
+        GitGutter* bars = RepoWindow().changeBars;
+        return bars && bars->barCount() == 0 && RepoWindow().treeColors->changeCount() == 0;
+    });
+    MCGuiStep("b.txt changed there, and a new file", [] {
+        gGitNoticesBefore = gitWs()->gitNotices;
+        MCGuiWriteFile(gGitFolder + "/b.txt", "bee two\n");
+        MCGuiWriteFile(gGitFolder + "/new.txt", "new\n");
+    });
+    MCGuiWait("listed by the host's notice, no refresh asked", 20, [] {
+        return gitWs()->gitNotices > gGitNoticesBefore && Rows({"# Changes  2", "W M b.txt", "W U new.txt"});
+    });
+    MCGuiStep("discarding the new file is refused (no Trash there)", [] {
+        gitPanel()->discardRow(gitRow("W U new.txt"));
+        MCGuiNote("said: %s", gitPanel()->errorLine().c_str());
+        GCHECK(gitPanel()->errorLine().find("not tracked by git") != std::string::npos);
+        GCHECK(g_file_test((gGitFolder + "/new.txt").c_str(), G_FILE_TEST_EXISTS));
+        GCHECK(!QuestionUp());
+    });
+    MCGuiStep("Discard Changes on b.txt asks", [] { gitPanel()->discardRow(gitRow("W M b.txt")); });
+    MCGuiWait("the question", 10, QuestionUp);
+    MCGuiStep("it names the file; Discard Changes", [] {
+        GCHECK(QuestionText().find("Discard the changes to b.txt?") != std::string::npos);
+        Answer("Discard Changes");
+    });
+    MCGuiWait("discarded there, its changed copy kept as a git object", 20, [] {
+        return QuestionGone() && MCGuiReadFile(gGitFolder + "/b.txt") == "bee\n" &&
+               gitPanel()->errorLine().find("git object") != std::string::npos;
+    });
+    MCGuiStep("the object named, and no Undo Discard", [] {
+        MCGuiSetKeyWindow(nullptr);
+        const std::string line = gitPanel()->errorLine();
+        MCGuiNote("said: %s", line.c_str());
+        const size_t at = line.find("git object ");
+        GCHECK(at != std::string::npos);
+        if (at != std::string::npos && at + 11 + 12 <= line.size()) gKeptObject = line.substr(at + 11, 12);
+        GCHECK(gKeptObject.size() == 12);
+        GCHECK(gitPanel()->undoDiscardTitle().empty());
+        GCHECK_EQ_STR(GitText({"cat-file", "-p", gKeptObject.empty() ? "none" : gKeptObject}), "bee two\n");
+    });
+    MCGuiStep("Fetch, Pull and Push say they do not work over SSH yet, sending nothing", [] {
+        gGitRunsBefore = gitWs()->gitRuns;
+        for (int i = 0; i < 3; i++) {
+            if (i == 0) gitPanel()->fetch();
+            else if (i == 1) gitPanel()->pull();
+            else gitPanel()->push();
+            GCHECK(gitPanel()->errorLine().find("do not work in a window over SSH yet") != std::string::npos);
+        }
+        GCHECK(gitWs()->gitRuns == gGitRunsBefore);
+    });
+    // What reads this computer's repository or disk is refused there, not run
+    // on the host's paths (the stand-in's folder is this machine's, so a page
+    // made from this machine's repository would pass for the host's).
+    MCGuiStep("a graph row: the commit's diff from the host, no commit page", [] {
+        std::string hash = GitText({"rev-parse", "HEAD"});
+        while (!hash.empty() && hash.back() == '\n') hash.pop_back();
+        GCHECK(hash.size() == 40);
+        gGitRunsBefore = gitWs()->gitRuns;
+        gGitDocsBefore = RepoWindow().editor->documents().size();
+        gitPanel()->pressedGraphCommit(hash, false);
+    });
+    MCGuiWait("its show, run there", 15, [] {
+        return DiffOnShow() && Diff()->text().find("second, over ssh") != std::string::npos &&
+               gitWs()->gitRuns > gGitRunsBefore;
+    });
+    MCGuiStep("no review page of this computer's repository", [] {
+        for (Document* d : RepoWindow().editor->documents()) GCHECK(!d->editorPage());
+        GCHECK(RepoWindow().editor->documents().size() <= gGitDocsBefore + 1);
+    });
+    MCGuiStep("Review Changes says it does not work over SSH yet, and opens nothing", [] {
+        const size_t docs = RepoWindow().editor->documents().size();
+        gitPanel()->reviewChanges();
+        GCHECK(gitPanel()->errorLine().find("Review Changes does not work in a window over SSH yet") !=
+               std::string::npos);
+        GCHECK(RepoWindow().editor->documents().size() == docs);
+        for (Document* d : RepoWindow().editor->documents()) GCHECK(!d->editorPage());
+    });
+    MCGuiStep("Compare with a revision says so in the status bar, and opens nothing", [] {
+        const size_t docs = RepoWindow().editor->documents().size();
+        CompareSpec spec;
+        spec.title = "a.txt (HEAD)";
+        spec.path = gGitFolder + "/a.txt";
+        spec.left = {gGitFolder + "/a.txt", "HEAD", ""};
+        spec.right = {gGitFolder + "/a.txt", "", ""};
+        RepoWindow().editor->showComparison(spec);
+        const std::string said = gtk_label_get_text(GTK_LABEL(RepoWindow().statusLabel));
+        GCHECK(said.find("does not work in a window over SSH yet") != std::string::npos);
+        GCHECK(RepoWindow().editor->documents().size() == docs);
+    });
+    MCGuiStep("its window closes", [] {
+        GCHECK(alertText().empty());
+        MCGuiSetKeyWindow(nullptr);
+        gtk_window_close(RepoWindow().window);
+    });
+    MCGuiWait("gone, the first window shows again", 30, [] {
+        return MCGuiAppWindows().size() == gWindowsBefore && RepoWindow().window == nullptr &&
+               remoteWindow().rootDir == gFolder;
+    });
+    // A window with no live host: the runner answers in the words of a lost
+    // connection (a host without flag 256 says gitTooOldText the same way,
+    // which no stand-in can be made to say), and sends nothing.
+    MCGuiStep("a runner whose window has no host answers that the connection is lost", [] {
+        gLostAnswered = false;
+        auto ws = std::make_shared<RemoteWorkspace>("/nowhere");
+        GitRunnerPtr runner = hostGitRunner(ws);
+        std::thread([runner, ws] {
+            GitResult r = (*runner)("/nowhere", {"status"}, 5, nullptr);
+            GitResult remote = (*runner)("/nowhere", {"push"}, 5, nullptr);
+            gLostResult = r;
+            gLostText = remote.err;
+            gLostAnswered = true;
+        }).detach();
+    });
+    MCGuiWait("both answered", 20, [] { return gLostAnswered.load(); });
+    MCGuiStep("the lost connection's words, and Push's", [] {
+        GCHECK(gLostResult.status == -1);
+        GCHECK(gLostResult.err.find("is lost") != std::string::npos);
+        GCHECK(gLostText.find("do not work in a window over SSH yet") != std::string::npos);
+    });
 }
 
 }  // namespace
@@ -1071,6 +1289,9 @@ MC_GUI_SUITE(remote_ssh) {
         remoteWindow().editor->openFile(gFile);
     });
     MCGuiWait("notes.txt shown", 10, [] { return remoteWindow().editor->currentPath() == gFile; });
+
+    if (!gitchecks::GitPath().empty()) gitOverSsh();
+    else MCGuiStep("no git here: the git over SSH checks are skipped", [] { MCGuiNote("no git"); });
 
     // ---- opening a file does not block the window (third slice): the tab
     // shows "Opening..." at once, the pieces are asked on the main loop, the

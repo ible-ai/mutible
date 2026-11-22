@@ -157,6 +157,12 @@ public:
     // files (RemoteCopies.h) and the host's disk notices that refresh them.
     // `ws` is the window's RemoteWorkspace, null for a window on this machine.
     void setRemoteWorkspace(std::shared_ptr<RemoteWorkspace> ws);
+    // Whether this is a window over SSH, and what it says when a comparison
+    // is asked for there: Compare reads this machine's disk and repository,
+    // not the host's, so it is refused with a note (main.cpp's status bar)
+    // until it is routed through the host.
+    bool overSsh() const { return remote(); }
+    std::function<void(const std::string& text)> onOverSshRefusal;
     // The window's folder of copies, null until a file was copied (for checks).
     RemoteCopies* remoteCopies() const { return copies_.get(); }
     // The window closes: the folder of copies goes.

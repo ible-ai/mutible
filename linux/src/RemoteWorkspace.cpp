@@ -146,6 +146,10 @@ void RemoteWorkspace::tookNotice(const Json& changed) {
     std::vector<std::string> folders;
     for (const Json& l : changed["listings"].elements()) folders.push_back(absolute(l["path"].asString()));
     notices++;
+    if (changed["git"].asBool()) {
+        gitNotices++;
+        if (onGit) onGit();
+    }
     if (!folders.empty() && onChanged) onChanged(folders);
     if (!folders.empty() && onFiles) onFiles(folders);
 }
@@ -184,4 +188,19 @@ std::uint64_t RemoteWorkspace::replace(Json request, std::function<void(std::vec
 
 void RemoteWorkspace::cancelSearch(std::uint64_t req) {
     if (link_ && req) link_->cancelStream(req);
+}
+
+bool RemoteWorkspace::hostRunsGit() const { return live() && link_->runsGit(); }
+
+std::string RemoteWorkspace::label() const { return link_ ? link_->label() : std::string(); }
+
+bool RemoteWorkspace::git(const std::string& dir, const std::vector<std::string>& args, std::string input,
+                          double timeout, std::function<void(bool, const Shared::GitReply&)> done) {
+    if (!hostRunsGit()) return false;
+    gitRuns++;
+    return link_->gitAsync(Shared::gitRequest(dir, args, timeout), std::move(input),
+                           [done](bool ok, const Json& answer, std::string&& out) {
+                               if (!ok) return done(false, Shared::GitReply());
+                               done(true, Shared::gitReplyFrom(answer, std::move(out)));
+                           });
 }

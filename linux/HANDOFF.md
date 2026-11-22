@@ -9538,3 +9538,10 @@ side's; two are fixed, one left alone on purpose.
   so the next failure says where the click went.
 - **Checked.** The markdown_* suites, the 25-suite order three times, 25 runs
   alone under load; `meson test`.
+
+### 165. The window over SSH, git (stage 9; November 2026)
+
+- **What.** The Mac's #353 (FsRead "git", Welcome flag 256) on GTK. `GitRun.{h,cpp}` has `GitRunner`, `GitRunScope` (a thread-local) and `hostGitRunner(ws)`: `runGitWithin` hands a command to the scope's runner, which sends it through `RemoteWorkspace::git` (`Link::gitAsync`, `Client::requestGit`, `gitReplyFrom`) from an idle on the main loop and waits on its own git thread. The panel, the gutter and the tree colors each hold the runner (`setHost`) and wrap their pool jobs in the scope; `main.cpp` gives it to remote windows (the panel's root is the host's folder now, not `/nonexistent/...`) and `RemoteWorkspace::onGit` (FsChanged's "git") refreshes all three, as does Reconnect. Discard (rows, menu bar, hunks) uses `discardPlanOverSsh` and keeps a git object; fetch, pull, push, Sync say `gitRemoteOpText`; Review Changes is off (a row opens its diff).
+- **Checks.** remote_ssh's git block (see the Checks line of session-host.md's GTK git section).
+- **Refused, not run.** What would read this computer's repository or disk on the host's paths is refused in a remote window, each with its note ("... does not work in a window over SSH yet"): the review and commit pages (`showChangeReview`, `showCommitReview`, the panel's `reviewChanges`, `restoreReviewPage`), every comparison (`Editor::openComparison`, hook `onOverSshRefusal`: Compare with a revision, a page's, the control channel's and the IDE link's), `mutible diff` (`ControlCommands`) and the agents' worktrees (`AgentWorktrees` not made). A graph row's click opens the commit's raw `git show` from the host, not a page. Where the same path exists here (ssh to localhost) none of them shows this machine's repository.
+- **Not done.** Those pages and comparisons through the host; line history; a flag-less host (`gitTooOldText`) not checked; real ssh never run.

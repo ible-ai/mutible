@@ -3400,6 +3400,12 @@ static void wireReviewPage(App* app, const std::shared_ptr<ChangeReviewPage>& pa
 
 static void showChangeReview(App* app, const std::string& rel, bool staged, bool preview) {
     if (app->dead || !app->git) return;
+    // The page reads the work tree and its pictures from this disk: not yet
+    // over SSH, where each row opens its raw diff instead.
+    if (app->remote) {
+        flashStatus(app, "Review Changes does not work in a window over SSH yet; a row opens its diff.");
+        return;
+    }
     if (ChangeReviewPage* open = reviewPageOf(app)) {
         app->editor->showPage(std::shared_ptr<EditorPage>(
             std::shared_ptr<EditorPage>(), open), preview);   // found by its key, the same page
@@ -3422,6 +3428,10 @@ static void showChangeReview(App* app, const std::string& rel, bool staged, bool
 static void showCommitReview(App* app, const std::string& hash, const std::string& subject,
                              bool preview) {
     if (app->dead || !app->git || !Shared::Web::commitName(hash)) return;
+    if (app->remote) {
+        flashStatus(app, "A commit's review page does not work in a window over SSH yet; its diff opens instead.");
+        return;
+    }
     auto page = std::make_shared<ChangeReviewPage>(app->git, app->rootDir, hash, subject);
     wireReviewPage(app, page);
     app->editor->showPage(page, preview);   // a commit already open shows its own tab
@@ -3435,7 +3445,7 @@ static void showCommitReview(App* app, const std::string& hash, const std::strin
 // not made first, since a review page owns the panel's refresh) or the
 // record does not read.
 static Document* restoreReviewPage(App* app, const TabSessions::PageTab& p, int at) {
-    if (app->dead || !app->git) return nullptr;
+    if (app->dead || !app->git || app->remote) return nullptr;
     const bool commit = p.kind == "commit";
     if (!commit && p.kind != "review") return nullptr;
     if (commit && !Shared::Web::commitName(p.ref)) return nullptr;
@@ -3516,7 +3526,13 @@ static void sessionGitChanged(App* app) {
 // Control's commands (GitPanel.h) work before it is first shown; its widget
 // joins the sidebar on the first Ctrl+Shift+G.
 static void makeGitPanel(App* app) {
-    app->git = new GitPanel(app->remote ? std::string("/nonexistent/mutible-remote") : app->rootDir);
+    app->git = new GitPanel(app->rootDir);
+    // A window over SSH: its git runs on the host (GitRun.h's hostGitRunner).
+    GitRunnerPtr hostGit;
+    if (app->remote && app->remoteWs) {
+        hostGit = hostGitRunner(app->remoteWs);
+        app->git->setHost(hostGit, app->remoteWs->label());
+    }
     app->git->applySettings(g.settings->settings());
     app->git->hostWindow = GTK_WINDOW(app->window);
     app->git->onShowDiff = [app](const std::string& name, const std::string&,
@@ -3544,13 +3560,15 @@ static void makeGitPanel(App* app) {
     app->git->fileOnShow = [app] {
         return app->dead || app->editor->isDiff() ? std::string() : app->editor->currentPath();
     };
-    app->git->onReview = [app](const std::string& rel, bool staged, bool preview) {
-        showChangeReview(app, rel, staged, preview);
-    };
-    app->git->onReviewCommit = [app](const std::string& hash, const std::string& subject,
-                                     bool preview) {
-        showCommitReview(app, hash, subject, preview);
-    };
+    if (!app->remote) {   // over SSH a row opens its raw diff: the review reads this disk
+        app->git->onReview = [app](const std::string& rel, bool staged, bool preview) {
+            showChangeReview(app, rel, staged, preview);
+        };
+        app->git->onReviewCommit = [app](const std::string& hash, const std::string& subject,
+                                         bool preview) {
+            showCommitReview(app, hash, subject, preview);
+        };
+    }
     app->git->installActions(G_ACTION_MAP(app->window));
     app->editor->onDiffViewMade = [app](GitDiffView* view) {
         if (!app->dead && app->git) app->git->attachDiffView(view);
@@ -3558,8 +3576,9 @@ static void makeGitPanel(App* app) {
     // The editor's change bars (GitGutter.h), made with the panel as on the
     // Mac; its Stage Change has the panel look again, and the panel's
     // refresh has the bars look again.
-    if (!app->remote) {   // git there is stage 9's; this machine's repository at that path is another
+    {
         app->gitGutter = new GitGutter(app->editor);
+        if (hostGit) app->gitGutter->setHost(hostGit);
         app->gitGutter->onNote = [app](const std::string& text) {
             if (!app->dead) flashStatus(app, text);
         };
@@ -3567,6 +3586,16 @@ static void makeGitPanel(App* app) {
             if (!app->dead && app->git) app->git->refresh();
         };
         app->gitGutter->installActions(G_ACTION_MAP(app->window));
+    }
+    if (hostGit && app->remoteWs) {
+        // The host saw git's state move: the panel, the bars and the tree's
+        // colors look again (what the file monitors and .git's watch do here).
+        app->remoteWs->onGit = [app] {
+            if (app->dead) return;
+            if (app->git) app->git->refresh();
+            if (app->gitGutter) app->gitGutter->refreshSoon();
+            if (app->treeColors) app->treeColors->lookSoon();
+        };
     }
     makeTestGutter(app);
     // The editor's merge conflicts (EditorConflicts.h): a choice says in the
@@ -3709,6 +3738,8 @@ static void ensureAgents(App* app) {
         app->agents->onNote = [app](const std::string& text) {
             if (!app->dead) flashStatus(app, text);
         };
+    // A window over SSH has no worktrees list: AgentWorktrees runs this machine's git.
+    if (app->remote) return;
     app->worktrees = new AgentWorktrees(app->rootDir, app->agents->model());
     app->worktrees->onChange = [app] {
         if (!app->dead && app->tree) app->tree->redecorate();
@@ -3725,7 +3756,7 @@ static void ensureAgents(App* app) {
 // against main at the branch point in one scroll, with Apply to Main) and
 // Open in New Window.
 static void compareWorktree(App* app) {
-    if (app->dead || !app->worktrees || !app->git) return;
+    if (app->dead || !app->worktrees || !app->git || app->remote) return;
     const WorktreeInfo* w = app->worktrees->find(app->tree->selectedPath());
     if (!w) {
         flashStatus(app, "git has not listed that folder as a worktree yet");
@@ -5663,7 +5694,10 @@ static void rehostApp(App* a, const std::shared_ptr<SessionLink::Link>& link) {
             }
 #endif
     if (a->reconnectButton) gtk_widget_set_visible(a->reconnectButton, FALSE);
-    if (a->remoteWs) a->remoteWs->attachLink(link);   // its watch said to the new host
+    if (a->remoteWs) {
+        a->remoteWs->attachLink(link);   // its watch said to the new host
+        if (a->remoteWs->onGit) a->remoteWs->onGit();   // git there may have moved meanwhile
+    }
     reportTerminals(a);
     if (link->kind() == SessionLink::Link::Kind::Remote && resumed)
         flashStatus(a, "Connected to " + link->label() + " again: your files, undo and terminals are as they were");
@@ -6088,9 +6122,15 @@ static App* newWindow(const std::string& root, const std::string& file,
         // The link made by connectRemote, shared by no other folder's windows.
         app->link = remoteLink;
         listenForLoss(app);
+        // Its colors and branch from the host's git (stage 9).
+        app->treeColors->setHost(hostGitRunner(app->remoteWs));
+        app->treeColors->setRoot(app->rootDir);
     }
     StartupLog::mark("window: the session's host");
     app->editor = new Editor(app->link);
+    app->editor->onOverSshRefusal = [app](const std::string& text) {
+        if (!app->dead) flashStatus(app, text);
+    };
     if (app->remoteWs) app->editor->setRemoteWorkspace(app->remoteWs);   // viewers over SSH
 #ifdef MUTIBLE_ENABLE_PDF
     // Every typeset of a tab's LaTeX preview goes to the page, when served.

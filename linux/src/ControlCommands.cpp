@@ -1000,6 +1000,10 @@ void registerControlCommands(Dispatcher& d, ControlHost host) {
             respond(Result::failure(error));
             return;
         }
+        if (w.editor && w.editor->overSsh()) {
+            respond(Result::failure("diff does not work in a window over SSH yet: it reads this computer's files and repository, not that machine's"));
+            return;
+        }
         const std::string other = a.has("other") ? resolved(a["other"].asString()) : "";
         const std::string ref = a.has("base") ? a["base"].asString() : "HEAD";
         const std::string shortA = shortPath(w, path), shortB = other.empty() ? "" : shortPath(w, other);

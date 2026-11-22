@@ -180,6 +180,13 @@ public:
     // The same for a "read": the piece's bytes come with the answer.
     using BytesFn = std::function<void(bool ok, const Json& answer, std::string&& bytes)>;
     bool readBytesAsync(Json request, BytesFn done);
+    // One git command run by the host (Welcome flag 256, SessionGit.h:
+    // Client::requestGit; `request` is Shared::gitRequest's, `input` the
+    // command's standard input): `done(ok, answer, out)` as readBytesAsync's,
+    // Shared::gitReplyFrom reading it. False, calling nothing, when the link
+    // is lost or the host does not run git (runsGit).
+    bool runsGit() const;
+    bool gitAsync(Json request, std::string input, BytesFn done);
     // A tree's file operation on the host (Client::requestFileOp: rename,
     // move, delete, newFile, newFolder): `done(ok, answer)` as readAsync's,
     // the answer {"ok": true, ...} or {"error", "reason"}. False, calling

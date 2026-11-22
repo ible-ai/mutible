@@ -258,7 +258,20 @@ GitPanel::~GitPanel() {
 }
 
 void GitPanel::post(std::function<void()> job) {
+    // Over SSH the job's git goes to the host (GitRun.h).
+    if (runner_) job = [runner = runner_, job = std::move(job)] {
+        GitRunScope scope(runner);
+        job();
+    };
     g_thread_pool_push(pool_, new std::function<void()>(std::move(job)), nullptr);
+}
+
+void GitPanel::setHost(GitRunnerPtr runner, const std::string& label) {
+    runner_ = std::move(runner);
+    hostLabel_ = label;
+    unwatch();
+    gtk_widget_set_visible(reviewButton_, FALSE);
+    if (!rootDir_.empty()) refresh();
 }
 
 // ---------------------------------------------------------------- building
@@ -843,7 +856,7 @@ void GitPanel::applySnapshot(const GitUi::Snapshot& s) {
     {
         bool any = false;
         for (const GitUi::Row& r : rows_) any = any || !r.header;
-        gtk_widget_set_visible(reviewButton_, s.inRepository && any);
+        gtk_widget_set_visible(reviewButton_, s.inRepository && any && !runner_);
     }
     if (!graph && graph_) {
         graph_.reset();
@@ -887,7 +900,13 @@ void GitPanel::applySnapshot(const GitUi::Snapshot& s) {
 
 // ----------------------------------------------------------- the review
 void GitPanel::reviewChanges() {
-    if (onReview) onReview("", false, false);
+    if (onReview) {
+        onReview("", false, false);
+    } else if (runner_) {
+        // The page reads this computer's work tree: a row's diff opens instead.
+        say("Review Changes does not work in a window over SSH yet; a row opens its diff.", false);
+        gtk_widget_error_bell(root_);
+    }
 }
 
 void GitPanel::reviewRow(int row, bool preview) {
@@ -1024,6 +1043,7 @@ void GitPanel::setError(const std::string& text, bool info) {
 // refreshes too. None of the panel's own git commands write anything: status
 // runs with GIT_OPTIONAL_LOCKS=0, so a refresh cannot set off another.
 void GitPanel::watch(const GitUi::Snapshot& s) {
+    if (runner_) return;   // over SSH: the host's notices
     if (s.topLevel == watchedTop_ && s.gitDir == watchedGitDir_) return;
     unwatch();
     watchedTop_ = s.topLevel;
@@ -1371,6 +1391,7 @@ void GitPanel::setMessage(const std::string& text) {
 // git names files from its top level with links resolved; the tree and the
 // tabs spell them from the window's folder.
 std::string GitPanel::inRoot(const std::string& path) const {
+    if (runner_) return path;   // the host's spelling already
     char buf[PATH_MAX];
     if (!realpath(rootDir_.c_str(), buf)) return path;
     const std::string real = buf;

@@ -37,6 +37,7 @@
 #include <string>
 
 #include "GitDirWatch.h"
+#include "GitRun.h"
 #include "GitStatus.h"
 
 class TreeGitColors {
@@ -46,6 +47,12 @@ public:
     ~TreeGitColors();
     TreeGitColors(const TreeGitColors&) = delete;
     TreeGitColors& operator=(const TreeGitColors&) = delete;
+
+    // A window over SSH (docs/notes/session-host.md, stage 9): its git runs
+    // on the other machine through `runner` (GitRun.h); the folder is as the
+    // host spells it (no links resolved here), and nothing is watched on this
+    // disk: the host's notices call lookSoon. Called before setRoot.
+    void setHost(GitRunnerPtr runner);
 
     // The tree's folder, as it spells it; a new one looks at once.
     void setRoot(const std::string& root);
@@ -92,6 +99,7 @@ private:
 
     GThreadPool* pool_ = nullptr;
     std::shared_ptr<bool> alive_;
+    GitRunnerPtr runner_;    // over SSH: the host's git
 
     std::string root_;       // as the tree spells it
     std::string realRoot_;   // links resolved, as git spells it

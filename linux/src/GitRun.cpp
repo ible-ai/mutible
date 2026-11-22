@@ -3,6 +3,8 @@
 // its own for git talking to a remote.
 #include "GitRun.h"
 #include "EnvLock.h"
+#include "RemoteWorkspace.h"
+#include "SessionGit.h"
 #include "StartupLog.h"
 
 #include <gio/gio.h>
@@ -11,6 +13,8 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdlib>
 #include <functional>
 #include <memory>
@@ -81,7 +85,104 @@ bool iterateUntil(GMainContext* ctx, gint64 deadline, const std::function<bool()
     return true;
 }
 
+thread_local const GitRunner* tRunner = nullptr;
+
+GitResult hostFailed(const std::string& why) {
+    GitResult r;
+    r.err = why;
+    return r;
+}
+
+// What one request crossing to the main loop and back holds.
+struct HostWait {
+    std::mutex m;
+    std::condition_variable cv;
+    bool done = false;
+    GitResult result;
+    void finish(GitResult r) {
+        std::lock_guard<std::mutex> lock(m);
+        if (done) return;
+        result = std::move(r);
+        done = true;
+        cv.notify_all();
+    }
+};
+
+struct HostAsk {
+    std::weak_ptr<RemoteWorkspace> ws;
+    std::string dir;
+    std::vector<std::string> args;
+    double limit;
+    std::string input;
+    std::shared_ptr<HostWait> wait;
+};
+
+// On the main loop: the request goes to the host.
+gboolean askHost(gpointer p) {
+    std::unique_ptr<HostAsk> a(static_cast<HostAsk*>(p));
+    std::shared_ptr<RemoteWorkspace> ws = a->ws.lock();
+    std::shared_ptr<HostWait> w = a->wait;
+    if (!ws || !ws->live()) {
+        w->finish(hostFailed(Shared::gitLostText(ws ? ws->label() : "the other machine")));
+        return G_SOURCE_REMOVE;
+    }
+    const std::string label = ws->label();
+    if (!ws->hostRunsGit()) {
+        w->finish(hostFailed(Shared::gitTooOldText(label)));
+        return G_SOURCE_REMOVE;
+    }
+    const bool sent = ws->git(a->dir, a->args, std::move(a->input), a->limit,
+                              [w, label](bool answered, const Shared::GitReply& reply) {
+                                  if (!answered) return w->finish(hostFailed(Shared::gitLostText(label)));
+                                  GitResult r;
+                                  r.status = reply.status;
+                                  r.out = reply.out;
+                                  r.err = reply.err;
+                                  r.timedOut = reply.timedOut;
+                                  w->finish(std::move(r));
+                              });
+    if (!sent) w->finish(hostFailed(Shared::gitLostText(label)));
+    return G_SOURCE_REMOVE;
+}
+
 }  // namespace
+
+GitRunScope::GitRunScope(const GitRunnerPtr& runner) : previous_(tRunner) {
+    if (runner) tRunner = runner.get();
+}
+GitRunScope::~GitRunScope() { tRunner = previous_; }
+bool gitRunsOnHost() { return tRunner != nullptr; }
+
+GitRunnerPtr hostGitRunner(const std::shared_ptr<RemoteWorkspace>& wsShared) {
+    std::weak_ptr<RemoteWorkspace> weak = wsShared;
+    const std::string label = wsShared->label();
+    return std::make_shared<const GitRunner>(
+        [weak, label](const std::string& dir, const std::vector<std::string>& args, double limit,
+                      const std::string* input) -> GitResult {
+            // Nothing is sent: they would want credentials nobody can type there.
+            if (Git::talksToRemote(args)) return hostFailed(Shared::gitRemoteOpText(label));
+            // The answer comes on the main loop: never wait for it there.
+            if (g_main_context_is_owner(g_main_context_default()))
+                return hostFailed("git for a window over SSH runs off the main thread.");
+            auto wait = std::make_shared<HostWait>();
+            g_idle_add_full(G_PRIORITY_DEFAULT, askHost,
+                            new HostAsk{weak, dir, args, limit, input ? *input : std::string(), wait},
+                            nullptr);
+            // The host stops git at its own limit; this waits that long and a
+            // little more for the answer to cross.
+            const double seconds = (limit > 0 ? limit : Git::timeoutFor(args)) + 30;
+            std::unique_lock<std::mutex> lock(wait->m);
+            if (!wait->cv.wait_for(lock, std::chrono::milliseconds((long long)(seconds * 1000)),
+                                   [&wait] { return wait->done; })) {
+                GitResult r = hostFailed("The other machine did not answer within " +
+                                         Git::durationText(seconds) + ": " + Git::commandLine(args));
+                r.timedOut = true;
+                wait->done = true;   // a late answer is dropped
+                return r;
+            }
+            return std::move(wait->result);
+        });
+}
 
 const std::string& gitExecutable() {
     static std::string git;
@@ -102,6 +203,7 @@ const std::string& gitExecutable() {
 // raise as SIGPIPE; what git printed then is still its answer.
 GitResult runGitWithin(const std::string& dir, const std::vector<std::string>& args,
                        double limit, const std::string* input) {
+    if (tRunner) return (*tRunner)(dir, args, limit, input);
     GitResult r;
     const std::string& git = gitExecutable();
     if (git.empty()) {
@@ -210,7 +312,7 @@ std::string gitFailure(const GitResult& r) { return GitUi::failureText(r.status,
 
 GitUi::Snapshot gitSnapshotAt(const std::string& root) {
     GitUi::Snapshot s;
-    if (gitExecutable().empty()) {
+    if (!gitRunsOnHost() && gitExecutable().empty()) {
         s.notice = "Git was not found. Install it with your package manager, "
                    "for example sudo apt install git.";
         return s;

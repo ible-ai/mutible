@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "Json.h"
+#include "SessionGit.h"
 
 namespace SessionLink {
 class Link;
@@ -79,8 +80,24 @@ public:
     // Each change the host saw: the folders (absolute) whose listing it
     // sent again, on a turn of the main loop.
     std::function<void(const std::vector<std::string>& folders)> onChanged;
+    // The host saw git's state move (FsChanged's "git": a write in the
+    // folder, or in .git's index, HEAD or refs): the panel, the change bars
+    // and the tree's colors look again.
+    std::function<void()> onGit;
     // The same notices, for the editor (the tree owns onChanged).
     std::function<void(const std::vector<std::string>& folders)> onFiles;
+
+    // Git run by the host (Welcome flag 256, SessionGit.h; stage 9): `dir`
+    // absolute on the host, `timeout` in seconds (0: the command's own).
+    // `done(answered, reply)` once, never inside this call, answered false
+    // when the host went. False, calling nothing, when there is no live link
+    // or the host does not run git. Called by hostGitRunner's requests, on
+    // the main loop.
+    bool hostRunsGit() const;
+    bool git(const std::string& dir, const std::vector<std::string>& args, std::string input, double timeout,
+             std::function<void(bool answered, const Shared::GitReply& reply)> done);
+    // The window's "host:path" as its title names it ("" before a link).
+    std::string label() const;
 
     // Quick Open's list: the folder's files ('/'-separated from it).
     // `done` once (empty when the host cannot be asked).
@@ -95,7 +112,7 @@ public:
 
     // For checks: folders listed through the host, its notices taken, Quick
     // Open lists and searches asked.
-    std::size_t listings = 0, notices = 0, fileLists = 0, searches = 0;
+    std::size_t listings = 0, notices = 0, fileLists = 0, searches = 0, gitRuns = 0, gitNotices = 0;
 
 private:
     void sendWatch();
