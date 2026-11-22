@@ -52,6 +52,20 @@
 //     button, Stop or Esc ends ssh and leaves the window disconnected with
 //     Reconnect shown, and a third press connects; the tries by themselves
 //     show no window either;
+//   - language servers over SSH (stage 9, Welcome flag 512, the Mac's #358):
+//     a window on a folder of its own there, whose lsp.fakelang (the
+//     scripted server, build/fakelsp, .fk files) its host starts there (its
+//     parent is not this app, and this app runs no server of its own): the
+//     URIs it was sent are the remote's paths, with no parent process;
+//     main.fk gets its diagnostics, completion through the host takes
+//     "helper", Ctrl+S's didSave follows the host's write, Go to Definition
+//     opens util.fk through the host, a file made there reaches the server's
+//     watchers by the host's disk notice (no inotify of this machine's), a
+//     Rust file's server (lsp.rust, standing in for rust-analyzer) starts
+//     restricted and the bar asks, Allow is kept per host and folder
+//     (ssh://standin/<folder>, never this machine's folder) and the host
+//     starts it again with its defaults; closing the window ends both
+//     servers there;
 //   - the window closes, and the host it ran ends with it;
 //   - a stand-in that fails as ssh does for a password, and one whose
 //     remote has no mutible: an alert each, in the core's words, and no
@@ -75,6 +89,10 @@
 
 #include "ChangeReviewPage.h"
 #include "ComparePanes.h"
+#include "ConsentBar.h"
+#include "FakeLsp.h"
+#include "FolderConsent.h"
+#include "Lsp.h"
 #include "ConnectWindow.h"
 #include "GitChecks.h"
 #include "GitGutter.h"
@@ -610,6 +628,283 @@ void gitOverSsh() {
         GCHECK(gLostResult.status == -1);
         GCHECK(gLostResult.err.find("is lost") != std::string::npos);
         GCHECK(gLostText.find("do not work in a window over SSH yet") != std::string::npos);
+    });
+}
+
+// ---- language servers over SSH (stage 9, Welcome flag 512; the Mac's
+// block of this suite): a window on a folder of its own there, whose servers
+// its host starts there (SessionLsp.h): lsp.fakelang is the scripted server
+// (build/fakelsp, .fk files), lsp.rust another that stands in for
+// rust-analyzer. The stand-in's folder is this machine's, so a server
+// started by this window would pass every check with the routing broken:
+// what proves the host ran it is its parent (not this app), no server of
+// this app's own (LspRunningServerCount), the URIs it was sent (the
+// remote's paths, no parent process), and the answers kept per host and
+// folder (FolderConsent's ssh:// key, never this machine's path).
+std::string gLspFolder, gLspUtilUri;
+int gLspServer = 0, gRustServer = 0;
+size_t gLspTabs = 0;
+
+MCGuiAppWindow lspWindow() {
+    MCGuiAppWindow found;
+    for (const MCGuiAppWindow& w : MCGuiAppWindows())
+        if (w.editor && w.rootDir == gLspFolder) found = w;
+    return found;
+}
+
+LspSession* lspS() { return lspWindow().lsp; }
+
+std::string lspConsentKey() { return "ssh://standin" + gLspFolder; }
+
+int parentOf(int pid) {
+    std::string stat = readFile("/proc/" + std::to_string(pid) + "/stat");
+    const size_t close = stat.rfind(')');
+    if (pid <= 0 || close == std::string::npos) return 0;
+    int ppid = 0;
+    return sscanf(stat.c_str() + close + 2, "%*c %d", &ppid) == 1 ? ppid : 0;
+}
+
+// What the client sent a scripted server, one JSON object a line, by method.
+std::vector<Json> lspReceived(const std::string& name, const std::string& method) {
+    std::vector<Json> out;
+    const std::string text = readFile(MCGuiFakeLspDir() + "/" + name + ".log");
+    size_t at = 0;
+    while (at < text.size()) {
+        size_t end = text.find('\n', at);
+        if (end == std::string::npos) end = text.size();
+        Json m;
+        if (Json::parse(text.substr(at, end - at), m) && m["method"].asString() == method) out.push_back(m);
+        at = end + 1;
+    }
+    return out;
+}
+
+std::string lspBufferText() {
+    GtkTextBuffer* b = lspWindow().editor->sourceBuffer();
+    GtkTextIter s, e;
+    gtk_text_buffer_get_bounds(b, &s, &e);
+    char* raw = gtk_text_buffer_get_text(b, &s, &e, TRUE);
+    std::string out = raw ? raw : "";
+    g_free(raw);
+    return out;
+}
+
+// The caret `after` the first `word` of the file on show.
+void lspCaretAfter(const std::string& word) {
+    GtkTextBuffer* b = lspWindow().editor->sourceBuffer();
+    const std::string text = lspBufferText();
+    const size_t at = text.find(word);
+    if (at == std::string::npos) return;
+    GtkTextIter it;
+    gtk_text_buffer_get_iter_at_offset(b, &it, (int)g_utf8_strlen(text.c_str(), (gssize)(at + word.size())));
+    gtk_text_buffer_place_cursor(b, &it);
+}
+
+bool lspBarAsks() {
+    ConsentBar* bar = lspWindow().consentBar;
+    return bar && bar->asking() == "rust" && MCGuiOnScreen(bar->allowButton());
+}
+
+void lspOverSsh() {
+    MCGuiStep("language servers over SSH: a folder there, and scripted servers", [] {
+        const std::string made = rp(MCGuiScratch()) + "/remote-lsp";
+        g_mkdir_with_parents((made + "/src").c_str(), 0700);
+        gLspFolder = rp(made);
+        MCGuiWriteFile(gLspFolder + "/main.fk", "use util\nfn main() {\n    return hel;\n}\n");
+        MCGuiWriteFile(gLspFolder + "/util.fk", "fn helper() {}\n");
+        MCGuiWriteFile(gLspFolder + "/src/main.rs", "fn main() {}\n");
+        gLspUtilUri = "file://" + gLspFolder + "/util.fk";
+        const std::string script =
+            "{\"name\": \"fakelsp\", \"rules\": ["
+            // Its watchers, registered once the handshake is done.
+            "{\"method\": \"initialized\", \"request\": [{\"method\": \"client/registerCapability\", \"params\": "
+            "{\"registrations\": [{\"id\": \"w1\", \"method\": \"workspace/didChangeWatchedFiles\", "
+            "\"registerOptions\": {\"watchers\": [{\"globPattern\": \"**/*.fk\"}]}}]}}]},"
+            "{\"method\": \"textDocument/didOpen\", \"when\": {\"uriEndsWith\": \"main.fk\"}, \"notify\": ["
+            "{\"method\": \"textDocument/publishDiagnostics\", \"params\": {\"uri\": \"${uri}\", "
+            "\"version\": \"${version}\", \"diagnostics\": [{\"range\": {\"start\": {\"line\": 2, "
+            "\"character\": 11}, \"end\": {\"line\": 2, \"character\": 14}}, \"severity\": 1, "
+            "\"source\": \"fake\", \"message\": \"hel is not defined\"}]}}]},"
+            "{\"method\": \"textDocument/completion\", \"result\": {\"isIncomplete\": false, \"items\": ["
+            "{\"label\": \"helper\", \"kind\": 3}, {\"label\": \"other\", \"kind\": 3}]}},"
+            "{\"method\": \"textDocument/definition\", \"result\": [{\"uri\": \"" + gLspUtilUri +
+            "\", \"range\": {\"start\": {\"line\": 0, \"character\": 3}, \"end\": {\"line\": 0, "
+            "\"character\": 9}}}]}]}";
+        const std::string cmd = MCGuiFakeLsp("remote", script);
+        // Asks for its settings once initialized, as rust-analyzer does.
+        const std::string rust = MCGuiFakeLsp(
+            "remote-rust", "{\"name\": \"rust-analyzer\", \"rules\": [{\"method\": \"initialized\", "
+                           "\"request\": [{\"method\": \"workspace/configuration\", \"params\": "
+                           "{\"items\": [{\"section\": \"rust-analyzer\"}]}}]}]}");
+        MCGuiFakeLspClearLog("remote");
+        MCGuiFakeLspClearLog("remote-rust");
+        FolderConsent::forget(lspConsentKey());
+        MCGuiSetSettings("lsp.enabled = true\nlsp.fakelang = " + cmd + "\nlsp.fakelang.extensions = fk\n" +
+                         "lsp.rust = " + rust + "\n");
+        gErrors.clear();
+        gWindowsBefore = MCGuiAppWindows().size();
+        MCGuiCommandLine({"ssh://standin" + gLspFolder + "/main.fk"}, gFolder, &gErrors);
+    });
+    MCGuiWait("its window, with main.fk", 30, [] {
+        MCGuiAppWindow w = lspWindow();
+        return MCGuiAppWindows().size() == gWindowsBefore + 1 && w.editor && w.editor->currentPath() == gLspFolder + "/main.fk";
+    });
+    MCGuiStep("its host runs servers (flag 512), and the session has the host", [] {
+        MCGuiSetKeyWindow(nullptr);
+        GCHECK(gErrors.empty());
+        GCHECK(alertText().empty());
+        GCHECK(lspS() != nullptr);
+        if (!lspS()) return;
+        GCHECK(lspWindow().editor->sessionLink()->kind() == SessionLink::Link::Kind::Remote);
+        GCHECK(lspWindow().editor->sessionLink()->runsServers());
+        GCHECK(lspS()->isRemote());
+        GCHECK_EQ_STR(lspS()->consentRoot(), lspConsentKey());
+    });
+    MCGuiWait("the host's server has main.fk", 30, [] {
+        return !lspS() || MCGuiFakeLspReceived("remote", "textDocument/didOpen", "main.fk") > 0;
+    });
+    MCGuiStep("it was sent the remote's paths and no parent process; the host is its parent", [] {
+        if (!lspS()) return;
+        GCHECK(lspS()->remoteStarted() >= 1);
+        const std::vector<Json> inits = lspReceived("remote", "initialize");
+        GCHECK(inits.size() == 1);
+        if (!inits.empty()) {
+            GCHECK_EQ_STR(inits[0]["params"]["rootUri"].asString(), "file://" + gLspFolder);
+            GCHECK(inits[0]["params"]["processId"].isNull());
+        }
+        const std::vector<Json> opens = lspReceived("remote", "textDocument/didOpen");
+        GCHECK(!opens.empty());
+        if (!opens.empty()) {
+            GCHECK_EQ_STR(opens[0]["params"]["textDocument"]["uri"].asString(), "file://" + gLspFolder + "/main.fk");
+            GCHECK_EQ_STR(opens[0]["params"]["textDocument"]["languageId"].asString(), "fakelang");
+        }
+        gLspServer = lspS()->serverPid("fakelang");
+        MCGuiNote("the server's pid there: %d, its parent %d, this app %d", gLspServer, parentOf(gLspServer), (int)getpid());
+        GCHECK(gLspServer > 0 && !gone(gLspServer));
+        GCHECK(parentOf(gLspServer) > 1 && parentOf(gLspServer) != getpid());
+        GCHECK(LspRunningServerCount() == 0);   // none of this app's own
+        GCHECK(lspS()->watchedFolders().empty());   // no inotify of this machine's for it
+    });
+    MCGuiWait("its diagnostics on main.fk", 20, [] {
+        if (!lspS()) return true;
+        for (const LspProblem& p : lspS()->problemRows())
+            if (!p.heading && p.message.find("hel is not defined") != std::string::npos) return true;
+        return false;
+    });
+    MCGuiStep("the editor has the keyboard; the caret after hel", [] {
+        if (!lspS()) return;
+        lspWindow().editor->focusActiveDocument();
+        lspCaretAfter("hel");
+    });
+    MCGuiWait("it has", 10, [] { return !lspS() || gtk_widget_has_focus(lspWindow().editor->textView()); });
+    MCGuiStep("completion", [] {
+        if (lspS()) lspS()->triggerCompletion();
+    });
+    MCGuiWait("the server's list, through the host", 15, [] {
+        if (!lspS()) return true;
+        const std::vector<std::string> labels = lspS()->completionLabels();
+        return lspS()->completionVisible() && std::find(labels.begin(), labels.end(), "helper") != labels.end();
+    });
+    MCGuiStep("Return takes helper; Ctrl+S saves through the host", [] {
+        if (!lspS()) return;
+        GCHECK(lspS()->listKey(GDK_KEY_Return, (GdkModifierType)0));
+        GCHECK(lspBufferText().find("    return helper;\n") != std::string::npos);
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("saved there, and the server told after the host wrote it", 20, [] {
+        return !lspS() ||
+               (readFile(gLspFolder + "/main.fk").find("return helper;") != std::string::npos &&
+                MCGuiFakeLspReceived("remote", "textDocument/didSave", "main.fk") > 0);
+    });
+    MCGuiStep("Go to Definition on helper", [] {
+        if (!lspS()) return;
+        lspCaretAfter("return helper");
+        lspS()->goToDefinition();
+    });
+    MCGuiWait("it opens util.fk through the host", 20, [] {
+        return !lspS() || lspWindow().editor->currentPath() == gLspFolder + "/util.fk";
+    });
+    MCGuiStep("util.fk's text, read through the host; a file made there", [] {
+        if (!lspS()) return;
+        GCHECK_EQ_STR(lspBufferText(), "fn helper() {}\n");
+        // The host's disk notice reaches the server's watchers
+        // (workspace/didChangeWatchedFiles), not inotify here.
+        MCGuiWriteFile(gLspFolder + "/fresh.fk", "fn fresh() {}\n");
+    });
+    MCGuiWait("the server hears of fresh.fk from the host's watching", 30, [] {
+        if (!lspS()) return true;
+        const std::string uri = "file://" + gLspFolder + "/fresh.fk";
+        for (const Json& m : lspReceived("remote", "workspace/didChangeWatchedFiles"))
+            for (const Json& c : m["params"]["changes"].elements())
+                if (c["uri"].asString() == uri && c["type"].asInt() == 1) return lspS()->remoteFileBatches() > 0;
+        return false;
+    });
+    MCGuiStep("no watch of this machine's disk was made", [] {
+        if (lspS()) GCHECK(lspS()->watchedFolders().empty());
+    });
+
+    // ---- the folder's answer, per host and folder: rust-analyzer would run
+    // the folder's own code, so it starts restricted and the bar asks.
+    MCGuiStep("a Rust file there", [] {
+        if (!lspS()) return;
+        lspWindow().editor->openFile(gLspFolder + "/src/main.rs");
+    });
+    MCGuiWait("rust's server is started through the host, with its settings answered", 30, [] {
+        if (!lspS()) return true;
+        for (const Json& m : lspReceived("remote-rust", ""))
+            if (m["method"].isNull() && m["result"].isArray()) return true;
+        return false;
+    });
+    MCGuiWait("the bar asks about build scripts", 15, [] { return !lspS() || lspBarAsks(); });
+    MCGuiStep("restricted, every way it reads them; no answer yet, here or there", [] {
+        if (!lspS()) return;
+        const std::vector<Json> inits = lspReceived("remote-rust", "initialize");
+        GCHECK(inits.size() == 1);
+        if (!inits.empty()) {
+            const Json& o = inits.back()["params"]["initializationOptions"];
+            MCGuiNote("initializationOptions: %s", o.dump().c_str());
+            GCHECK(o["cargo"]["buildScripts"]["enable"].isBool() && !o["cargo"]["buildScripts"]["enable"].asBool());
+            GCHECK(o["procMacro"]["enable"].isBool() && !o["procMacro"]["enable"].asBool());
+        }
+        GCHECK(FolderConsent::answer(lspConsentKey()).empty());
+        GCHECK(FolderConsent::answer(gLspFolder).empty());
+        GCHECK_EQ_STR(lspS()->folderCodeAwaitingConsent(), "rust");
+        GCHECK(lspWindow().consentBar->text().find("build scripts") != std::string::npos);
+        MCGuiFakeLspClearLog("remote-rust");
+        MCGuiClick(lspWindow().consentBar->allowButton());   // a real click
+    });
+    MCGuiWait("Allow: the answer is the host's and folder's, and the server started again by the host", 30, [] {
+        return !lspS() || (FolderConsent::answer(lspConsentKey()) == "allow" &&
+                           lspReceived("remote-rust", "initialize").size() == 1);
+    });
+    MCGuiStep("with its own defaults, no question; this machine's folder has no answer", [] {
+        if (!lspS()) return;
+        GCHECK(lspReceived("remote-rust", "initialize").back()["params"]["initializationOptions"].isNull());
+        GCHECK(FolderConsent::answer(gLspFolder).empty());
+        GCHECK(lspS()->folderCodeAwaitingConsent().empty());
+        GCHECK(lspWindow().consentBar->asking().empty());
+        gRustServer = lspS()->serverPid("rust");
+        GCHECK(gRustServer > 0 && parentOf(gRustServer) != getpid());
+        GCHECK(LspRunningServerCount() == 0);
+        FolderConsent::forget(lspConsentKey());   // the checks leave no answer behind
+    });
+
+    MCGuiStep("its window closes", [] {
+        GCHECK(alertText().empty());
+        MCGuiSetKeyWindow(nullptr);
+        if (lspWindow().window) gtk_window_close(lspWindow().window);
+    });
+    MCGuiWait("gone, the first window shows again", 30, [] {
+        return MCGuiAppWindows().size() == gWindowsBefore && lspWindow().window == nullptr &&
+               remoteWindow().rootDir == gFolder;
+    });
+    MCGuiWait("its servers ended with it, there", 20, [] {
+        return (gLspServer <= 0 || gone(gLspServer)) && (gRustServer <= 0 || gone(gRustServer));
+    });
+    MCGuiStep("language servers off again; nothing of the suite's left", [] {
+        if (gLspServer > 0 && !gone(gLspServer)) kill(gLspServer, SIGKILL);   // the suite's own, by its recorded pid
+        if (gRustServer > 0 && !gone(gRustServer)) kill(gRustServer, SIGKILL);
+        MCGuiSetSettings("lsp.enabled = false\n");
     });
 }
 
@@ -1334,6 +1629,7 @@ MC_GUI_SUITE(remote_ssh) {
 
     if (!gitchecks::GitPath().empty()) gitOverSsh();
     else MCGuiStep("no git here: the git over SSH checks are skipped", [] { MCGuiNote("no git"); });
+    lspOverSsh();
 
     // ---- opening a file does not block the window (third slice): the tab
     // shows "Opening..." at once, the pieces are asked on the main loop, the

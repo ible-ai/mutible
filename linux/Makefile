@@ -59,7 +59,7 @@ GUI := src/main.cpp src/ClickCount.cpp src/FileTree.cpp src/TreeFollow.cpp src/T
        src/ThemeCss.cpp \
        src/Search.cpp src/FindBar.cpp src/MultiEdit.cpp src/MediaView.cpp src/PdfView.cpp src/PageWords.cpp \
        src/LatexClick.cpp src/Latex.cpp src/TermLinkPath.cpp \
-       src/Lsp.cpp src/LspProcess.cpp src/LspSessionServers.cpp src/LspSessionSync.cpp \
+       src/Lsp.cpp src/LspProcess.cpp src/LspRemote.cpp src/LspSessionRemote.cpp src/LspSessionServers.cpp src/LspSessionSync.cpp \
        src/LspSessionDiagnostics.cpp src/LspSessionCompletion.cpp src/LspSessionSignature.cpp \
        src/LspSessionNavigation.cpp \
        src/LspSessionActions.cpp src/LspSessionEdits.cpp src/LspPicker.cpp \

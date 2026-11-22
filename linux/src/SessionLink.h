@@ -220,6 +220,16 @@ public:
     using DiskFn = std::function<void(std::uint64_t window, const Json& changed)>;
     int addDiskListener(DiskFn f);
     void removeDiskListener(int token);
+    // Files the remote host saw change, for its language servers'
+    // didChangeWatchedFiles (LspFiles, SessionLsp.h: sent while a server of
+    // this link's runs there), with the host's id of the window its servers
+    // named. Called inside a dispatch, so a listener defers what it does.
+    using FilesFn = std::function<void(std::uint64_t window, const Json& files)>;
+    int addFilesListener(FilesFn f);
+    void removeFilesListener(int token);
+    // Whether the host runs language servers for a window (Welcome flag 512,
+    // SessionLsp.h): never for a link that is lost.
+    bool runsServers() const { return !lost() && client_->hostRunsServers(); }
     // Reads and streams still waiting (checks).
     std::size_t pending() const { return reads_.size() + byteReads_.size() + streams_.size(); }
 
@@ -355,6 +365,7 @@ private:
     std::map<std::uint64_t, BytesFn> byteReads_;
     std::map<std::uint64_t, StreamFn> streams_;
     std::map<int, DiskFn> diskListeners_;
+    std::map<int, FilesFn> filesListeners_;
     std::vector<std::pair<std::uint64_t, Json>> diskQueue_;
     bool diskQueued_ = false;
     bool pumping_ = false;

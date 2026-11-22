@@ -364,6 +364,12 @@ bool Link::startRemote(std::string* why) {
             }, new std::weak_ptr<Link>(weak), [](gpointer p) { delete static_cast<std::weak_ptr<Link>*>(p); });
         },
         nullptr);
+    // And its language servers' files changed there (LspFiles).
+    client_->hearFiles([this](std::uint64_t window, const Json& files) {
+        const auto listeners = filesListeners_;
+        for (const auto& l : listeners)
+            if (filesListeners_.count(l.first)) l.second(window, files);
+    });
     link->connect(*client_);   // its sends written there, the host's messages delivered, its Hello
     socket_ = std::move(link);
     return true;
@@ -546,6 +552,14 @@ int Link::addDiskListener(DiskFn f) {
 }
 
 void Link::removeDiskListener(int token) { diskListeners_.erase(token); }
+
+int Link::addFilesListener(FilesFn f) {
+    const int token = ++nextListener_;
+    filesListeners_[token] = std::move(f);
+    return token;
+}
+
+void Link::removeFilesListener(int token) { filesListeners_.erase(token); }
 
 // Answers that came: each waiting read and stream is given what is in. A
 // callback may ask for more, or cancel (the maps are looked up again).

@@ -122,6 +122,10 @@ int LspSession::applyEdit(const Lsp::WorkspaceEdit& we, Server* server,
         if (textTab(d)) {
             file.text = d->text();
         } else {
+            if (remote_) {   // its disk is the host's, not read from here
+                *failure = "A change to " + name + ", which no tab shows, is not made in a window over SSH yet";
+                return -1;
+            }
             if (Document::readText(file.path, file.text) != Document::Read::Ok) {
                 *failure = "Could not read " + name;
                 return -1;

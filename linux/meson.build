@@ -278,6 +278,8 @@ gui_sources = [
   # the Mac's LspSession is (PARITY.md 2.0).
   'src/Lsp.cpp',
   'src/LspProcess.cpp',
+  'src/LspRemote.cpp',
+  'src/LspSessionRemote.cpp',
   'src/LspSessionServers.cpp',
   'src/LspSessionSync.cpp',
   'src/LspSessionDiagnostics.cpp',

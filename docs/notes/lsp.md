@@ -469,14 +469,19 @@ SSH"). The seam is the transport, so everything above it is unchanged:
   mapping. Go to Definition into a file of the folder opens it through the
   host (`revealPath:` in a remote window reads there); a target outside the
   folder says so (the host reads only in its folder).
-- **For GTK** (not done): `linux/src/Lsp.cpp` spawns servers itself. A GTK
-  window over SSH needs the same seam: a transport that calls
-  `Client::startServer`, `serverInput` and `stopServer` on its link's
-  client instead of spawning, feeds `serverOutput` to its reader, starts
-  the handshake on `serverStarted` with processId 0, maps `serverExited`'s
-  why as `remoteServerEnded:` does, keys its consent by the link's key, and
-  passes `hearFiles` to its watchers instead of inotify. The texts and the
-  plan are shared (SessionLsp.h).
+- **For GTK** (done, 2026-11-22; docs/notes/session-host.md, "The GTK
+  window over SSH, language servers"): `linux/src/Lsp.cpp` spawns servers
+  itself, so the seam is `lspgtk::Server`: `Server::startRemote` makes one
+  with no process whose client writes `LspInput` through
+  `lspgtk::RemoteHost` (`LspRemote.{h,cpp}`) and reads `LspOutput`; the
+  session's `useRemoteHost(link, window)` is called by main.cpp's
+  `newWindow` after the session exists and before the editor's observer is
+  set, and `remoteHostReconnected` by Reconnect. `LspSessionRemote.cpp` has
+  the start, the handshake on `LspStarted` (processId null), the refusals
+  mapped as `remoteServerEnded:` does, and `LspFiles` in place of inotify;
+  consent is keyed `ssh://machine/folder` (`consentRoot`, kept by
+  `FolderConsent::keyFor`). Not done: edits to files no tab holds, the host
+  copy's round trip per flush.
 - **Checks**: `hostlsp:*` in `make test` (session_lsp_tests.inc); GUI:
   remote_ssh's language server block (RemoteSshSuite.mm's header).
 
@@ -496,4 +501,5 @@ text is in place in its section.
 - Over SSH: a pid of this Mac's sent as initialize's processId names nothing on the other machine, and a server that watches its parent ends; a remote server gets null.
 - Over SSH: the session's host copy of the text (`hostText`) settles with a round trip on every flush; a remote window's servers follow the storage instead.
 - Over SSH: the stand-in's folder is this Mac's, so a server started here on that path would pass remote_ssh; it checks the server's parent is not the app, and that the URIs and the definition's file came through the host.
+- Over SSH (GTK): `LspSession::useRemoteHost` is called before `setObserver`, so the first file always reaches a session that has its host; a remote `Server` is not in `gServers` (nothing signals the other machine's pid), and `FolderConsent::keyFor` must keep an `ssh://` key or the answer would resolve against this machine's folder of that name.
 - Over SSH: `useRemoteSessionLink:` (and so `startRemoteWorkspace`) runs before `showWindow` builds the window's LspSession, so the host is given in `giveLanguageServersTheHost`, called from both; #358's first CI run found the session without it.

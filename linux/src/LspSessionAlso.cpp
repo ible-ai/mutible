@@ -48,7 +48,7 @@ void LspSession::forgetRuffConfiguration() { also_->ruffConfigured.clear(); }
 // Does the project around a file configure Ruff? Remembered per folder
 // until the next file comes on show.
 bool LspSession::projectConfiguresRuff(const std::string& path) {
-    if (path.empty()) return false;
+    if (path.empty() || remote_) return false;   // a folder over SSH is not read from here
     const std::string dir = folderOf(path);
     auto known = also_->ruffConfigured.find(dir);
     if (known != also_->ruffConfigured.end()) return known->second;
@@ -62,6 +62,7 @@ std::string LspSession::alsoCommandFor(const std::string& server, const std::str
     const std::string key = Lsp::alsoKey(server);
     if (!settings_.lspEnabled() || settings_.lspOff(key)) return "";
     std::string command = settings_.lspCommand(key);
+    if (command.empty() && remote_) return "";   // only a second server the settings name
     if (command.empty()) {
         command = Lsp::defaultAlsoCommand(server, projectConfiguresRuff(path));
         if (command.empty()) return "";

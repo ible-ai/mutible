@@ -56,6 +56,12 @@ void LspSession::scheduleWatcherUpdate() {
 
 void LspSession::updateFileWatcher() {
     if (watch_->stoppingAll) return;
+    // A window over SSH hears of its files from the host (LspFiles), not
+    // from a watch of this machine's disk.
+    if (remote_) {
+        watch_->watcher.reset();
+        return;
+    }
     const std::vector<std::shared_ptr<Server>> servers = watchingServers();
     std::vector<std::string> want;
     if (!servers.empty()) {

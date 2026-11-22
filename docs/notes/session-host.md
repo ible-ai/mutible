@@ -4752,7 +4752,8 @@ docs/notes/lsp.md, "Over SSH".
   renderer with a server, those under its window's folder.
 - **Words** (`serversTooOldText`, `serverMissingText`, `serversLostText`,
   `serverExitText`) are shared with GTK.
-- **For GTK** (not done): docs/notes/lsp.md, "Over SSH".
+- **For GTK**: done, see "The GTK window over SSH, language servers"
+  below; docs/notes/lsp.md, "Over SSH".
 - **Checks.** `hostlsp:request`, `:find` (the search folders' order, nvm's
   newest first, a ~/ path), `:plan` (the first command found, what was
   looked for, the environment's PATH, rust-analyzer restricted, waiting on
@@ -5192,6 +5193,89 @@ host's now, not refused. No new request: the same FsRead "git" and "read".
   page, Stage on a block stages it there (`git diff --cached` on disk), a
   graph row opens the commit's page with its files, a comparison with the
   first commit's text and the work tree's, an agent's decision refused.
+
+#### The GTK window over SSH, language servers (2026-11-22, stage 9's second slice on GTK)
+
+The Mac's #358 on GTK (Welcome flag 512). A GTK window over SSH had no
+language server (slice 1 left the session unobserved: this machine's clangd
+on the host's paths would read another folder). Its host runs them now, with
+no change in `src/`: the seam is the transport, as on the Mac.
+
+- **The transport** (`linux/src/LspRemote.{h,cpp}`, `Server::startRemote` in
+  `LspProcess.cpp`): `lspgtk::RemoteHost` is the window's host as the place
+  its servers run, made by `RemoteHost::make` (its files listener holds it
+  weakly, which a constructor cannot) on the window's link and its session
+  window's id (`Link::hostWindowId` names the host's own). A remote `Server`
+  has no process: its `Lsp::Client` writes go out as `LspInput`
+  (`Client::serverInput`, behind the window's edits and saves, so a didSave
+  follows the host's write), `LspOutput` goes into `client_->receive` on the
+  main thread, `closeInput` is `LspStop` (the host closes its input, SIGTERM
+  after 2 s, SIGKILL after 3; the session's own 2 s timer only closes the
+  input), `pid()` is the other machine's (shown, never signalled) and a
+  remote server is not in `gServers` (`LspTerminateAllServers`,
+  `LspRunningServerCount`). `Link::runsServers()` and
+  `Link::addFilesListener` (`Client::hearFiles`, one listener per client
+  fanned out) are the link's two additions; the files notice is deferred a
+  turn of the loop (it comes inside a dispatch, which a wait can run in the
+  middle of anything).
+- **Where the host is given (the Mac's #358 trap).** The Mac gave it before
+  the window's `LspSession` existed, so the host went to nobody and no
+  server started. Here `newWindow` makes the session first, then calls
+  `useRemoteHost(link, sessionWindowId)`, and only then
+  `Editor::setObserver(lsp)`, which is what makes the session hear of the
+  first file: no document reaches a session without its host. A session
+  that already had servers (none should) stops them and starts the file's
+  again. Reconnect (`reconnectWindow`, after `remoteWs->attachLink`) calls
+  `remoteHostReconnected`: the stale servers stopped, the notes and the
+  not-installed marks forgotten, the file on show started again through the
+  new link, which opens every tab's file on it anew.
+- **Starting** (`LspSessionRemote.cpp`, `launchRemoteServer` from
+  `launchServer`): the settings' commands (or the defaults) go as a
+  `ServerRequest`, unresolved; nothing is looked for on this machine (no
+  program, Python interpreter, Ruff rule, compile flags, install offer).
+  `serverForKey` wires the same callbacks and, for a remote server, waits
+  to `initialize` until `onStarted` (`remoteServerStarted`: what the host
+  found, the project-code verdict as initializationOptions and settings,
+  `initialize(root, 0)`: processId null). A refusal ends the server with its
+  why (`Server::refusal`, in `serverExited`'s note): "missing" names the
+  host and the programs looked for (no install bar: `notInstalled_` is not
+  set; asked again after 30 s, on the window becoming active), "waits"
+  keeps the file that decided for the bar's question, "lost" (the drop)
+  says the connection, anything else says it did not start with the end of
+  its stderr. A host without flag 512 gets `serversTooOldText` and no
+  server; a lost one `serversLostText`.
+- **Consent per host and folder.** `LspSession::consentRoot()` is the
+  link's `machine() + folder()` (`ssh://standin/home/me/proj`) for a remote
+  window, and `FolderConsent::keyFor` keeps an `ssh://` key as it is, so an
+  answer never applies to a folder of this machine's with the same path.
+  The bar (`ConsentBar`'s host root), Ask Again About This Folder's Tools
+  and the session read it through `consentRootOf` in main.cpp; the request's
+  `allowed` carries the answer and the host checks the folder's code on its
+  own disk. The Python environment question is never asked (the server
+  finds its own there).
+- **Files changed there.** `updateFileWatcher` makes no inotify watch
+  (`watchedFolders()` is empty); the host's `LspFiles` go to
+  `filesChangedOnDisk` as a batch matched on the main thread.
+- **Not done.** A workspace edit's file that no tab holds is refused with a
+  note ("... is not made in a window over SSH yet"; the Mac reads it through
+  the host): rename and Organize Imports across unopened files. The
+  documents' URIs are made with this machine's `realpath` (`lspui::uriOf`),
+  which leaves a remote path alone unless this machine has a link at the
+  same path. Each flush of a document's edits settles its host copy (one
+  round trip; the Mac follows the storage instead). Go to Definition outside
+  the folder (the host reads only inside it) is not looked at. A host that
+  is too old (no flag 512) could not be made by the stand-in.
+- **Checks.** remote_ssh's language server block (see its header):
+  a window on a folder of its own through the stand-in, a scripted server
+  (`build/fakelsp`) as lsp.fakelang for `.fk` files and another as
+  lsp.rust. Its parent is not the app, the app runs no server of its own
+  (`LspRunningServerCount() == 0`), initialize carries the remote's
+  rootUri and a null processId, the diagnostics, completion through the
+  host, didSave after the host's write, Go to Definition opening util.fk
+  through the host, a file made there reaching the watchers (no inotify),
+  restricted Rust, the bar's Allow kept for `ssh://standin<folder>` and not
+  the folder here, the server started again by the host with its defaults,
+  and both servers gone with the window.
 
 #### The GTK window over SSH, viewers (2026-11-21, eighth slice)
 

@@ -20,7 +20,9 @@
 
 namespace FolderConsent {
 
-// A folder's key: its path with symlinks resolved.
+// A folder's key: its path with symlinks resolved, or as it is for a window
+// over SSH's (an ssh:// machine and folder: the answer is per host and folder,
+// never a folder of this machine's with the same path).
 std::string keyFor(const std::string& root);
 // "allow", "deny", or "" when the folder has no answer (or no folder).
 std::string answer(const std::string& root);

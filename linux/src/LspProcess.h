@@ -18,9 +18,13 @@
 #include <string>
 #include <vector>
 
+#include "Json.h"
 #include "LspClient.h"
+#include "SessionLsp.h"
 
 namespace lspgtk {
+
+class RemoteHost;
 
 // The places language servers get installed, after PATH: a launcher started
 // from the dock may have a short PATH, and cargo, go and pip put servers in
@@ -42,6 +46,13 @@ public:
     static std::shared_ptr<Server> start(const std::string& key,
                                          const std::vector<std::string>& argv,
                                          const std::string& root);
+    // A server the window's host runs on the other machine (a window over
+    // SSH, LspRemote.h): `argv` the first command's words, only to name it
+    // until the host says what it started. Null when the host cannot be
+    // asked. The client is initialized by the session once onStarted comes.
+    static std::shared_ptr<Server> startRemote(const std::string& key, const std::vector<std::string>& argv,
+                                               const std::shared_ptr<RemoteHost>& host,
+                                               const Shared::ServerRequest& request);
     ~Server();
     Server(const Server&) = delete;
     Server& operator=(const Server&) = delete;
@@ -53,6 +64,24 @@ public:
     bool stopping() const { return stopping_; }
     int pid() const { return pid_; }
     std::function<void(Server*)> onExit;
+
+    // ---- a remote server (startRemote); a pid there is the other machine's:
+    // shown, never signalled, and it is not among LspTerminateAllServers'.
+    bool remote() const { return isRemote_; }
+    // The host started it (what it found: its command line, the project-code
+    // verdict); the session initializes the client from this.
+    std::function<void(Server*, const Shared::ServerStarted&)> onStarted;
+    // Why the host never started it or lost it ("missing", "waits",
+    // "failed", "busy", "lost"), "" when it ran and ended by itself, and the
+    // host's json (the programs looked for, the file, its stderr's end).
+    const std::string& refusal() const { return refusal_; }
+    const Json& refusalInfo() const { return refusalInfo_; }
+    // The end of what it wrote to standard error (the host's report).
+    const std::string& errTail() const { return errTail_; }
+    // From the host, through RemoteHost's relay.
+    void remoteStarted(int pid, const Json& info);
+    void remoteWrote(const std::string& bytes);
+    void remoteExited(int status, const std::string& why, const Json& info);
 
     void stop();       // shutdown, exit, then signals if it lingers
     void stopNow();    // for quitting: exit at once, written before returning
@@ -81,6 +110,14 @@ private:
     bool running_ = false, stopping_ = false;
     int logFd_ = -1;
     std::unique_ptr<Lsp::Client> client_;
+    // A remote server: its host, its id there, whether the host said it
+    // started, why it did not, what its stderr ended with.
+    std::shared_ptr<RemoteHost> remote_;
+    bool isRemote_ = false;
+    std::uint64_t remoteId_ = 0;
+    bool remoteStarted_ = false;
+    std::string refusal_, errTail_;
+    Json refusalInfo_;
 };
 
 }  // namespace lspgtk
