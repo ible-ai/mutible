@@ -12,13 +12,18 @@
 // list) says it does not work over SSH yet. Its git runs on the host too
 // (stage 9, docs/notes/git.md, "Over SSH"): the tree's colors and the
 // branch from startRemoteWorkspace, Source Control and the change bars as
-// they are made (hostGitRunner), the host's notices refreshing them. Every
+// they are made (hostGitRunner), the host's notices refreshing them. So do
+// its language servers (stage 9, docs/notes/lsp.md, "Over SSH"): the
+// window's LspSession is given an MCLspRemoteHost on its link, through
+// which every server it starts is the host's. Every
 // method does nothing (or NO) in a window on this Mac. The
 // window's state is the MCRemoteWorkspace, an associated object, so the
 // controller gains no instance variables.
 #import "EditorController+Private.h"
+#import "LspRemote.h"
 #import "RemoteWorkspace.h"
 #import "SessionLink.h"
+#import "SessionWindow.h"
 #import <objc/runtime.h>
 
 static char kRemoteWorkspaceKey;
@@ -61,6 +66,24 @@ static char kRemoteWorkspaceKey;
     [self remoteTreeFoldersChanged];
     [self watchGitOnHost:ws.gitRunner];
     [self useHostGit];   // the panel made already, if it was
+    // Language servers on the host (stage 9): before the first file reaches
+    // the session, so no server of this Mac's starts for a remote path.
+    [self.lsp useRemoteHost:[[MCLspRemoteHost alloc] initWithLink:link
+                                                           window:[self sessionWindow].windowId]];
+    // A file already on show (its tab loaded before the host was given)
+    // goes to the host's servers now.
+    if (self.currentPath && !self.previewMode && self.textView.editable)
+        [self.lsp documentOpened:[self languageServerPath:self.currentPath]];
+}
+
+// A file's text as a tab reads it, for the language servers' edits across
+// files no tab has open: the host's in a window over SSH (Link::readText),
+// else this Mac's disk.
+- (NSString *)languageServerDiskText:(NSString *)path {
+    if (![self sessionIsRemote]) return MCReadDiskText(path, ULLONG_MAX).text;
+    MCSessionLinkRef *link = [self sessionRemoteLink];
+    if (!link.link || link.link->lost()) return nil;
+    return link.link->readText(path.fileSystemRepresentation ?: "").text;
 }
 
 - (MCGitRunner)hostGitRunner {
@@ -76,6 +99,9 @@ static char kRemoteWorkspaceKey;
     [ws attachLink:link];
     [self reloadTreeKeepingState:YES];
     [self gitChangedOnHost];   // what changed there meanwhile
+    // The language servers the drop ended start again there.
+    [self.lsp.remoteHost attachLink:link];
+    [self.lsp remoteHostReconnected];
 }
 
 - (void)remoteTreeFoldersChanged {

@@ -36,6 +36,9 @@ static NSString *StateText(MCLspState state) {
     // A server of the user's own has no install commands: the status bar
     // says it is not installed, and no bar offers to install it.
     if (!Install::server(Std(_langKey))) return nil;
+    // Nor one on another machine (a window over SSH): this Mac's install
+    // commands would not put it there; the popover names the host.
+    if ([self isRemote]) return nil;
     return e.state == MCLspStateNotInstalled ? _langKey : nil;
 }
 
@@ -151,6 +154,9 @@ static NSString *StateText(MCLspState state) {
     if (st.lspOff(lang.server)) return NO;
     if (!installed || !st.lspCommand(lang.server).empty()) return YES;
     if (_entries[NS(lang.server)].server) return YES;
+    // On another machine nothing here says it is installed there: only the
+    // settings' own command counts.
+    if ([self isRemote]) return NO;
     NSArray *first = [self firstDirsForKey:NS(lang.server)];
     for (const std::string &cmd : Lsp::defaultCommands(lang.server))
         if (MCResolveCommand(cmd, first)) return YES;
@@ -231,6 +237,9 @@ static NSString *StateText(MCLspState state) {
     if (configured) *configured = NO;
     if (!st.lspEnabled() || st.lspOff(key)) return nil;
     if (!st.lspCommand(key).empty()) return NS(st.lspCommand(key));
+    // A window over SSH reads no project file here (the rule looks for
+    // Ruff's configuration and program on this Mac): the settings name it.
+    if ([self isRemote]) return nil;
     std::string command = Lsp::defaultAlsoCommand(Std(lang), [self projectConfiguresRuff:path]);
     if (command.empty()) return nil;
     if (configured) *configured = YES;
@@ -243,13 +252,14 @@ static NSString *StateText(MCLspState state) {
 - (BOOL)alsoWantsPath:(NSString *)path key:(NSString *)key {
     const Settings &st = [AppSettings shared].settings;
     if (!st.lspCommand(Std(key)).empty()) return !st.lspOff(Std(key));
+    if ([self isRemote]) return NO;
     return [self projectConfiguresRuff:path];
 }
 
 // Where a server is looked for before the usual folders: for Python, the
 // interpreter's own bin, where pylsp (or ruff) may be installed.
 - (NSArray<NSString *> *)firstDirsForKey:(NSString *)key {
-    if (Lsp::languageOfKey(Std(key)) != "python") return nil;
+    if (Lsp::languageOfKey(Std(key)) != "python" || [self isRemote]) return nil;
     NSString *source = nil;
     NSString *interp = [self serverPythonInterpreterWithSource:&source];
     return interp ? @[interp.stringByDeletingLastPathComponent] : nil;
@@ -352,6 +362,8 @@ static NSString *StateText(MCLspState state) {
         e.state = MCLspStateOff;
         return nil;
     }
+    // A window over SSH: its host runs it, found there (Lsp+Remote.mm).
+    if ([self isRemote]) return [self startRemoteEntry:e];
     NSArray *first = [self firstDirsForKey:e.key];
     NSArray *argv = nil;
     for (const std::string &cmd : [self commandsForKey:key]) {
@@ -399,6 +411,20 @@ static NSString *StateText(MCLspState state) {
         c.setInitializationOptions(pc.initializationOptions);
         if (!pc.settings.isNull()) c.setSettings(pc.settings);
     }
+    [self wireServer:server];
+    // The folder as the server sees it is spelled as didOpen spells files
+    // (resolved), or it takes /tmp/x/a.py and /private/tmp/x/a.py for two
+    // files and finds every reference twice. Paths it sends back are mapped
+    // to the tree's spelling (treePathForURI:).
+    c.initialize(Std(RealPath(_root) ?: _root), (int)getpid());
+    return server;
+}
+
+// What the session hears of a server it started (here or on the window's
+// host): ready, diagnostics, its errors, its edits, its watchers, its
+// refreshes and progress, and its end.
+- (void)wireServer:(MCLspServer *)server {
+    Lsp::Client &c = server.client;
     __weak LspSession *weakSelf = self;
     __weak MCLspServer *weakServer = server;
     // A server being stopped (a new folder, a settings change) can still
@@ -480,12 +506,6 @@ static NSString *StateText(MCLspState state) {
         NSLog(@"Mutible: %@: %s", weakServer.name, problem.c_str());
     };
     server.onExit = ^(MCLspServer *s) { [weakSelf serverExited:s]; };
-    // The folder as the server sees it is spelled as didOpen spells files
-    // (resolved), or it takes /tmp/x/a.py and /private/tmp/x/a.py for two
-    // files and finds every reference twice. Paths it sends back are mapped
-    // to the tree's spelling (treePathForURI:).
-    c.initialize(Std(RealPath(_root) ?: _root), (int)getpid());
-    return server;
 }
 
 - (MCLspEntry *)entryOf:(MCLspServer *)server {
@@ -564,6 +584,7 @@ static NSString *StateText(MCLspState state) {
 }
 
 - (void)serverExited:(MCLspServer *)server {
+    if (server.remote && !server.stopping && [self remoteServerEnded:server]) return;
     [self forgetDocumentsOf:server];
     [self finishWorkspaceSymbolsOf:server];
     __weak LspSession *weakSelf = self;
@@ -719,6 +740,12 @@ static NSString *StateText(MCLspState state) {
         info.pid = e.server.pid;
         if (const Lsp::Progress *p = e.server.client.progress())
             info.progress = NS(Lsp::progressText(*p));
+    } else if ([self isRemote]) {
+        // What would run is decided on the host: the commands it tries.
+        NSMutableArray *all = [NSMutableArray array];
+        for (const std::string &cmd : [self commandsForKey:k]) [all addObject:NS(cmd)];
+        info.command = e.command ?: [all componentsJoinedByString:@", or "];
+        info.serverName = e.serverName;
     } else {
         // What would run: the first command that is installed.
         std::vector<std::string> commands = [self commandsForKey:k];
@@ -739,11 +766,13 @@ static NSString *StateText(MCLspState state) {
         }
     }
     if (!st.lspEnabled() || st.lspOff(k)) info.state = MCLspStateOff;
-    if (info.state == MCLspStateNotInstalled) {
+    if (info.state == MCLspStateNotInstalled && ![self isRemote]) {
         const Install::Tool *tool = Install::server(k);
         if (tool && !tool->ways.empty()) info.installHint = NS(tool->ways.front().command);
     }
-    if ([key isEqualToString:@"python"]) {
+    if ([key isEqualToString:@"python"] && [self isRemote]) {
+        info.interpreter = nil;   // the server's own, on the host
+    } else if ([key isEqualToString:@"python"]) {
         if (e.server) {
             info.interpreter = e.interpreter;
             info.interpreterSource = e.interpreterSource;
@@ -753,7 +782,7 @@ static NSString *StateText(MCLspState state) {
             info.interpreterSource = source;
         }
     }
-    if ([key isEqualToString:@"cpp"] && [_langKey isEqualToString:@"cpp"] &&
+    if ([key isEqualToString:@"cpp"] && [_langKey isEqualToString:@"cpp"] && ![self isRemote] &&
         info.state != MCLspStateOff && info.state != MCLspStateNotInstalled)
         info.compileFlagsNote = [self compileFlagsNoteForProgram:info.program
                                                          command:info.command];
@@ -785,7 +814,7 @@ static NSString *StateText(MCLspState state) {
 // sharing the once), as a note that goes, never a bar over the file; the
 // Language Servers popover says it on clangd's card for as long as it holds.
 - (void)noteMissingCompileFlags {
-    if (![_langKey isEqualToString:@"cpp"]) return;
+    if (![_langKey isEqualToString:@"cpp"] || [self isRemote]) return;   // its files are not here
     MCLspEntry *e = _entries[_langKey];
     if (!e.server) return;
     if (![self compileFlagsNoteForProgram:e.server.program command:e.command]) return;

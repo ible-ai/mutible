@@ -4,6 +4,7 @@
 // built-in outline.
 #import "Lsp+Private.h"
 #import "Lsp+NavigationIvars.h"
+#import "LspRemote.h"
 
 @implementation MCSymbolItem
 @end
@@ -148,6 +149,15 @@ NSArray<MCSymbolItem *> *MCOutlineSymbols(NSString *path, NSString *text, NSUInt
 - (void)revealLocationNow:(const Lsp::Location &)loc {
     if (![self uri:loc.uri isSameFileAs:_uri]) {
         NSString *path = [self treePathForURI:loc.uri];
+        // A window over SSH reads files through its host, which reads only
+        // in its folder (a system header or an installed package is not).
+        if ([self isRemote] && path.length && _root.length && ![path hasPrefix:[_root stringByAppendingString:@"/"]]) {
+            NSBeep();
+            [self note:[NSString stringWithFormat:@"%@ is outside the folder: a window over SSH opens only "
+                                                  @"files in %@ yet",
+                                                  path, self.remoteHost.label ?: _root]];
+            return;
+        }
         BOOL (^open)(NSString *) = self.openFileForNavigation ?: self.openFile;
         if (!path.length || !open || !open(path)) return;
     }

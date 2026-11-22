@@ -375,6 +375,14 @@ int Link::addDiskListener(std::function<void(const Json &)> f) {
 
 void Link::removeDiskListener(int token) { diskListeners_.erase(token); }
 
+int Link::addFilesListener(std::function<void(std::uint64_t, const Json &)> f) {
+    const int token = ++nextListener_;
+    filesListeners_[token] = std::move(f);
+    return token;
+}
+
+void Link::removeFilesListener(int token) { filesListeners_.erase(token); }
+
 std::uint64_t Link::stream(Json request, std::function<void(std::vector<Json> &&, bool)> answers) {
     if (!client_ || lost() || !client_->hostSearches()) return 0;
     const std::uint64_t req = client_->requestStream(0, std::move(request));
@@ -646,6 +654,15 @@ bool Link::attachClient(std::unique_ptr<Shared::HostLink> link, std::weak_ptr<Li
                     if (l->diskListeners_.count(token)) f(changed);
             },
             [](Shared::DocId, int) {});
+    // And its language servers' files changed there (LspFiles).
+    if (kind_ == Kind::Remote)
+        owned_->hearFiles([weak](std::uint64_t window, const Json &files) {
+            std::shared_ptr<Link> l = weak.lock();
+            if (!l) return;
+            const auto listeners = l->filesListeners_;
+            for (const auto &[token, f] : listeners)
+                if (l->filesListeners_.count(token)) f(window, files);
+        });
     client_ = owned_.get();
     // The host's messages arrive on the link's reader thread; the main queue
     // dispatches them, once per batch. The block holds the link weakly, so
@@ -1920,7 +1937,7 @@ MCSessionTerminalState MCSessionInspectTerminal(unsigned long long term) {
         std::vector<Shared::Host::PollFd> fds;
         h.pollSet(&fds);
         for (const auto &p : fds)
-            if (p.term == term) {
+            if (p.term == term && !p.server) {   // a pty's, not a language server's
                 out.writeWaiting = p.write;
                 out.reading = p.read;
             }

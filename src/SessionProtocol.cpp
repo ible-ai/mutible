@@ -40,6 +40,10 @@ const KindName kKinds[] = {
     {Kind::DocDirty, "doc.dirty"},
     {Kind::FsChanged, "fs.changed"},    {Kind::DocDisk, "doc.disk"},
     {Kind::DocReload, "doc.reload"},    {Kind::DocReloadDone, "doc.reload-done"},
+    {Kind::LspStart, "lsp.start"},      {Kind::LspInput, "lsp.input"},
+    {Kind::LspStop, "lsp.stop"},        {Kind::LspStarted, "lsp.started"},
+    {Kind::LspOutput, "lsp.output"},    {Kind::LspExited, "lsp.exited"},
+    {Kind::LspFiles, "lsp.files"},
 };
 
 // Terminal bytes are any bytes, which a JSON string cannot carry: base64.

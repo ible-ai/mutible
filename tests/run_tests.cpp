@@ -11941,6 +11941,7 @@ static void testMultiCaretOccurrences() {
 #include "session_write_tests.inc"
 #include "session_fileops_tests.inc"
 #include "session_git_tests.inc"
+#include "session_lsp_tests.inc"
 #include "lsp_trust_tests.inc"
 #include "lsp_clangd_tests.inc"
 #include "multiedit_tests.inc"
@@ -12164,6 +12165,7 @@ int main() {
     testSessionWrites();
     testSessionFileOps();
     testSessionGit();
+    testSessionLsp();
     testLspProjectCode();
     testLspClangdFlags();
     testMultiEdit();

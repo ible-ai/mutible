@@ -283,12 +283,16 @@ StatusLine statusLine(const std::string& language, const std::vector<ServerStatu
             yellow = true;
             break;
         case ServerState::Restarting:
-            part = name + " crashed, restarting" + kEllipsis;
+            part = name + (s.waitsForHost ? " waits for the connection" : " crashed, restarting") + kEllipsis;
             yellow = true;
             break;
         case ServerState::NotInstalled:
-            part = s.main ? "Install a " + language + " language server" + kEllipsis
-                          : name + " not installed";
+            if (!s.host.empty())
+                part = (s.main ? "Install a " + language + " language server" : name + " not installed") +
+                       " on " + s.host;
+            else
+                part = s.main ? "Install a " + language + " language server" + kEllipsis
+                              : name + " not installed";
             break;
         case ServerState::Off:
             if (s.main) mainOff = true;

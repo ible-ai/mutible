@@ -472,6 +472,8 @@ void Client::dispatch() {
     }
     Message m;
     while (queued-- && take(&m)) process(std::move(m));
+    // The host gone: its servers with it (after what it said before it went).
+    if (lost_) tellServersLost();
     // Messages that came while those were taken found the queue not empty and
     // called no wake: call it now, so they are not left until the next.
     std::function<void()> wake;
@@ -584,8 +586,77 @@ void Client::process(Message&& m) {
     case Kind::TermShell:
     case Kind::TermMarks:
     case Kind::TermExited: onTerminal(m); break;
+    case Kind::LspStarted:
+    case Kind::LspOutput:
+    case Kind::LspExited: onServer(m); break;
+    case Kind::LspFiles:
+        if (filesListener_) filesListener_(m.window, m.json);
+        break;
     default: break;
     }
+}
+
+// ---------------------------------------------------------------- language servers
+
+bool Client::startServer(std::uint64_t id, std::uint64_t window, Json request, ServerListener* l) {
+    if (!id || !hostRunsServers() || lost_ || !send_) return false;
+    servers_[id] = l;
+    Message m;
+    m.kind = Kind::LspStart;
+    m.term = id;
+    m.window = window;
+    m.json = std::move(request);
+    queue(std::move(m));
+    pump();
+    return true;
+}
+
+void Client::serverInput(std::uint64_t id, std::string bytes) {
+    if (bytes.empty() || !servers_.count(id)) return;
+    Message m;
+    m.kind = Kind::LspInput;
+    m.term = id;
+    m.bytes = std::move(bytes);
+    queue(std::move(m));   // behind an edit in flight, and a save
+    pump();
+}
+
+void Client::stopServer(std::uint64_t id) {
+    if (!servers_.count(id)) return;
+    Message m;
+    m.kind = Kind::LspStop;
+    m.term = id;
+    queue(std::move(m));
+    pump();
+}
+
+void Client::forgetServer(std::uint64_t id) {
+    if (!servers_.count(id)) return;
+    stopServer(id);
+    servers_.erase(id);
+}
+
+void Client::onServer(Message& m) {
+    auto it = servers_.find(m.term);
+    if (it == servers_.end() || !it->second) return;
+    ServerListener* l = it->second;
+    switch (m.kind) {
+    case Kind::LspStarted: l->serverStarted(m.term, (int)m.v, m.json); break;
+    case Kind::LspOutput: l->serverOutput(m.term, m.bytes); break;
+    case Kind::LspExited:
+        servers_.erase(it);   // nothing more comes
+        l->serverExited(m.term, m.flag, m.name, m.json);
+        break;
+    default: break;
+    }
+}
+
+void Client::tellServersLost() {
+    if (servers_.empty()) return;
+    std::map<std::uint64_t, ServerListener*> gone;
+    gone.swap(servers_);
+    for (auto& [id, l] : gone)
+        if (l) l->serverExited(id, -1, "lost", Json::object());
 }
 
 // ---------------------------------------------------------------- terminals

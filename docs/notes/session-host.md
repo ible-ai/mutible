@@ -4700,6 +4700,82 @@ side is in docs/notes/git.md, "Over SSH".
   host's Welcome sending nothing). GUI: remote_ssh's git block (docs/notes/
   git.md). Not run here: CI runs it.
 
+#### Language servers over SSH (2026-11-22, stage 9's second slice, Welcome flag 512)
+
+A window over SSH started no language server (the Mac would have run
+clangd or basedpyright on paths only the other machine has). Now its host
+runs them there. Core: `src/SessionLsp.{h,cpp}`; the Mac's side is in
+docs/notes/lsp.md, "Over SSH".
+
+- **The protocol** (new kinds, so a host from before them is never sent
+  one: `Client::startServer` sends nothing without flag 512,
+  `hostRunsServers`): LspStart {term: the server's id, a renderer-made id
+  as a terminal's, window, json: `ServerRequest` {key, commands (each a
+  command line in words, tried in order), allowed (the folder's answer),
+  fileDir}}; LspInput {term, bytes}; LspStop {term}; LspStarted {term, v:
+  pid, json: `startedJson` {argv, command, verdict, file,
+  initializationOptions, settings}}; LspOutput {term, bytes: its standard
+  output as read, 64 KB at most a message, framed by the renderer's
+  `Lsp::Reader`}; LspExited {term, flag: wait status (-1), name: "missing",
+  "waits", "failed", "busy" when it never started, json {stderr (its last
+  4 KB), tried, file}}; LspFiles {window, json {changes: [[path, type]]}}.
+  The JSON-RPC is relayed as bytes, not parsed by the host. Only from an
+  app's window (`refusedFromViewer`'s default refuses a reader's and a
+  guest's). The renderer's LspInput and LspStop go through the outbox
+  (`queue` + `pump`), behind an edit in flight and a save, so a didSave
+  reaches a server after the host wrote the file.
+- **The plan** (`planServer`, on the host's thread: a few stats): the
+  first command whose program is found on the host's PATH (its own
+  environment, `ownEnv_`, else the process's) or the usual folders
+  (`serverSearchDirs`: an ssh command's PATH lacks ~/.profile's); for rust
+  and typescript `Lsp::checkProjectCode` on the host's disk with the
+  window's `allowed` (and `ownTypescript` with the host's tsserver); the
+  environment with PATH the program's folder first. Started with
+  `ServerProcess` (posix_spawn, its own session, signals at their
+  defaults, no other descriptor, the folder as its working directory,
+  non-blocking pipes), at most `kMaxServersPerRenderer` (16) a renderer.
+  `mutible host` now links LspServers, LspFeatures, LspText, LspProtocol,
+  LspSync and LspCompletion for the check (Makefile's SESSION_HOST_SRC).
+- **The loop**: `pollSet` gives each server's stdout, stderr and (while
+  bytes wait) stdin with `PollFd::server` 1, 3 and 2; `serverReady` reads
+  (64 KB a turn, as a pty's) or flushes; `serversTick` (from `tick`) reaps
+  a server whose output ended (and one asked to stop), sends what it wrote
+  last and LspExited, and signals one asked to stop (SIGTERM after
+  `kServerGraceMs`, SIGKILL after `kServerKillMs`, to its group), waking
+  every 50 ms while any is ending.
+- **Lifetime**: a server is its renderer's: LspStop, WindowClose of the
+  window its request named, and the renderer's disconnect stop it. A drop
+  therefore ends it; the window starts it again once connected
+  (`remoteHostReconnected`), which reopens its documents. Re-attaching a
+  live server across a drop would need the messages lost in the drop
+  replayed both ways (the client's document versions and copies), so it is
+  not done.
+- **Watched files** (`serversDiskChanged`, after `diskChanged`): while a
+  server runs, each batch's folders that the watch filter takes are listed
+  and compared with what they held (`FolderStamps`: names, lstat times and
+  sizes; the folder and the open documents' folders remembered when the
+  first server starts, so the first change there is compared; a folder
+  never seen reports what changed since that start as Changed), `.git`
+  and node_modules packages left out, and sent as LspFiles to each
+  renderer with a server, those under its window's folder.
+- **Words** (`serversTooOldText`, `serverMissingText`, `serversLostText`,
+  `serverExitText`) are shared with GTK.
+- **For GTK** (not done): docs/notes/lsp.md, "Over SSH".
+- **Checks.** `hostlsp:request`, `:find` (the search folders' order, nvm's
+  newest first, a ~/ path), `:plan` (the first command found, what was
+  looked for, the environment's PATH, rust-analyzer restricted, waiting on
+  a cargo configuration, free once allowed, a second server never held
+  back), `:stamps` (made, changed, gone, a file turned folder, a folder
+  never seen, a folder gone, a real folder), `:words` (and the status line
+  naming the host, and processId null), `:process` (cat's bytes both ways
+  and its end, stderr kept, a group signalled, a program not there),
+  `:wire` (through the encoding: started on the second command, bytes both
+  ways, LspFiles for a file made after it started, stopped with status 0,
+  "missing" with what was looked for, a guest and a reader refused, a
+  disconnect ending it, a lost host telling "lost", nothing sent before the
+  Welcome). GUI: remote_ssh's language server block. Not run here: CI runs
+  it.
+
 ### Still to do
 
 - **Stage 8, after the fourth slice** (in order of value): open clean tabs following the remote
@@ -4714,7 +4790,7 @@ side is in docs/notes/git.md, "Over SSH".
   app, or a window closed while disconnected, left on the lasting host
   (closing a connected window closes what it had there, but those leave it
   until the idle time, or for good while it is unsaved or running); the first connection and Reconnect off the main
-  thread too (only the automatic tries are); then the rest of stage 9 (git is started: "Git over SSH" above; servers, formatters, agents)
+  thread too (only the automatic tries are); then the rest of stage 9 (git and language servers are in: "Git over SSH" and "Language servers over SSH" above; formatters, agents, LaTeX)
   and the parts left out above (ports for the browser pane, Finder drags,
   Quick Look).
 - **Stage 7, after the watching, the Mac's and GTK's saves, Quick Open and

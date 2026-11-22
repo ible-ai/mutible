@@ -166,7 +166,10 @@ void Client::initialize(const std::string& rootPath, int processId,
         {"general", Json::object({{"positionEncodings", Json::array().push("utf-16")}})},
     });
     Json params = Json::object({
-        {"processId", processId},
+        // null for a server on another machine (a window over SSH): a pid of
+        // this one would name no process there, and servers that watch their
+        // parent would end.
+        {"processId", processId > 0 ? Json(processId) : Json()},
         {"clientInfo", Json::object({{"name", clientName}})},
         {"rootUri", rootUri},
         {"rootPath", rootPath},

@@ -685,9 +685,11 @@ static void MCTextSplice(NSString *a, NSString *b, NSRange *inA, NSRange *inB) {
     [self noteLargeFileText:self.sourceText];   // large-file mode, before it shows
     [self refreshDisplay];
     // Previews show rendered text, which no language server should see, nor
-    // does a file in large-file mode.
-    // Nor does a file on another machine: its servers are stage 9's.
-    [self.lsp documentOpened:self.previewMode || remote ? nil : [self languageServerPath:path]];
+    // does a file in large-file mode. A file on another machine goes to the
+    // servers its host runs (stage 9, Lsp+Remote.mm), never to this Mac's:
+    // before the window's session has its host, to none.
+    [self.lsp documentOpened:self.previewMode || (remote && !self.lsp.remoteHost) ? nil
+                                                                                  : [self languageServerPath:path]];
     [self updateTitle];
     [self applySessionPlaceOf:_activeTab];   // brought back with its window: where it was
 }

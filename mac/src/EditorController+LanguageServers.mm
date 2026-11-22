@@ -333,7 +333,7 @@ static NSMutableSet<NSString *> *EnvironmentQuestionPutOff(void) {
 
 // The folder has an answer about running its own tools to take back.
 - (BOOL)canForgetFolderToolsAnswer {
-    return self.rootPath.length && MCFolderToolsConsent(self.rootPath) != nil;
+    return self.rootPath.length && MCFolderToolsConsent(self.lsp.consentRoot ?: self.rootPath) != nil;
 }
 
 // Ask Again About This Folder's Tools: the answer the install bar or
@@ -348,7 +348,7 @@ static NSMutableSet<NSString *> *EnvironmentQuestionPutOff(void) {
         return;
     }
     [EnvironmentQuestionPutOff() removeObject:self.lsp.root ?: @""];
-    MCForgetFolderToolsConsent(self.rootPath);
+    MCForgetFolderToolsConsent(self.lsp.consentRoot ?: self.rootPath);   // per host and folder over SSH
     [self updateInstallBar];
     [self showStatusNote:@"mutible will ask before running this folder's own tools again"];
 }

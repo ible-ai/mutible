@@ -117,6 +117,16 @@
 // over SSH) on a worker the same way, its answer git's status, standard
 // error and (as the bytes) standard output.
 //
+// A window's language servers (stage 9, SessionLsp.h, Welcome flag 512):
+// LspStart starts one for an app's window, found on this machine, in the
+// window's folder; its standard input and output are relayed as LspInput
+// and LspOutput, polled by the loop as the ptys are (pollSet's servers),
+// its standard error kept for LspExited. It is its renderer's: LspStop,
+// the window closing or the renderer going ends it (input closed, SIGTERM
+// after kServerGraceMs, SIGKILL after kServerKillMs). While any runs, a
+// batch of the disk's changes is also compared file by file
+// (FolderStamps) and sent to each renderer with one as LspFiles.
+//
 // A page's writes (stage 7, Welcome flag 16): a guest's New File is an
 // untitled document the host keeps (DocOpen flag 2, Doc::fromPage, dropped
 // while empty once nobody has it); its Save As names the document's file
@@ -152,6 +162,7 @@
 #include "HostPty.h"
 #include "SavePlan.h"
 #include "SessionProtocol.h"
+#include "SessionLsp.h"
 #include "SessionSearch.h"
 #include "TerminalScreen.h"
 #include "TerminalStream.h"
@@ -313,6 +324,9 @@ public:
         int fd = -1;
         bool read = false, write = false;
         TermId term = 0;
+        // A language server's (SessionLsp.h) rather than a pty: 1 its
+        // output, 2 its input, 3 its standard error; `term` its id.
+        int server = 0;
     };
     void pollSet(std::vector<PollFd>* out) const;
     void readable(TermId t);
@@ -322,6 +336,11 @@ public:
     // terminal modes: the milliseconds until it wants to run again (-1:
     // only when something happens).
     int tick();
+    // A language server's descriptor is ready (pollSet's `server`).
+    void serverReady(const PollFd& p, bool readable, bool writable);
+    // For checks: the servers running (or ending), and one's pid (0 none).
+    std::size_t serverCount() const { return servers_.size(); }
+    int serverPid(std::uint64_t id) const;
     // Starts a terminal's shell (TermOpen): false, with `error`, when it
     // could not be.
     bool openPty(ClientId c, TermId t, const TermSpec& spec, std::string* error);
@@ -491,6 +510,28 @@ private:
     };
     std::map<TermId, Term> terms_;
     std::vector<Dying> dying_;
+
+    // Language servers (SessionLsp.h): whose, for which window, the
+    // process, and when it was asked to stop.
+    struct LangServer {
+        ClientId owner = 0;
+        std::uint64_t window = 0;
+        std::unique_ptr<ServerProcess> proc;
+        bool stopping = false, termSent = false, killSent = false;
+        std::chrono::steady_clock::time_point stopAt;
+    };
+    std::map<std::uint64_t, LangServer> servers_;
+    FolderStamps stamps_;   // the folders' files, for LspFiles
+    void onLspStart(ClientId c, Message& m);
+    void lspRefused(ClientId c, std::uint64_t id, const std::string& why, Json json = Json());
+    // Its input closed now, signals later (tick).
+    void stopServer(LangServer& s);
+    // Reaps ended servers (LspExited to their renderer) and signals those
+    // that stay; the milliseconds until it wants to look again (-1 none).
+    int serversTick();
+    // The files the disk's changed folders hold, compared, to each
+    // renderer with a server running.
+    void serversDiskChanged(const std::vector<DiskWatch::Change>& changes);
     void onTermOpen(ClientId c, Message& m);
     void onTermAttach(ClientId c, Message& m);
     void sendShell(TermId id, Term& t, bool always = false);

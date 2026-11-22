@@ -328,6 +328,9 @@ void MCForgetFolderToolsConsent(NSString *root);
 @property(nonatomic, copy) NSString *(^shownTabPath)(void);
 // Close the tab of a file that an edit opened and then could not change.
 @property(nonatomic, copy) void (^closeFile)(NSString *path);
+// A file's text as a tab reads it from its disk (the edit applier's files
+// no tab has open): this Mac's when unset, the host's in a window over SSH.
+@property(nonatomic, copy) NSString *(^diskText)(NSString *path);
 // The diagnostics changed (published, a file closed, a server stopped):
 // called once for a burst, a moment after it.
 @property(nonatomic, copy) void (^onProblemsChanged)(void);
@@ -345,6 +348,25 @@ void MCForgetFolderToolsConsent(NSString *root);
 @property(nonatomic, readonly) NSString *lastHoverText;
 // The last note sent to showNote.
 @property(nonatomic, readonly) NSString *lastNote;
+@end
+
+// ---- a window over SSH: its servers run by its host (Lsp+Remote.mm;
+// LspRemote.h, the core's SessionLsp.h)
+@class MCLspRemoteHost;
+@interface LspSession (Remote)
+// From now on every server of the window is its host's (set once, as the
+// window takes its remote link): the settings' commands are found on the
+// other machine, the folder's answer about its own code is kept per host
+// and folder, a missing server names the host and offers no install
+// command, and the host's disk notices stand in for FSEvents.
+- (void)useRemoteHost:(MCLspRemoteHost *)host;
+@property(nonatomic, readonly) MCLspRemoteHost *remoteHost;
+// The window is connected again (Reconnect, or by itself after a drop):
+// servers the drop ended start again on the new connection.
+- (void)remoteHostReconnected;
+// The key the folder's answers are kept under (MCFolderToolsConsent): its
+// path, or for a window over SSH its host's ssh:// machine and folder.
+- (NSString *)consentRoot;
 @end
 
 // ---- the documents the servers have open (Lsp+Sync.mm)
