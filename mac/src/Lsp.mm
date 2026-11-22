@@ -12,6 +12,7 @@
 // LspPopups.mm.
 #import "Lsp+Private.h"
 #import "SnippetSession.h"
+#import "LspRemote.h"
 // Every category's own instance variables, so this @implementation lays
 // them out (Lsp+Private.h).
 #import "Lsp+ActionsIvars.h"
@@ -20,6 +21,7 @@
 #import "Lsp+InlayHintsIvars.h"
 #import "Lsp+JsonCheckIvars.h"
 #import "Lsp+NavigationIvars.h"
+#import "Lsp+RemoteIvars.h"
 #import "Lsp+SemanticIvars.h"
 #import "Lsp+ServersIvars.h"
 #import "Lsp+SyncIvars.h"
@@ -188,6 +190,9 @@ NSHashTable<LspSession *> *MCLspAllSessions(void) {
     st.main = main;
     st.state = (Lsp::ServerState)(e ? e.state : MCLspStateIdle);
     st.name = Std(e.server.name ?: e.serverName ?: @"");
+    // A window over SSH: where it would be installed, and a drop waited out.
+    if (self.remoteHost) st.host = Std(self.remoteHost.machine ?: @"");
+    st.waitsForHost = e.waitsForHost;
     if (e.server)
         if (const Lsp::Progress *p = e.server.client.progress()) {
             st.progress = Lsp::progressText(*p);

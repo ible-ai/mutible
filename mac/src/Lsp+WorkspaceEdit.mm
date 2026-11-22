@@ -10,6 +10,13 @@
 
 @implementation LspSession (WorkspaceEdit)
 
+// A file's text from its disk as a tab reads it: the window's (the host's
+// in a window over SSH), else this Mac's.
+- (NSString *)diskTextOfPath:(NSString *)path {
+    if (self.diskText) return self.diskText(path);
+    return MCReadDiskText(path, ULLONG_MAX).text;
+}
+
 // The text of a file as the editor has it: the text view's for the file on
 // show, a tab's buffer for another open file, else the disk's, read as a
 // tab reads it (MCReadDiskText: UTF-16 with its mark too).
@@ -17,7 +24,7 @@
     if ([self uri:uri isSameFileAs:_uri]) return _tv.string;
     NSString *buffer = self.bufferText ? self.bufferText(path) : nil;
     if (buffer) return buffer;
-    return MCReadDiskText(path, ULLONG_MAX).text;
+    return [self diskTextOfPath:path];
 }
 
 // The text a server's positions in a file refer to: what it was last sent
@@ -28,7 +35,7 @@
         std::shared_ptr<const std::u16string> t = e.server ? e.server.client.textFor(uri) : nullptr;
         if (t) return [NSString stringWithCharacters:(const unichar *)t->data() length:t->size()];
     }
-    return MCReadDiskText(path, ULLONG_MAX).text;
+    return [self diskTextOfPath:path];
 }
 
 // Another window with a tab on the file whose text the disk does not have
@@ -42,7 +49,7 @@
         NSString *buffer = other.bufferText(path);
         if (!buffer) continue;
         if (!read) {
-            disk = MCReadDiskText(path, ULLONG_MAX).text;
+            disk = [self diskTextOfPath:path];
             read = YES;
         }
         if (!disk || ![buffer isEqualToString:disk]) return YES;

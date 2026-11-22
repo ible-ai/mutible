@@ -297,7 +297,7 @@ static NSFont *Small(void) { return [NSFont systemFontOfSize:11]; }
     }
     // The folder's answer about its own programs (a .venv's servers, a
     // formatter in node_modules), with a way to take it back.
-    NSString *answer = session.root.length ? MCFolderToolsConsent(session.root) : nil;
+    NSString *answer = session.root.length ? MCFolderToolsConsent(session.consentRoot) : nil;
     if (answer) {
         NSBox *rule = [NSBox new];
         rule.boxType = NSBoxSeparator;

@@ -102,7 +102,11 @@ goes here first, with tests; the GUI only displays it.
   browser's page; `search:*`), `SessionGit` (stage 9's first slice:
   FsRead's "git", one git command a window over SSH asks its host to run
   on a worker, held to the apps' subcommands and to the folder, Welcome
-  flag 256; `hostgit:*`), `DiskWatch`
+  flag 256; `hostgit:*`), `SessionLsp` (stage 9's second slice: a window
+  over SSH's language servers, started by its host there from the
+  window's commands (`planServer`, `ServerProcess`), their JSON-RPC relayed
+  as LspInput and LspOutput, files changed there as LspFiles
+  (`FolderStamps`), Welcome flag 512; `hostlsp:*`), `DiskWatch`
   (stage 7's watching: the core's one platform interface for the disk's
   notices, inotify on Linux and FSEvents on the Mac, each on a thread or
   queue of its own behind a pipe the host polls, with the pure `Filter`,
@@ -232,7 +236,8 @@ goes here first, with tests; the GUI only displays it.
   `Lsp+Navigation` (definition, hover, symbols), `Lsp+Actions` (rename,
   references, code actions), `Lsp+Semantic` (semantic tokens),
   `Lsp+WorkspaceEdit`, `Lsp+InlayHints`, `Lsp+JsonCheck` (JSON no server
-  has, checked by the editor); `Lsp+Private.h` and the
+  has, checked by the editor), `Lsp+Remote` (a window over SSH's servers,
+  run by its host); `Lsp+Private.h` and the
   `Lsp+<Concern>Ivars.h` follow the rules below), `LspServer`
   (processes), `LspPopups` (completion, hover, signature), `SnippetSession`
   (a snippet's tab stops in the view), `LspShared.h` (only
@@ -274,7 +279,9 @@ goes here first, with tests; the GUI only displays it.
   and what it took from a closed window's, stage 6), `RemoteWorkspace`
   (a window over SSH's folder through its host: the tree's `MCTreeSource`,
   the host's disk notices, Quick Open's list, Find in Folder, new files;
-  stage 8), `RemoteFileCache` (a window over SSH's private folder of
+  stage 8), `LspRemote` (`MCLspRemoteHost`: a window over SSH's host as
+  the place its language servers run, the transport under a remote
+  `MCLspServer`; stage 9), `RemoteFileCache` (a window over SSH's private folder of
   copies for the viewers, removed with the window and, for a process that
   ended, at launch; stage 8), `RemoteConnect` (the small window of a window over SSH
   connecting off the main thread: its progress line, Cancel, the addresses

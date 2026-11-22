@@ -136,6 +136,10 @@ static inline NSAttributedString *MCDocText(NSString *text, BOOL markdown) {
 // `projectCodeFile` is the project's file that decided.
 @property(nonatomic, assign) Lsp::ProjectCode projectCode;
 @property(nonatomic, copy) NSString *projectCodeFile;
+// A window over SSH: its host went while the server ran (or before it
+// could start it), so it starts again once the window is connected again
+// (remoteHostReconnected), not counted as a crash.
+@property(nonatomic, assign) BOOL waitsForHost;
 @end
 
 // A file open in a tab of this window, open on its language's servers so
@@ -221,6 +225,24 @@ NSHashTable<LspSession *> *MCLspAllSessions(void);
 - (void)noteMissingCompileFlags;
 - (void)stopAllServers;
 - (void)settingsChanged:(NSNotification *)note;
+- (void)wireServer:(MCLspServer *)server;
+- (MCLspEntry *)entryOf:(MCLspServer *)server;
+- (std::vector<std::string>)commandsForKey:(const std::string &)key;
+- (void)forgetDocumentsOf:(MCLspServer *)server;
+- (void)dropServer:(MCLspServer *)server;
+- (MCLspServer *)startEntry:(MCLspEntry *)e;
+@end
+
+@interface LspSession (Remote)
+// The window's host runs its servers (a window over SSH).
+- (BOOL)isRemote;
+// startEntry: in a window over SSH: asked of the host, initialized once it
+// says what started (Lsp+Remote.mm).
+- (MCLspServer *)startRemoteEntry:(MCLspEntry *)e;
+// A remote server's end that is not a crash (it never started: not
+// installed there, waiting for the folder's answer, refused; or the
+// connection went): YES when handled.
+- (BOOL)remoteServerEnded:(MCLspServer *)server;
 @end
 
 @interface LspSession (Python)
@@ -238,6 +260,8 @@ NSHashTable<LspSession *> *MCLspAllSessions(void);
 - (NSString *)tabPathForURI:(NSString *)uri;
 - (void)updateFileWatcher;
 - (void)stopWatchingFilesAfter:(dispatch_block_t)stopping;
+- (void)filesChangedOnDisk:(const std::vector<Lsp::FileChange> &)changes
+                   batches:(const std::vector<Lsp::WatchedBatch> &)batches;
 - (void)flushChanges;
 // editor.session-host: the host's text of the document on show (SessionLink.h).
 - (const Model::Text *)hostText;

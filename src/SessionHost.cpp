@@ -15,7 +15,13 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <poll.h>
+#include <pwd.h>
+#include <signal.h>
 #include <unistd.h>
+
+#ifdef __APPLE__
+#include <crt_externs.h>
+#endif
 
 namespace Shared {
 
@@ -37,6 +43,10 @@ void Host::disconnect(ClientId c) {
     // One whose size was this renderer's takes the next one's.
     for (auto& [id, t] : terms_)
         if (t.viewers.erase(c)) fit(id, t);
+    // Its language servers end with it: they were its window's, and a
+    // window coming back after a drop starts them again.
+    for (auto& [id, s] : servers_)
+        if (s.owner == c) stopServer(s);
     for (auto& [id, d] : docs_) {
         if (d.stepOpen && d.stepBy == c) closeStep(d);
         d.seats.erase(c);
@@ -146,6 +156,9 @@ void Host::handle(ClientId from, Message&& m) {
     case Kind::WindowClose:
         windows_.erase(m.window);
         windowSeen_.erase(m.window);
+        // Its language servers go with it.
+        for (auto& [id, s] : servers_)
+            if (m.window && s.owner == from && s.window == m.window) stopServer(s);
         break;
     case Kind::StateQuery: {
         Message r;
@@ -209,6 +222,18 @@ void Host::handle(ClientId from, Message&& m) {
         break;
     }
     case Kind::FsRead: onRead(from, m); break;
+    case Kind::LspStart: onLspStart(from, m); break;
+    case Kind::LspInput: {
+        auto it = servers_.find(m.term);
+        if (it != servers_.end() && it->second.owner == from && !it->second.stopping && it->second.proc)
+            it->second.proc->write(m.bytes);
+        break;
+    }
+    case Kind::LspStop: {
+        auto it = servers_.find(m.term);
+        if (it != servers_.end() && it->second.owner == from) stopServer(it->second);
+        break;
+    }
     default: error(from, m.doc, std::string("the host takes no ") + kindName(m.kind)); break;
     }
     switch (m.kind) {
@@ -387,6 +412,8 @@ void Host::onHello(ClientId c, Message& m) {
     // And runs git for an app's window in its folder (FsRead's "git",
     // SessionGit.h): the window over SSH's Source Control.
     w.flag |= kHostRunsGit;
+    // And runs language servers for an app's window (LspStart, SessionLsp.h).
+    w.flag |= kHostRunsServers;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));
@@ -1526,6 +1553,7 @@ void Host::diskChanged(const std::vector<DiskWatch::Change>& changes) {
         any = true;
     }
     if (any) backupsChanged();
+    serversDiskChanged(changes);
 }
 
 void Host::setDisk(DocId id, Doc& d, int disk) {
@@ -2137,6 +2165,23 @@ void Host::output(TermId id, Term& t, std::string&& bytes) {
 }
 
 void Host::pollSet(std::vector<PollFd>* out) const {
+    for (const auto& [id, s] : servers_) {
+        if (!s.proc) continue;
+        const std::uint64_t sid = id;
+        auto add = [&](int fd, int which, bool read, bool write) {
+            if (fd < 0 || (!read && !write)) return;
+            PollFd p;
+            p.fd = fd;
+            p.term = sid;
+            p.server = which;
+            p.read = read;
+            p.write = write;
+            out->push_back(p);
+        };
+        add(s.proc->outFd(), 1, true, false);
+        add(s.proc->inFd(), 2, false, s.proc->wantsWrite());
+        add(s.proc->errFd(), 3, true, false);
+    }
     for (const auto& [id, t] : terms_) {
         if (!t.pty || t.pty->fd() < 0) continue;
         PollFd p;
@@ -2238,6 +2283,10 @@ int Host::tick() {
         if (due != SavePlan::kNever)
             backupWait = std::max(1LL, (long long)std::ceil((due - monoNow()) * 1000.0));
     }
+    // Language servers ending or asked to stop (and, with backups, the
+    // sooner of the two).
+    const int serversWait = serversTick();
+    if (serversWait >= 0) backupWait = backupWait < 0 ? serversWait : std::min<long long>(backupWait, serversWait);
     auto sooner = [backupWait](long long ms) {
         return (int)(backupWait < 0 ? ms : ms < 0 ? backupWait : std::min(ms, backupWait));
     };
@@ -2269,6 +2318,241 @@ int Host::ptyFd(TermId t) const {
 int Host::shellPid(TermId t) const {
     auto it = terms_.find(t);
     return it == terms_.end() || !it->second.pty ? 0 : it->second.pty->pid();
+}
+
+// ---------------------------------------------------------------- language servers
+
+namespace {
+std::vector<std::string> processEnvironment() {
+    std::vector<std::string> out;
+#ifdef __APPLE__
+    char** env = *_NSGetEnviron();
+#else
+    char** env = environ;
+#endif
+    for (char** e = env; e && *e; e++) out.push_back(*e);
+    return out;
+}
+
+std::string homeIn(const std::vector<std::string>& env) {
+    for (const std::string& e : env)
+        if (e.compare(0, 5, "HOME=") == 0 && e.size() > 5) return e.substr(5);
+    struct passwd pw, *found = nullptr;
+    char buf[4096];
+    if (getpwuid_r(getuid(), &pw, buf, sizeof buf, &found) == 0 && found && found->pw_dir) return found->pw_dir;
+    return std::string();
+}
+
+std::int64_t nowNs() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(
+               std::chrono::system_clock::now().time_since_epoch())
+        .count();
+}
+}  // namespace
+
+void Host::lspRefused(ClientId c, std::uint64_t id, const std::string& why, Json json) {
+    Message r;
+    r.kind = Kind::LspExited;
+    r.term = id;
+    r.flag = -1;
+    r.name = why;
+    r.json = json.isNull() ? Json::object() : std::move(json);
+    send(c, std::move(r));
+}
+
+void Host::onLspStart(ClientId c, Message& m) {
+    const std::uint64_t id = m.term;
+    if (!id || servers_.count(id)) return lspRefused(c, id, "failed");
+    std::size_t mine = 0;
+    for (const auto& [sid, s] : servers_)
+        if (s.owner == c && !s.stopping) mine++;
+    if (mine >= kMaxServersPerRenderer) return lspRefused(c, id, "busy");
+    const std::string root = readRoot(m.window);
+    if (root.empty()) {
+        Json j = Json::object();
+        j.set("stderr", Json(std::string("no folder to run it in")));
+        return lspRefused(c, id, "failed", std::move(j));
+    }
+    const ServerRequest req = serverRequestFrom(m.json);
+    const std::vector<std::string> env = ownEnv_.empty() ? processEnvironment() : ownEnv_;
+    const std::string home = homeIn(env);
+    ServerPlan plan = planServer(req, root, home, env, realServerFs(), realProjectFs());
+    if (!plan.error.empty()) {
+        Json j = Json::object();
+        Json tried = Json::array();
+        for (const std::string& t : plan.tried) tried.push(Json(t));
+        j.set("tried", std::move(tried));
+        if (!plan.code.file.empty()) j.set("file", Json(plan.code.file));
+        return lspRefused(c, id, plan.error, std::move(j));
+    }
+    auto proc = std::make_unique<ServerProcess>();
+    std::string err;
+    if (!proc->start(plan.argv, plan.env, root, &err)) {
+        Json j = Json::object();
+        j.set("stderr", Json(err));
+        return lspRefused(c, id, "failed", std::move(j));
+    }
+    if (servers_.empty()) {
+        // What the folder holds now, so the first change there is compared
+        // with it rather than guessed.
+        stamps_.clear();
+        stamps_.setSince(nowNs());
+        stamps_.remember(root, listStamps);
+        for (const auto& [did, d] : docs_)
+            if (!d.path.empty() && d.path[0] == '/' && DiskWatch::under(d.path, root))
+                stamps_.remember(folderOf(d.path), listStamps);
+    }
+    LangServer& s = servers_[id];
+    s.owner = c;
+    s.window = m.window;
+    s.proc = std::move(proc);
+    Message r;
+    r.kind = Kind::LspStarted;
+    r.term = id;
+    r.v = (std::uint64_t)s.proc->pid();
+    r.json = startedJson(plan);
+    send(c, std::move(r));
+}
+
+void Host::stopServer(LangServer& s) {
+    if (s.stopping) return;
+    s.stopping = true;
+    s.stopAt = std::chrono::steady_clock::now();
+    if (s.proc) s.proc->closeInput();
+}
+
+int Host::serverPid(std::uint64_t id) const {
+    auto it = servers_.find(id);
+    return it == servers_.end() || !it->second.proc ? 0 : it->second.proc->pid();
+}
+
+void Host::serverReady(const PollFd& p, bool readable, bool writable) {
+    auto it = servers_.find(p.term);
+    if (it == servers_.end() || !it->second.proc) return;
+    LangServer& s = it->second;
+    switch (p.server) {
+    case 1: {
+        if (!readable) break;
+        std::string bytes;
+        s.proc->readOut(bytes);
+        if (!bytes.empty() && renderers_.count(s.owner)) {
+            Message m;
+            m.kind = Kind::LspOutput;
+            m.term = p.term;
+            m.bytes = std::move(bytes);
+            send(s.owner, std::move(m));
+        }
+        break;
+    }
+    case 2:
+        if (writable) s.proc->flush();
+        break;
+    case 3:
+        if (readable) s.proc->readErr();
+        break;
+    default: break;
+    }
+}
+
+int Host::serversTick() {
+    if (servers_.empty()) return -1;
+    const auto now = std::chrono::steady_clock::now();
+    int wait = -1;
+    std::vector<std::uint64_t> ended;
+    for (auto& [id, s] : servers_) {
+        if (!s.proc) {
+            ended.push_back(id);
+            continue;
+        }
+        int status = -1;
+        // Ended: its output closed, or (a server whose children keep the
+        // pipe open) reaped once asked to stop.
+        if ((s.proc->outEnded() || s.stopping) && s.proc->reap(&status)) {
+            // What it wrote last, then why it went.
+            for (int i = 0; i < 16 && !s.proc->outEnded(); i++) {
+                std::string bytes;
+                const bool more = s.proc->readOut(bytes);
+                if (!bytes.empty() && renderers_.count(s.owner)) {
+                    Message m;
+                    m.kind = Kind::LspOutput;
+                    m.term = id;
+                    m.bytes = std::move(bytes);
+                    send(s.owner, std::move(m));
+                }
+                if (!more || bytes.empty()) break;
+            }
+            s.proc->readErr();
+            if (renderers_.count(s.owner)) {
+                Message m;
+                m.kind = Kind::LspExited;
+                m.term = id;
+                m.flag = status;
+                Json j = Json::object();
+                j.set("stderr", Json(s.proc->errTail()));
+                m.json = std::move(j);
+                send(s.owner, std::move(m));
+            }
+            ended.push_back(id);
+            continue;
+        }
+        if (s.stopping) {
+            const long long ms =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - s.stopAt).count();
+            if (!s.termSent && ms >= kServerGraceMs) {
+                s.termSent = true;
+                s.proc->signal(SIGTERM);
+            }
+            if (!s.killSent && ms >= kServerKillMs) {
+                s.killSent = true;
+                s.proc->signal(SIGKILL);
+            }
+            wait = wait < 0 ? 50 : std::min(wait, 50);
+        } else if (s.proc->outEnded()) {
+            wait = wait < 0 ? 50 : std::min(wait, 50);   // reaped at the next look
+        }
+    }
+    for (std::uint64_t id : ended) servers_.erase(id);
+    if (servers_.empty()) stamps_.clear();
+    return wait;
+}
+
+void Host::serversDiskChanged(const std::vector<DiskWatch::Change>& changes) {
+    bool running = false;
+    for (const auto& [id, s] : servers_)
+        if (!s.stopping) running = true;
+    if (!running || changes.empty()) return;
+    // The folders that count (each root's filter: not .git's insides, not
+    // what the ignore files ignore unless a tree has it open), each once.
+    std::set<std::string> folders;
+    for (const DiskWatch::Root& r : watchRoots()) {
+        DiskWatch::Filter f(r.path, r.open);
+        for (const DiskWatch::Change& c : changes) {
+            std::string rel;
+            if (!DiskWatch::relativeTo(r.path, c.path, &rel)) continue;
+            if (f.seen(rel) == DiskWatch::Seen::No) continue;
+            folders.insert(c.path);
+            if (folders.size() >= 512) break;
+        }
+    }
+    std::vector<Lsp::FileChange> files;
+    for (const std::string& dir : folders) stamps_.look(dir, listStamps, &files);
+    if (files.empty()) return;
+    // To each renderer with a server running, those under its window's folder.
+    std::map<ClientId, std::uint64_t> owners;
+    for (const auto& [id, s] : servers_)
+        if (!s.stopping && renderers_.count(s.owner)) owners[s.owner] = s.window;
+    for (const auto& [c, window] : owners) {
+        const std::string root = readRoot(window);
+        std::vector<Lsp::FileChange> mine;
+        for (const Lsp::FileChange& f : files)
+            if (root.empty() || DiskWatch::under(f.path, root)) mine.push_back(f);
+        if (mine.empty()) continue;
+        Message m;
+        m.kind = Kind::LspFiles;
+        m.window = window;
+        m.json = filesJson(mine);
+        send(c, std::move(m));
+    }
 }
 
 // ---------------------------------------------------------------- SessionHost
@@ -2566,6 +2850,11 @@ void SessionHost::loop() {
         for (size_t i = 0; i < fds.size(); i++) {
             const short r = polls[i + firstPty].revents;
             if (!r) continue;
+            if (fds[i].server) {
+                host_.serverReady(fds[i], (r & (POLLIN | POLLHUP | POLLERR)) != 0,
+                                  (r & (POLLOUT | POLLERR | POLLHUP)) != 0);
+                continue;
+            }
             if (r & POLLOUT) host_.writable(fds[i].term);
             if (r & (POLLIN | POLLHUP | POLLERR)) host_.readable(fds[i].term);
         }

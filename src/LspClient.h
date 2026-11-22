@@ -446,6 +446,12 @@ struct ServerStatus {
     // that began (Progress::begun).
     std::string progress = std::string();
     uint64_t progressBegun = 0;
+    // A window over SSH: the machine its host runs the server on ("" for
+    // this one), so a missing server says where to install it; and that
+    // the connection went, so a restarting one waits for it rather than
+    // having crashed.
+    std::string host = std::string();
+    bool waitsForHost = false;
 };
 enum class StatusDot { None, Gray, Green, Yellow, Red };
 struct StatusLine {
@@ -1092,6 +1098,8 @@ public:
 
     // Sends `initialize`. Notifications and requests made before the server
     // answers are queued and go out, in order, right after `initialized`.
+    // A processId of 0 or less is sent as null: a server on another machine
+    // (a window over SSH) has no parent process here to watch.
     void initialize(const std::string& rootPath, int processId,
                     const std::string& clientName = "Mutible");
 

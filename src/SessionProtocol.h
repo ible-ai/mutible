@@ -259,6 +259,20 @@ enum class Kind {
                  // after the renderer's edits, in order. A guest may send it
     DocReloadDone,  // host → renderer: doc, req, outcome (Done or Refused), v, json
                     // {path, ok, reason, why}
+    // A window's language servers (stage 9, SessionLsp.h), only to a host
+    // whose Welcome has flag 512 and only from an app's window. `term` is
+    // the server's id, made as a terminal's (Client::newId).
+    LspStart,    // renderer → host: term, window, json (ServerRequest): the commands to
+                 // try, found on the host, the first there started in the folder
+    LspInput,    // renderer → host: term, bytes for its standard input
+    LspStop,     // renderer → host: term: its input closed, then signals if it stays
+    LspStarted,  // host → renderer: term, v (its pid), json (startedJson)
+    LspOutput,   // host → renderer: term, bytes from its standard output
+    LspExited,   // host → renderer: term, flag (its wait status, -1 unknown), name (why
+                 // it never started: "missing", "waits", "failed", "busy"), json
+                 // {"stderr", "tried", "file"}
+    LspFiles,    // host → renderer: window, json {"changes": [[path, type], ...]}: files
+                 // changed on the host's disk, for didChangeWatchedFiles
 };
 
 const char* kindName(Kind k);

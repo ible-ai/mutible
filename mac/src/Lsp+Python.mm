@@ -16,15 +16,17 @@ NSNotificationName const MCPythonEnvironmentConsentDidChangeNotification =
     @"MCPythonEnvironmentConsentDidChange";
 
 // Also Format Document's answer for a formatter in the folder (Lsp.h).
+static NSString *FolderKey(NSString *root);
+
 NSString *MCFolderToolsConsent(NSString *root) {
     NSDictionary *all = [MCAppDefaults() dictionaryForKey:kEnvConsentDefaultsKey];
-    id v = all[RealPath(root) ?: @""];
+    id v = all[FolderKey(root)];
     return [v isKindOfClass:[NSString class]] ? v : nil;
 }
 
 // Store the folder's answer (nil forgets it), and tell every window.
 static void StoreFolderToolsConsent(NSString *root, NSString *answer) {
-    NSString *key = RealPath(root) ?: @"";
+    NSString *key = FolderKey(root);
     NSUserDefaults *d = MCAppDefaults();
     NSMutableDictionary *all = [[d dictionaryForKey:kEnvConsentDefaultsKey] mutableCopy]
                                    ?: [NSMutableDictionary dictionary];
@@ -34,6 +36,14 @@ static void StoreFolderToolsConsent(NSString *root, NSString *answer) {
     // Every window on this folder follows, its formatters and servers alike.
     [[NSNotificationCenter defaultCenter]
         postNotificationName:MCPythonEnvironmentConsentDidChangeNotification object:key];
+}
+
+// A folder's key: its resolved path, or as it is for a window over SSH's
+// (its host's ssh:// machine and folder, LspSession consentRoot), which no
+// path of this Mac's resolves to.
+static NSString *FolderKey(NSString *root) {
+    if ([root hasPrefix:@"ssh://"]) return root;
+    return RealPath(root) ?: @"";
 }
 
 void MCSetFolderToolsConsent(NSString *root, BOOL allow) {
@@ -48,7 +58,7 @@ void MCForgetFolderToolsConsent(NSString *root) {
 @implementation LspSession (Python)
 
 // ---- the Python interpreter
-- (NSString *)rootKey { return RealPath(_root) ?: @""; }
+- (NSString *)rootKey { return FolderKey([self consentRoot]); }
 
 - (NSString *)chosenPythonInterpreter {
     NSDictionary *all = [MCAppDefaults() dictionaryForKey:kInterpretersDefaultsKey];
@@ -104,6 +114,10 @@ static BOOL IsRunnable(NSString *path) {
 }
 
 - (NSString *)serverPythonInterpreterWithSource:(NSString **)source {
+    if ([self isRemote]) {   // nothing of this Mac's: the server finds its own there
+        if (source) *source = @"the server's own, on the host";
+        return nil;
+    }
     return [self pythonInterpreterWithSource:source folderChoice:YES
                                      project:[self folderEnvironmentAllowed]];
 }
@@ -170,7 +184,7 @@ static BOOL IsRunnable(NSString *path) {
 // ---- the folder's own Python environment
 // "allow", "deny", or nil when the user has not been asked for this folder.
 - (NSString *)folderEnvironmentConsent {
-    return MCFolderToolsConsent(_root);
+    return MCFolderToolsConsent([self consentRoot]);
 }
 
 - (BOOL)folderEnvironmentAllowed {
@@ -178,6 +192,8 @@ static BOOL IsRunnable(NSString *path) {
 }
 
 - (NSString *)folderEnvironmentAwaitingConsent {
+    // A window over SSH: its interpreter is the server's own, on the host.
+    if ([self isRemote]) return nil;
     const Settings &st = [AppSettings shared].settings;
     if (![_langKey isEqualToString:@"python"] || !_path || !st.lspEnabled()) return nil;
     if (st.lspOff("python") && st.lspOff(Lsp::alsoKey("python"))) return nil;
@@ -217,7 +233,7 @@ static BOOL IsRunnable(NSString *path) {
 }
 
 - (void)setFolderEnvironmentAllowed:(BOOL)allow {
-    MCSetFolderToolsConsent(_root, allow);
+    MCSetFolderToolsConsent([self consentRoot], allow);
 }
 
 // The answer changes which interpreter the Python servers get and where

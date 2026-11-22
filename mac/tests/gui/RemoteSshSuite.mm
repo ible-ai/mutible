@@ -99,6 +99,15 @@
 //     listed by the host's notice; a new file's discard refused; b.txt's
 //     Discard keeping its changed copy as a git object that git cat-file
 //     shows there; Fetch refused with nothing sent.
+//   - Language servers over SSH (stage 9, Welcome flag 512): a window on a
+//     folder of its own there, its lsp.fakelang the scripted server
+//     (build/fakelsp, .fk files), which its host starts there (its parent
+//     is not this app): the URIs it was sent are the remote's paths, with
+//     no parent process; main.fk gets its diagnostics, completion through
+//     the host takes "helper", Go to Definition opens util.fk through the
+//     host at the server's range, a file made there reaches the server's
+//     watchers by the host's disk notice (no FSEvents stream here), and the
+//     server ends when the window closes.
 //   - The connection drops (the stand-in's process group killed: the relay
 //     only), with the stand-in refusing to connect for a while: the window
 //     says it is reconnecting (its title, no Reconnect button), the text
@@ -122,6 +131,7 @@
 #import "FileTree.h"
 #import "GitGutter.h"
 #import "GitPanel.h"
+#import "LspRemote.h"
 #import "PalettePanel.h"
 #import "RemoteConnect.h"
 #import "RemoteFileCache.h"
@@ -141,6 +151,7 @@
 #include <signal.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h>
 #include <unistd.h>
 
 #include <climits>
@@ -189,6 +200,9 @@ NSString *gGitFolder;            // a repository there, with a window of its own
 EditorController *gGitC;
 NSUInteger gGitRunsBefore, gGitNoticesBefore;
 NSString *gKeptObject;           // the object Discard kept b.txt's changed copy as
+NSString *gLspFolder;            // a folder there whose window's server its host runs
+EditorController *gLspC;
+pid_t gLspServer;                // that server's pid (the stand-in's machine's)
 
 NSString *RealPath(NSString *path) {
     char buf[PATH_MAX];
@@ -1734,11 +1748,144 @@ MC_GUI_SUITE(remote_ssh) {
         if (!gGit) return;
         GCHECK(NewAlerts().count == 1);
     });
+    // ---- language servers over SSH (stage 9): a window on a folder of its
+    // own there, whose server (lsp.fakelang, the scripted server
+    // build/fakelsp, for .fk files) its host starts there (Welcome flag
+    // 512). The stand-in's folder is this Mac's, so what proves the host ran
+    // it is its parent (the lasting host, not this app), the URIs it was
+    // sent (the remote's paths, no parent process of this Mac's), and files
+    // opened through the host (Client::waits).
+    MCGuiStep(@"language servers over SSH: a folder there, and a scripted server", ^{
+        [NSFileManager.defaultManager removeItemAtPath:gShellFile error:nil];   // zsh again
+        NSString *made = [MCGuiScratch() stringByAppendingPathComponent:@"remote-lsp"];
+        [NSFileManager.defaultManager createDirectoryAtPath:made withIntermediateDirectories:YES attributes:nil error:nil];
+        gLspFolder = RealPath(made);
+        MCGuiWriteFile([gLspFolder stringByAppendingPathComponent:@"main.fk"],
+                       @"use util\nfn main() {\n    return hel;\n}\n");
+        MCGuiWriteFile([gLspFolder stringByAppendingPathComponent:@"util.fk"], @"fn helper() {}\n");
+        NSString *utilUri = [@"file://" stringByAppendingString:[gLspFolder stringByAppendingPathComponent:@"util.fk"]];
+        NSDictionary *range = @{@"start": @{@"line": @2, @"character": @11}, @"end": @{@"line": @2, @"character": @14}};
+        NSDictionary *script = @{@"name": @"fakelsp", @"rules": @[
+            // Its watchers, registered once the handshake is done.
+            @{@"method": @"initialized", @"request": @[@{@"method": @"client/registerCapability", @"params": @{
+                @"registrations": @[@{@"id": @"w1", @"method": @"workspace/didChangeWatchedFiles",
+                                      @"registerOptions": @{@"watchers": @[@{@"globPattern": @"**/*.fk"}]}}]}}]},
+            @{@"method": @"textDocument/didOpen", @"when": @{@"uriEndsWith": @"main.fk"},
+              @"notify": @[@{@"method": @"textDocument/publishDiagnostics", @"params": @{
+                  @"uri": @"${uri}", @"version": @"${version}",
+                  @"diagnostics": @[@{@"range": range, @"severity": @1, @"source": @"fake",
+                                      @"message": @"hel is not defined"}]}}]},
+            @{@"method": @"textDocument/completion", @"result": @{@"isIncomplete": @NO, @"items": @[
+                @{@"label": @"helper", @"kind": @3}, @{@"label": @"other", @"kind": @3}]}},
+            @{@"method": @"textDocument/definition", @"result": @[@{@"uri": utilUri, @"range": @{
+                @"start": @{@"line": @0, @"character": @3}, @"end": @{@"line": @0, @"character": @9}}}]}]};
+        NSString *cmd = MCGuiFakeLsp(@"remote", script, nil, nil);
+        MCGuiSetSettings([NSString stringWithFormat:@"lsp.enabled = true\nlsp.fakelang = %@\n"
+                                                    @"lsp.fakelang.extensions = fk\n", cmd]);
+        NSURL *url = [NSURL URLWithString:[NSString stringWithFormat:@"ssh://standin%@/main.fk", gLspFolder]];
+        [(id<NSApplicationDelegate>)NSApp.delegate application:NSApp openURLs:@[ url ]];
+    });
+    MCGuiWait(@"connected", 20, ^BOOL { return MCRemoteConnect.pending.count == 0; });
+    MCGuiStep(@"its window's servers are its host's (flag 512)", ^{
+        gLspC = RemoteWindowOn(gLspFolder);
+        GCHECK(gLspC != nil);
+        if (!gLspC) return;
+        GCHECK([gLspC sessionRemoteLink].link->client().hostRunsServers());
+        GCHECK(gLspC.lsp.remoteHost != nil);
+        GCHECK([gLspC.currentPath isEqualToString:[gLspFolder stringByAppendingPathComponent:@"main.fk"]]);
+    });
+    MCGuiWait(@"the host's server has main.fk", 20, ^BOOL {
+        return !gLspC || MCGuiFakeLspReceived(@"remote", @"textDocument/didOpen").count > 0;
+    });
+    MCGuiStep(@"it was sent the remote's paths, and no parent process; the host is its parent", ^{
+        if (!gLspC) return;
+        GCHECK(gLspC.lsp.remoteHost.started >= 1);
+        NSDictionary *init = MCGuiFakeLspReceived(@"remote", @"initialize").firstObject;
+        GCHECK_EQ_STR(init[@"params"][@"rootUri"], [@"file://" stringByAppendingString:gLspFolder]);
+        GCHECK(init[@"params"][@"processId"] == NSNull.null);
+        NSDictionary *open = MCGuiFakeLspReceived(@"remote", @"textDocument/didOpen").firstObject;
+        GCHECK_EQ_STR(open[@"params"][@"textDocument"][@"uri"],
+                      [@"file://" stringByAppendingString:[gLspFolder stringByAppendingPathComponent:@"main.fk"]]);
+        GCHECK_EQ_STR(open[@"params"][@"textDocument"][@"languageId"], @"fakelang");
+        for (MCLspServerInfo *info in [gLspC.lsp serverInfos])
+            if ([info.key isEqualToString:@"fakelang"]) gLspServer = info.pid;
+        MCGuiNote(@"the server's pid there: %d", (int)gLspServer);
+        GCHECK(gLspServer > 0 && !Gone(gLspServer));
+        struct kinfo_proc kp;
+        size_t len = sizeof kp;
+        int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, (int)gLspServer};
+        const pid_t parent = gLspServer > 0 && sysctl(mib, 4, &kp, &len, NULL, 0) == 0 && len == sizeof kp
+                                 ? kp.kp_eproc.e_ppid : 0;
+        GCHECK(parent > 0 && parent != getpid());
+    });
+    MCGuiWait(@"its diagnostics on main.fk", 20, ^BOOL {
+        if (!gLspC) return YES;
+        CodeTextView *tv = [gLspC valueForKey:@"textView"];
+        return tv.diagnostics.count == 1 && [tv.diagnostics.firstObject.message containsString:@"hel is not defined"];
+    });
+    MCGuiStep(@"completion after hel", ^{
+        if (!gLspC) return;
+        CodeTextView *tv = [gLspC valueForKey:@"textView"];
+        [gLspC.window makeFirstResponder:tv];
+        tv.selectedRange = NSMakeRange(NSMaxRange([tv.string rangeOfString:@"hel"]), 0);
+        [gLspC.lsp triggerCompletion];
+    });
+    MCGuiWait(@"the server's list, through the host", 15, ^BOOL {
+        return !gLspC || (gLspC.lsp.completionVisible && [gLspC.lsp.completionLabels containsObject:@"helper"]);
+    });
+    MCGuiStep(@"Return takes helper", ^{
+        if (!gLspC) return;
+        GCHECK([gLspC.lsp handleCommand:@selector(insertNewline:)]);
+        CodeTextView *tv = [gLspC valueForKey:@"textView"];
+        GCHECK([tv.string containsString:@"    return helper;\n"]);
+        [gLspC saveCurrentFile:nil];   // through the host, as every save of the window
+    });
+    MCGuiWait(@"saved there, and the server told after the host wrote it", 15, ^BOOL {
+        if (!gLspC) return YES;
+        NSString *main = [gLspFolder stringByAppendingPathComponent:@"main.fk"];
+        return [Read(main) containsString:@"return helper;"] && !TabFor(gLspC, main).dirty &&
+               MCGuiFakeLspReceived(@"remote", @"textDocument/didSave").count > 0;
+    });
+    MCGuiStep(@"Go to Definition on helper", ^{
+        if (!gLspC) return;
+        gWaitsBefore = HostWaits(gLspC);
+        [gLspC.lsp goToDefinition];
+    });
+    MCGuiWait(@"Go to Definition opens util.fk through the host", 15, ^BOOL {
+        return !gLspC || [gLspC.currentPath isEqualToString:[gLspFolder stringByAppendingPathComponent:@"util.fk"]];
+    });
+    MCGuiStep(@"read through the host, at the server's place", ^{
+        if (!gLspC) return;
+        GCHECK(HostWaits(gLspC) > gWaitsBefore);
+        CodeTextView *tv = [gLspC valueForKey:@"textView"];
+        GCHECK_EQ_STR(tv.string, @"fn helper() {}\n");
+        GCHECK(NSEqualRanges(tv.selectedRange, NSMakeRange(3, 6)));
+        // A file made there: the host's disk notice reaches the server's
+        // watchers (workspace/didChangeWatchedFiles), not FSEvents here.
+        MCGuiWriteFile([gLspFolder stringByAppendingPathComponent:@"fresh.fk"], @"fn fresh() {}\n");
+    });
+    MCGuiWait(@"the server hears of fresh.fk from the host's watching", 20, ^BOOL {
+        if (!gLspC) return YES;
+        NSString *uri = [@"file://" stringByAppendingString:[gLspFolder stringByAppendingPathComponent:@"fresh.fk"]];
+        for (NSDictionary *m in MCGuiFakeLspReceived(@"remote", @"workspace/didChangeWatchedFiles"))
+            for (NSDictionary *c in m[@"params"][@"changes"])
+                if ([c[@"uri"] isEqual:uri] && [c[@"type"] intValue] == 1) return gLspC.lsp.remoteHost.fileBatches > 0;
+        return NO;
+    });
+    MCGuiStep(@"its window closes", ^{
+        if (!gLspC) return;
+        GCHECK(gLspC.lsp.watchedFolders.count == 0);   // no FSEvents stream of this Mac's for it
+        [gLspC.window performClose:nil];
+        gLspC = nil;
+    });
+    MCGuiWait(@"its server ended with it, there", 15, ^BOOL { return gLspServer <= 0 || Gone(gLspServer); });
+    MCGuiStep(@"language servers off again", ^{ MCGuiSetSettings(@"lsp.enabled = false\n"); });
     MCGuiStep(@"nothing left", ^{
         // The suite's own, by their recorded pids.
         if (gHostB > 0 && !Gone(gHostB)) kill(-gHostB, SIGKILL);
         if (gLasting > 0 && !Gone(gLasting)) kill(gLasting, SIGKILL);
         if (gBashHost > 0 && !Gone(gBashHost)) kill(gBashHost, SIGKILL);
+        if (gLspServer > 0 && !Gone(gLspServer)) kill(gLspServer, SIGKILL);
         [NSFileManager.defaultManager removeItemAtPath:gShellFile error:nil];
         [NSFileManager.defaultManager removeItemAtPath:gBlock error:nil];
         MCSetEnv("MUTIBLE_SSH", nullptr);

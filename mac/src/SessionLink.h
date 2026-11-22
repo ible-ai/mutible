@@ -215,6 +215,15 @@ public:
     // that reads the host again defers itself). The number takes it off.
     int addDiskListener(std::function<void(const Json &changed)> f);
     void removeDiskListener(int token);
+    // Files the remote host saw change, for its language servers'
+    // didChangeWatchedFiles (LspFiles, SessionLsp.h: sent while a server
+    // of this link's runs there), with the window its servers named; told
+    // as the disk's notices are.
+    int addFilesListener(std::function<void(std::uint64_t window, const Json &files)> f);
+    void removeFilesListener(int token);
+    // Whether the host runs language servers for a window (Welcome flag
+    // 512, SessionLsp.h).
+    bool runsServers() const { return client_ && !lost() && client_->hostRunsServers(); }
     // A heavier read on the host's workers (SessionSearch.h: "files",
     // "search"): `answers` gets each batch of answers as they are
     // dispatched, `done` once the last came (and never again). 0, calling
@@ -323,6 +332,7 @@ private:
     bool detached_ = false, lostTold_ = false, askedFileNew_ = false;
     std::map<int, std::function<void()>> lostListeners_;
     std::map<int, std::function<void(const Json &)>> diskListeners_;
+    std::map<int, std::function<void(std::uint64_t, const Json &)>> filesListeners_;
     std::map<std::uint64_t, std::function<void(std::vector<Json> &&, bool)>> streams_;
     int nextListener_ = 0;
     void pumpStreams();

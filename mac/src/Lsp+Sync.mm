@@ -318,6 +318,14 @@ static double MCThreadCpuMs() {
 
 - (void)updateFileWatcher {
     if (_stoppingAll) return;
+    // A window over SSH: its files are on the other machine, whose host says
+    // what changed there (LspFiles: remoteFilesChanged:), never FSEvents
+    // on this Mac's disk at those paths.
+    if ([self isRemote]) {
+        [_watcher stop];
+        _watcher = nil;
+        return;
+    }
     NSArray<NSString *> *want = [self wantedWatchFolders];
     if (!_watcher || ![want isEqualToArray:_watcher.paths]) {
         [_watcher stop];
@@ -464,6 +472,10 @@ static double MCThreadCpuMs() {
 // the client keeps from the host's edits, settled so it holds every edit
 // sent. Watched under this session, let go when the document leaves.
 - (const Model::Text *)hostText {
+    // A window over SSH: the storage is the text its servers follow (its
+    // own edits, the one renderer's); the host's copy would cost a round
+    // trip on the network for every flush.
+    if ([self isRemote]) return nullptr;
     MCSessionDoc *doc = _tv.sessionDoc;
     if (doc != _hostTextDoc) [self releaseHostText];
     if (!doc) return nullptr;

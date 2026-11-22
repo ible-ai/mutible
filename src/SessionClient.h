@@ -415,6 +415,38 @@ public:
     // Whether this renderer shows the terminal (opened or attached here).
     bool showsTerminal(TermId t) const { return terms_.count(t) > 0; }
 
+    // ---- language servers on the host (stage 9, SessionLsp.h): a window
+    // over SSH's. Its listener hears it start, its output as it comes, and
+    // its end (or why it never started); once the host is lost, every
+    // server's listener hears "lost" at the next dispatch.
+    class ServerListener {
+    public:
+        virtual ~ServerListener() = default;
+        virtual void serverStarted(std::uint64_t /*id*/, int /*pid*/, const Json& /*started*/) {}
+        virtual void serverOutput(std::uint64_t id, const std::string& bytes) = 0;
+        // Its wait status (-1 unknown), why it never started ("missing",
+        // "waits", "failed", "busy", "lost"; "" when it ran), and the
+        // host's json (its stderr's end, the programs looked for).
+        virtual void serverExited(std::uint64_t /*id*/, int /*status*/, const std::string& /*why*/,
+                                  const Json& /*info*/) {}
+    };
+    // Whether the host runs language servers for an app's window (its
+    // Welcome's flag 512).
+    bool hostRunsServers() const { return (hostFlags_ & 512) != 0; }
+    // Starts one (`request` SessionLsp.h's serverRequestJson) as `id`, a
+    // newId(). False, sending nothing, when the host does not or is lost.
+    // Its input goes behind this renderer's edits and saves (a didSave
+    // after the host wrote the file).
+    bool startServer(std::uint64_t id, std::uint64_t window, Json request, ServerListener* l);
+    void serverInput(std::uint64_t id, std::string bytes);
+    // Its input closed on the host, then signals; the listener hears its end.
+    void stopServer(std::uint64_t id);
+    // Forgets it: the listener hears nothing more (it is stopped first).
+    void forgetServer(std::uint64_t id);
+    bool hasServer(std::uint64_t id) const { return servers_.count(id) > 0; }
+    // Files the host saw change (LspFiles's json, SessionLsp.h's filesFrom).
+    void hearFiles(std::function<void(std::uint64_t window, const Json& files)> f) { filesListener_ = std::move(f); }
+
     // ---- the workspace (SessionFiles.h): reads in the session's folder,
     // or in `window`'s when the host serves no one folder. Sent at once,
     // never behind an edit in flight.
@@ -538,6 +570,10 @@ private:
     std::uint64_t waits_ = 0;   // waitFor's calls (waits())
     std::map<std::uint64_t, Message> replies_;
     std::map<TermId, TermListener*> terms_;
+    std::map<std::uint64_t, ServerListener*> servers_;
+    std::function<void(std::uint64_t, const Json&)> filesListener_;
+    void onServer(Message& m);
+    void tellServersLost();
     void sendNow(Message&& m);
     void onTerminal(Message& m);
     // Requests whose wait timed out: their answers are dropped on arrival.

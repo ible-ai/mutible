@@ -401,6 +401,85 @@ click elsewhere in the window cancels. Checked by `lsp_popups`.
   closes tabs it opened (`closeFile`). Nothing is saved. `_applyingEdit` keeps
   completion, signature help and the rename box out.
 
+## Over SSH (stage 9's second slice, 2026-11-22)
+
+A window over SSH (`mutible ssh://host/path`) runs its servers on the
+other machine: its host starts them there and relays JSON-RPC both ways
+(core `src/SessionLsp.{h,cpp}`, Welcome flag 512; the protocol and the
+host's side are in docs/notes/session-host.md, "Language servers over
+SSH"). The seam is the transport, so everything above it is unchanged:
+
+- **The transport** (`LspRemote.{h,mm}`, `MCLspServer
+  initWithKey:remote:request:name:`): `MCLspRemoteHost` is the window's
+  host as the place its servers run, made by `giveLanguageServersTheHost` (from `startRemoteWorkspace` and once the session is made) on the
+  window's link and its session window's id, given to the session with
+  `useRemoteHost:` before the first file reaches it (and the file on show
+  then sent again), moved by Reconnect (`attachLink:`, then
+  `remoteHostReconnected`). A remote MCLspServer's client writes go out as
+  LspInput (`Client::serverInput`, queued behind the window's edits and
+  saves, so a didSave follows the host's write), LspOutput goes through
+  the same `Lsp::Reader` on the read queue as a pipe's bytes, closeInput
+  is LspStop (the host closes its input, SIGTERM after 2 s, SIGKILL after
+  3), and its `pid` is the other machine's: shown in the popover, never
+  signalled, and the server is not in `gServers`
+  (`MCLspTerminateAllServers`). The window closing lets the remote host go
+  (`forgetAll`: LspStop for each), the host also stops them on
+  WindowClose and when the connection goes.
+- **Starting** (`Lsp+Remote.mm`, `startRemoteEntry:` from `startEntry:`):
+  the settings' commands (or the defaults) are sent unresolved as a
+  `ServerRequest`; the host tries them in order on its PATH and the usual
+  folders (`serverSearchDirs`: ~/.local/bin, ~/.cargo/bin, ~/go/bin, npm's,
+  nvm's newest first, /usr/local/bin, ...), checks the folder's own code on
+  its disk with the window's answer (`allowed`), and answers LspStarted
+  (the command found, the verdict) or LspExited with why ("missing" with
+  the programs looked for, "waits" with the file, "failed", "busy"). The
+  client is initialized only then (`remoteServer:started:`), with the
+  folder as the host names it and processId null (`Client::initialize`
+  sends null for 0: a Mac pid names nothing there, and servers that watch
+  their parent would end). The callbacks are `wireServer:`, shared with a
+  local start.
+- **What is not looked for on this Mac**: no `MCResolveCommand`, no Python
+  interpreter (the server's own there; `serverPythonInterpreterWithSource:`
+  is nil, the environment question never asks), no Ruff rule (the second
+  server only when lsp.<lang>.also names it), optional servers only when
+  the settings name them, no clangd compile-flags note, no FSEvents stream
+  (`updateFileWatcher` makes none; the host's LspFiles go to
+  `filesChangedOnDisk:` through `remoteFilesChanged:`), no host copy of the
+  text (`hostText` is nil: the storage is what the servers follow, and the
+  copy cost a network round trip per flush), and the edit applier's files
+  no tab has are read through the host (`diskText`, EditorController's
+  `languageServerDiskText:`).
+- **What the window says**: a missing server is NotInstalled with
+  `Shared::serverMissingText` (the host and what was looked for) on its
+  card and once in the status bar; the status line names the host
+  (`ServerStatus::host`: "Install a C++ language server on thinkpad") and
+  `missingServer` is nil, so no install bar. It is asked again only after
+  30 s unless Start or Restart makes it idle (`_remoteMissing`: a tab
+  switch attaches again). A host too old is Failed with
+  `serversTooOldText`. The drop ends every server there as "lost": no crash
+  counted, `waitsForHost` (the status line says it waits for the
+  connection), restarted by `remoteHostReconnected`, which opens the
+  documents again (servers are not re-attached across a drop: the client's
+  copies and versions would have to survive messages lost in it).
+- **Consent per host** (server_consent): `consentRoot` is the link's
+  key (ssh://machine and folder) for a remote window, and
+  `MCFolderToolsConsent` keeps such a key as it is (`FolderKey`), so the
+  answer never applies to a folder of this Mac's with the same path.
+- **Paths**: the documents carry the remote paths, so URIs need no
+  mapping. Go to Definition into a file of the folder opens it through the
+  host (`revealPath:` in a remote window reads there); a target outside the
+  folder says so (the host reads only in its folder).
+- **For GTK** (not done): `linux/src/Lsp.cpp` spawns servers itself. A GTK
+  window over SSH needs the same seam: a transport that calls
+  `Client::startServer`, `serverInput` and `stopServer` on its link's
+  client instead of spawning, feeds `serverOutput` to its reader, starts
+  the handshake on `serverStarted` with processId 0, maps `serverExited`'s
+  why as `remoteServerEnded:` does, keys its consent by the link's key, and
+  passes `hearFiles` to its watchers instead of inotify. The texts and the
+  plan are shared (SessionLsp.h).
+- **Checks**: `hostlsp:*` in `make test` (session_lsp_tests.inc); GUI:
+  remote_ssh's language server block (RemoteSshSuite.mm's header).
+
 ## Traps
 
 Each trap's first sentence, in the order it appears above; the whole
@@ -414,3 +493,7 @@ text is in place in its section.
 - LSP (read before touching it): Trap: the session's boxes are invalidated a run-loop turn after a storage edit; asking the layout manager for rects inside NSTextStorageDidProcessEditing left it broken, and the next firstRectForCharacterRange threw.
 - LSP (read before touching it): Trap: the list's `close` must `reloadData` after emptying its labels, or layout asks for a vanished row.
 - LSP (read before touching it): Trap: `stringByResolvingSymlinksInPath` turns /private/tmp into /tmp; use realpath for URIs.
+- Over SSH: a pid of this Mac's sent as initialize's processId names nothing on the other machine, and a server that watches its parent ends; a remote server gets null.
+- Over SSH: the session's host copy of the text (`hostText`) settles with a round trip on every flush; a remote window's servers follow the storage instead.
+- Over SSH: the stand-in's folder is this Mac's, so a server started here on that path would pass remote_ssh; it checks the server's parent is not the app, and that the URIs and the definition's file came through the host.
+- Over SSH: `useRemoteSessionLink:` (and so `startRemoteWorkspace`) runs before `showWindow` builds the window's LspSession, so the host is given in `giveLanguageServersTheHost`, called from both; #358's first CI run found the session without it.

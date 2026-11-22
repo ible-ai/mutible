@@ -3,6 +3,7 @@
 #import "LspShared.h"
 #import "Environment.h"
 #import "LspServer.h"
+#import "LspRemote.h"
 #include <atomic>
 #include <memory>
 
@@ -184,6 +185,10 @@ static NSMutableSet<MCLspServer *> *gServers;   // every running server
     // every didChange after that waited in memory for ever.
     std::shared_ptr<std::atomic<size_t>> _queued;
     NSString *_stopReason;     // why mutible ended it, for exitDescription
+    // A server the window's host runs (LspRemote.h): the host, and its id
+    // there.
+    __weak MCLspRemoteHost *_host;
+    uint64_t _remoteId;
 }
 
 // More than this waiting for a server to read, and it is taken as hung.
@@ -236,31 +241,11 @@ void MCLspSetMaxQueuedBytes(size_t bytes) { gMaxQueuedBytes = bytes ? bytes : 64
     }
 
     __weak MCLspServer *weakSelf = self;
-    _readQueue = dispatch_queue_create("mutible.lsp.read", DISPATCH_QUEUE_SERIAL);
-    _reader = std::make_shared<Lsp::Reader>();
-    dispatch_queue_t readQueue = _readQueue;
-    std::shared_ptr<Lsp::Reader> reader = _reader;
-    const BOOL logging = _log != nil;
+    [self makeReader];
     fromServer.fileHandleForReading.readabilityHandler = ^(NSFileHandle *h) {
         NSData *data = h.availableData;
         if (data.length == 0) { h.readabilityHandler = nil; return; }
-        dispatch_async(readQueue, ^{
-            reader->feed((const char *)data.bytes, data.length);
-            auto batch = std::make_shared<std::vector<Lsp::Incoming>>();
-            Lsp::Incoming in;
-            while (reader->next(in)) batch->push_back(std::move(in));
-            // Part of a message: nothing for the main thread yet, unless
-            // the bytes are logged, which happens there, in order.
-            if (batch->empty() && !logging) return;
-            NSData *raw = logging ? data : nil;
-            dispatch_async(dispatch_get_main_queue(), ^{
-                [weakSelf received:*batch raw:raw];
-                // The messages are freed off the main thread too: a large
-                // tree of Json takes a while to free.
-                auto done = std::make_shared<std::vector<Lsp::Incoming>>(std::move(*batch));
-                dispatch_async(readQueue, ^{ (void)done; });
-            });
-        });
+        [weakSelf readBytes:data];
     };
     errors.fileHandleForReading.readabilityHandler = ^(NSFileHandle *h) {
         NSData *data = h.availableData;
@@ -299,8 +284,121 @@ void MCLspSetMaxQueuedBytes(size_t bytes) { gMaxQueuedBytes = bytes ? bytes : 64
     return self;
 }
 
+// The server's output is framed and parsed on a queue of its own (a pipe's,
+// or the host's LspOutput), and only the messages go to the main thread.
+- (void)makeReader {
+    _readQueue = dispatch_queue_create("mutible.lsp.read", DISPATCH_QUEUE_SERIAL);
+    _reader = std::make_shared<Lsp::Reader>();
+}
+
+// Any thread.
+- (void)readBytes:(NSData *)data {
+    __weak MCLspServer *weakSelf = self;
+    dispatch_queue_t readQueue = _readQueue;
+    std::shared_ptr<Lsp::Reader> reader = _reader;
+    const BOOL logging = _log != nil;
+    dispatch_async(readQueue, ^{
+        reader->feed((const char *)data.bytes, data.length);
+        auto batch = std::make_shared<std::vector<Lsp::Incoming>>();
+        Lsp::Incoming in;
+        while (reader->next(in)) batch->push_back(std::move(in));
+        // Part of a message: nothing for the main thread yet, unless
+        // the bytes are logged, which happens there, in order.
+        if (batch->empty() && !logging) return;
+        NSData *raw = logging ? data : nil;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            [weakSelf received:*batch raw:raw];
+            // The messages are freed off the main thread too: a large
+            // tree of Json takes a while to free.
+            auto done = std::make_shared<std::vector<Lsp::Incoming>>(std::move(*batch));
+            dispatch_async(readQueue, ^{ (void)done; });
+        });
+    });
+}
+
+- (instancetype)initWithKey:(NSString *)key remote:(MCLspRemoteHost *)host
+                    request:(const Shared::ServerRequest &)request name:(NSString *)name {
+    if (!(self = [super init])) return nil;
+    _key = [key copy];
+    static NSUInteger serial;
+    _serverId = [NSString stringWithFormat:@"%@#r%lu", key, (unsigned long)++serial];
+    NSMutableArray *words = [NSMutableArray array];
+    if (!request.commands.empty())
+        for (const std::string &w : request.commands.front()) [words addObject:@(w.c_str())];
+    _argv = [words copy];
+    _program = [(NSString *)words.firstObject copy];
+    _name = [name copy] ?: [ServerDisplayName(key, words) copy];
+    _errTail = [NSMutableData data];
+    _queued = std::make_shared<std::atomic<size_t>>(0);
+    _remote = YES;
+    _host = host;
+    NSString *logPath = MCEnvironment()[@"MUTIBLE_LSP_LOG"];
+    if (logPath.length) {
+        int fd = open(logPath.fileSystemRepresentation, O_WRONLY | O_CREAT | O_APPEND, 0644);
+        if (fd >= 0) _log = [[NSFileHandle alloc] initWithFileDescriptor:fd closeOnDealloc:YES];
+    }
+    [self makeReader];
+    __weak MCLspServer *weakSelf = self;
+    _client = std::make_unique<Lsp::Client>([weakSelf](const std::string &bytes) {
+        [weakSelf writeBytes:bytes];
+    });
+    _remoteId = [host startServer:self request:Shared::serverRequestJson(request)];
+    if (!_remoteId) return nil;
+    _running = YES;
+    _started = [NSDate date];
+    return self;
+}
+
+- (void)remoteStartedWithPid:(int)pid info:(const Json &)info {
+    if (!_running || _remoteStarted) return;
+    _remoteStarted = YES;
+    _pid = pid;   // the other machine's: shown, never signalled
+    Shared::ServerStarted started = Shared::serverStartedFrom(info);
+    if (!started.argv.empty()) {
+        NSMutableArray *argv = [NSMutableArray array];
+        for (const std::string &w : started.argv) [argv addObject:@(w.c_str())];
+        _argv = [argv copy];
+        _program = [(NSString *)argv.firstObject copy];
+        _name = [ServerDisplayName(_key, argv) copy];
+    }
+    if (self.onStarted) self.onStarted(self, started);
+}
+
+- (void)remoteWrote:(const std::string &)bytes {
+    if (!_running || bytes.empty()) return;
+    [self readBytes:[NSData dataWithBytes:bytes.data() length:bytes.size()]];
+}
+
+- (void)remoteExited:(int)status why:(const std::string &)why info:(const Json &)info {
+    if (!_running) return;
+    if (!why.empty()) {
+        _refusal = [@(why.c_str()) copy];
+        _refusalInfo = info;
+    }
+    const std::string err = info["stderr"].asString();
+    if (!err.empty()) [self stderrArrived:[NSData dataWithBytes:err.data() length:err.size()]];
+    // What it wrote last is parsed before its end is told, as a pipe's
+    // reader would have: after the read queue's work, then main's.
+    __weak MCLspServer *weakSelf = self;
+    dispatch_async(_readQueue, ^{
+        dispatch_async(dispatch_get_main_queue(), ^{ [weakSelf remoteEnded:status]; });
+    });
+}
+
+- (void)remoteEnded:(int)status {
+    if (!_running) return;
+    _running = NO;
+    NSString *how = [@(Shared::serverExitText(status).c_str()) copy];
+    if ([_refusal isEqualToString:@"lost"]) how = @"the connection to its host was lost";
+    else if (_refusal) how = [NSString stringWithFormat:@"did not start (%@)", _refusal];
+    NSString *last = [self lastErrorLine];
+    if (_stopReason) how = _stopReason;
+    _exitDescription = last ? [NSString stringWithFormat:@"%@: %@", how, last] : how;
+    if (self.onExit) self.onExit(self);
+}
+
 - (Lsp::Client &)client { return *_client; }
-- (BOOL)processRunning { return _task.isRunning; }
+- (BOOL)processRunning { return _remote ? _running : _task.isRunning; }
 
 - (void)logLine:(NSString *)prefix bytes:(const std::string &)bytes {
     if (!_log) return;
@@ -314,6 +412,10 @@ void MCLspSetMaxQueuedBytes(size_t bytes) { gMaxQueuedBytes = bytes ? bytes : 64
 - (void)writeBytes:(const std::string &)bytes {
     if (_inputClosed || _unresponsive) return;
     [self logLine:@"--> " bytes:bytes];
+    if (_remote) {   // to the host, behind the window's edits and saves
+        [_host send:bytes toServer:_remoteId];
+        return;
+    }
     // Only while earlier messages still wait: one big message (a huge
     // file's didChange) to a server that reads is no sign of a hang.
     const size_t waiting = _queued->load();
@@ -364,6 +466,10 @@ void MCLspSetMaxQueuedBytes(size_t bytes) { gMaxQueuedBytes = bytes ? bytes : 64
 - (void)closeInput {
     if (_inputClosed) return;
     _inputClosed = YES;
+    if (_remote) {   // the host closes its input, then signals it if it stays
+        [_host stopServer:_remoteId];
+        return;
+    }
     NSFileHandle *h = _input;
     dispatch_async(_writeQueue, ^{ [h closeFile]; });
 }
@@ -420,6 +526,16 @@ void MCLspSetMaxQueuedBytes(size_t bytes) { gMaxQueuedBytes = bytes ? bytes : 64
     _stopping = YES;
     __weak MCLspServer *weakSelf = self;
     _client->shutdown([weakSelf] { [weakSelf closeInput]; });
+    if (_remote) {
+        // Its host signals it (SessionLsp.h's kServerGraceMs) once its
+        // input is closed; one that never answers shutdown has it closed
+        // after two seconds. A host gone ends it as "lost".
+        MCLspServer *strong = self;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+            if (strong.running) [strong closeInput];
+        });
+        return;
+    }
     // A server that doesn't answer shutdown within two seconds is told to
     // go, then made to.
     pid_t pid = _pid;
@@ -441,7 +557,7 @@ void MCLspSetMaxQueuedBytes(size_t bytes) { gMaxQueuedBytes = bytes ? bytes : 64
     _stopping = YES;
     _client->exitNow();
     [self closeInput];
-    dispatch_sync(_writeQueue, ^{});   // flushed and closed
+    if (_writeQueue) dispatch_sync(_writeQueue, ^{});   // flushed and closed
 }
 @end
 
