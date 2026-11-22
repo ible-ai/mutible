@@ -211,6 +211,7 @@ gui_sources = [
   # The session's host and the editor's client of it (SESSION-DESIGN.md
   # stage 4a): the documents' text and undo live there.
   'src/SessionLink.cpp',
+  'src/ConnectWindow.cpp',
   'src/RemoteWorkspace.cpp',
   'src/SessionBrowser.cpp',
   'src/Groups.cpp',

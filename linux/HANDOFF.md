@@ -9436,3 +9436,30 @@ side's; two are fixed, one left alone on purpose.
 - **Not done.** Drops of files from another program (refused); several
   selected rows (the tree selects one); Go Back places of another window over
   the same host; the Mac still refuses. Real ssh never run.
+
+### 159. The window over SSH, the connecting window (stage 8; November 2026)
+
+- **What it is.** The Mac's #342 on GTK: `mutible ssh://...` shows a small
+  window ("Connecting to host…", "Starting mutible on host…", "Opening
+  <folder> on host…", the core's `ConnectProgress::line`) with Cancel
+  (button, Esc, close), which kills ssh's process group and ends the try
+  with no window, no alert and no `done`. Reconnect by the user and the
+  automatic tries show no window, as on the Mac: the status bar says
+  "Reconnecting to <label>…"; for the user's own press a Stop button beside
+  it, and Esc in the window, call `cancelConnecting` and leave the window
+  disconnected with Reconnect shown ("Stopped connecting to <label>…"). Design and traps:
+  docs/notes/session-host.md, "The GTK window over SSH, the connecting
+  window". No src/ change.
+- **Where.** `ConnectWindow` (new, linux/src), `SessionLink::connectRemote`
+  and `reconnectRemote` now return the connecting link (`connecting()`,
+  `progress()`, `commandPid()`, `onProgress()`, `cancelConnecting()`),
+  `openRemoteAddress`, `reconnectHost` and `stopReconnect` in main.cpp
+  (`App::connectingLink`, `stopButton`). Both build lists name
+  ConnectWindow.cpp.
+- **Checks.** remote_ssh: the stand-in sleeps while a flag file exists;
+  first connect cancelled, the same one let through (stages in order), a
+  Reconnect with no window (status text, Stop), stopped by Stop and by Esc,
+  then let through; the automatic tries show none.
+- **Not done.** The look (never seen on a screen). The Mac has no Stop for
+  a Reconnect; GTK adds it (and Esc). A failure's alert is not a sheet on the
+  connecting window (it closes first). Real ssh never run.

@@ -41,6 +41,17 @@
 //     tab shows the new text unsaved, a tab with changes is left alone and
 //     named, the question and the count in the local words); after
 //     Reconnect a file made on disk appears from the new host;
+//   - the connecting window (the Mac's #342): while ssh connects a small
+//     window says "Connecting to standin…" (the stand-in sleeps while a flag
+//     file exists), then "Starting mutible on standin…" once `host --stdio`
+//     said it started on ssh's standard error, then "Opening <folder> on
+//     standin…", and closes when the window opens; Cancel kills ssh's
+//     process group (its pid is the stand-in's), leaving no window, no
+//     alert and no process; Reconnect by the user shows none (the Mac's
+//     way): the status bar says "Reconnecting to standin:..." with a Stop
+//     button, Stop or Esc ends ssh and leaves the window disconnected with
+//     Reconnect shown, and a third press connects; the tries by themselves
+//     show no window either;
 //   - the window closes, and the host it ran ends with it;
 //   - a stand-in that fails as ssh does for a password, and one whose
 //     remote has no mutible: an alert each, in the core's words, and no
@@ -60,6 +71,7 @@
 #include <string>
 #include <vector>
 
+#include "ConnectWindow.h"
 #include "ControlPaths.h"
 #include "DocumentView.h"
 #include "Editor.h"
@@ -93,6 +105,10 @@ int gHostA = 0, gHostB = 0;
 int gTried = 0;
 double gSent = 0;
 size_t gNoticesBefore = 0;
+std::string gSlow;                       // while this file exists the stand-in waits before it starts the host
+std::shared_ptr<ConnectWindow> gCw;      // the connecting window a step looked at
+unsigned gShownBefore = 0;
+int gCancelledPid = 0;
 
 std::string rp(const std::string& p) {
     char buf[PATH_MAX];
@@ -324,6 +340,8 @@ MC_GUI_SUITE(remote_ssh) {
         EnvLock::envSet("MUTIBLE_HOST_IDLE_MINUTES", "0.15");
         gArgs = scratch + "/ssh-args.txt";
         gPidFile = scratch + "/ssh-pid.txt";
+        gSlow = scratch + "/ssh-slow";
+        unlink(gSlow.c_str());
         gSsh = scratch + "/ssh-stand-in";
         writeScript(gSsh,
                     "#!/bin/sh\n"
@@ -336,6 +354,7 @@ MC_GUI_SUITE(remote_ssh) {
                     "shift\n"
                     "shift\n"
                     "echo $$ > '" + gPidFile + "'\n"
+                    "while [ -e '" + gSlow + "' ]; do sleep 0.1; done\n"
                     "SSH_STANDIN=yes\n"
                     "export SSH_STANDIN\n"
                     "PATH='" + gBin + "':$PATH\n"
@@ -352,10 +371,64 @@ MC_GUI_SUITE(remote_ssh) {
           "ssh://standin/tmp/x", "mutible is not installed on standin");
     fails("a mutible without --stdio", "#!/bin/sh\necho 'mutible: unknown option --stdio' >&2\nexit 2\n",
           "ssh://standin/tmp/x", "is too old for a window over SSH");
-    MCGuiStep("the stand-in back", [] {
+    // ---- the connecting window: a slow connect cancelled, then one let through
+    MCGuiStep("the stand-in back, slow: a first connect, its window", [] {
         EnvLock::envSet("MUTIBLE_SSH", gSsh.c_str());
         gErrors.clear();
+        gWindowsBefore = MCGuiAppWindows().size();
+        gShownBefore = ConnectWindow::shownCount();
+        MCGuiWriteFile(gSlow, "x");
+        unlink(gPidFile.c_str());
         MCGuiCommandLine({"ssh://standin" + gFile}, gFolder, &gErrors);
+    });
+    MCGuiWait("the connecting window is up, and ssh started", 20, [] {
+        return ConnectWindow::pending().size() == 1 && standInPid() > 0;
+    });
+    MCGuiStep("it says it is connecting, no editor window yet; Cancel", [] {
+        GCHECK(ConnectWindow::pending().size() == 1);
+        if (ConnectWindow::pending().empty()) return;
+        gCw = ConnectWindow::pending()[0];
+        GCHECK_EQ_STR(gCw->line(), "Connecting to standin\u2026");
+        GCHECK_EQ_STR(gCw->title(), "standin:" + gFile + " \u2014 mutible");
+        GCHECK(gCw->window() && gtk_window_get_title(GTK_WINDOW(gCw->window())) == gCw->title());
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        gCancelledPid = standInPid();
+        GCHECK(gCw->commandPid() == gCancelledPid && gCancelledPid > 0);
+        GCHECK(!gone(gCancelledPid));
+        gCw->cancel();
+    });
+    MCGuiWait("it closes, and ssh with its sleep is gone", 20, [] {
+        return ConnectWindow::pending().empty() && gone(gCancelledPid) && kill(-gCancelledPid, 0) != 0;
+    });
+    MCGuiStep("no window, no alert, no link, nothing said; the lines it showed", [] {
+        GCHECK(gCw->over());
+        GCHECK(gCw->progress().passed(Shared::ConnectProgress::Stage::Cancelled));
+        GCHECK(!gCw->progress().passed(Shared::ConnectProgress::Stage::Opening));
+        GCHECK_EQ_STR(gCw->linesShown().size() == 2 ? gCw->linesShown()[1] : "", "Stopped connecting to standin.");
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        GCHECK(alertText().empty());
+        GCHECK(gErrors.empty());
+        for (const std::shared_ptr<SessionLink::Link>& l : SessionLink::all()) GCHECK(l->kind() != SessionLink::Link::Kind::Remote);
+        gCw.reset();
+    });
+    // A negative check: a cancelled try must never answer later; time is the condition.
+    MCGuiPause(0.3);
+    MCGuiStep("nothing opened or said after the cancel; the same address again, slow", [] {
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        GCHECK(alertText().empty());
+        GCHECK(gErrors.empty());
+        GCHECK(ConnectWindow::pending().empty());
+        unlink(gPidFile.c_str());
+        MCGuiCommandLine({"ssh://standin" + gFile}, gFolder, &gErrors);
+    });
+    MCGuiWait("the connecting window again", 20, [] { return ConnectWindow::pending().size() == 1 && standInPid() > 0; });
+    MCGuiStep("still connecting; ssh let through", [] {
+        GCHECK(ConnectWindow::pending().size() == 1);
+        if (ConnectWindow::pending().empty()) return;
+        gCw = ConnectWindow::pending()[0];
+        GCHECK_EQ_STR(gCw->line(), "Connecting to standin\u2026");
+        GCHECK(MCGuiAppWindows().size() == gWindowsBefore);
+        unlink(gSlow.c_str());
     });
 
     // ---- the window
@@ -363,8 +436,21 @@ MC_GUI_SUITE(remote_ssh) {
     MCGuiWait("notes.txt read through the host", 20, [] {
         return textOf(tabOf(gFile)) == "first line\n" && remoteWindow().editor->currentPath() == gFile;
     });
-    MCGuiStep("its title, its tab, how ssh was run", [] {
+    MCGuiStep("its title, its tab, how ssh was run; the connecting window said its stages and closed", [] {
         MCGuiSetKeyWindow(nullptr);
+        GCHECK(ConnectWindow::pending().empty());
+        if (gCw) {
+            GCHECK(gCw->over());
+            const std::vector<std::string>& lines = gCw->linesShown();
+            GCHECK(lines.size() == 3);
+            if (lines.size() == 3) {
+                GCHECK_EQ_STR(lines[0], "Connecting to standin\u2026");
+                GCHECK_EQ_STR(lines[1], "Starting mutible on standin\u2026");
+                GCHECK_EQ_STR(lines[2], "Opening " + gFolder + " on standin\u2026");
+            }
+            GCHECK(gCw->progress().passed(Shared::ConnectProgress::Stage::Starting));
+            gCw.reset();
+        }
         const MCGuiAppWindow w = remoteWindow();
         GCHECK(gErrors.empty());
         if (!w.editor) return;
@@ -757,9 +843,11 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(t.find("Each becomes “pin”. Files open in a tab are changed there, unsaved, and can be "
                       "undone there; the others are written to disk. Left alone, since their tabs have unsaved "
                       "changes: fresh.c.") != std::string::npos);
-        GtkWindow* top = MCGuiTopWindow();
-        MCGuiSetKeyWindow(top);
-        MCGuiClick(MCGuiFindButton(GTK_WIDGET(top), "Replace"));
+        MCGuiSetKeyWindow(MCGuiTopWindow());
+    });
+    // The question's buttons are laid out a frame after its text shows.
+    MCGuiClickWhenReady("the question's Replace button", [] {
+        return MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Replace");
     });
     MCGuiWait("replaced on the host", 30, [] {
         SearchPanel* p = remoteWindow().search;
@@ -1094,6 +1182,7 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(!remoteWindow().editor->sessionLink()->lost());
         gDocId = tabOf(gFile)->id();
         MCGuiWriteFile(gBlock, "x");
+        gShownBefore = ConnectWindow::shownCount();
         // The stand-in leads its own process group (the spawn's session): the
         // relay goes with it, but not the lasting host (a session of its own).
         if (gHostA > 0) kill(-gHostA, SIGKILL);
@@ -1133,6 +1222,7 @@ MC_GUI_SUITE(remote_ssh) {
         gHostB = standInPid();
         GCHECK(gHostB > 0 && gHostB != gHostA);
         GCHECK(gone(gHostA));
+        GCHECK(ConnectWindow::shownCount() == gShownBefore);   // the tries by themselves showed no window
         GCHECK(!gone(gLasting));   // the same host
         Document* d = tabOf(gFile);
         GCHECK(d && d->dirty());
@@ -1181,10 +1271,68 @@ MC_GUI_SUITE(remote_ssh) {
                titleOf(w).find("(disconnected)") != std::string::npos &&
                statusText().find("Could not reconnect to standin:") == 0;
     });
-    MCGuiStep("ssh works; Reconnect, by the user", [] {
+    MCGuiStep("ssh works but slowly; Reconnect, by the user", [] {
         MCGuiNote("status: %s", statusText().c_str());
         GCHECK(!gone(gLasting));   // the host kept waiting
+        GCHECK(ConnectWindow::shownCount() == gShownBefore);   // all the tries by themselves: none
         unlink(gBlock.c_str());
+        MCGuiWriteFile(gSlow, "x");
+        unlink(gPidFile.c_str());
+        MCGuiSetKeyWindow(nullptr);
+        MCGuiClick(MCGuiFindButton(remoteWindow().statusBar, "Reconnect"));
+    });
+    MCGuiWait("Reconnect says so in the status bar, with Stop; no connecting window", 20, [] {
+        GtkWidget* stop = MCGuiFindButton(remoteWindow().statusBar, "Stop");
+        return standInPid() > 0 && stop && gtk_widget_get_visible(stop) &&
+               statusText().find("Reconnecting to standin:") == 0;
+    });
+    MCGuiStep("no window was shown for it; ssh is running; Stop", [] {
+        GCHECK(ConnectWindow::shownCount() == gShownBefore);
+        GCHECK(ConnectWindow::pending().empty());
+        GtkWidget* r = MCGuiFindButton(remoteWindow().statusBar, "Reconnect");
+        GCHECK(!r || !gtk_widget_get_visible(r));
+        gCancelledPid = standInPid();
+        GCHECK(gCancelledPid > 0 && !gone(gCancelledPid));
+        MCGuiSetKeyWindow(nullptr);
+        MCGuiClick(MCGuiFindButton(remoteWindow().statusBar, "Stop"));
+    });
+    MCGuiWait("ssh gone, the window still disconnected with Reconnect shown, Stop hidden", 20, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        GtkWidget* b = w.editor ? MCGuiFindButton(w.statusBar, "Reconnect") : nullptr;
+        GtkWidget* stop = w.editor ? MCGuiFindButton(w.statusBar, "Stop") : nullptr;
+        return gone(gCancelledPid) && kill(-gCancelledPid, 0) != 0 && b && gtk_widget_get_visible(b) &&
+               (!stop || !gtk_widget_get_visible(stop)) && statusText().find("Stopped connecting to standin:") == 0;
+    });
+    MCGuiStep("still lost and disconnected, nothing opened or said; Reconnect again", [] {
+        GCHECK(remoteWindow().editor->sessionLink()->lost());
+        GCHECK(titleOf(remoteWindow()).find("(disconnected)") != std::string::npos);
+        GCHECK(alertText().empty());
+        GCHECK(ConnectWindow::shownCount() == gShownBefore);
+        unlink(gPidFile.c_str());
+        MCGuiSetKeyWindow(nullptr);
+        MCGuiClick(MCGuiFindButton(remoteWindow().statusBar, "Reconnect"));
+    });
+    MCGuiWait("trying again, with Stop", 20, [] {
+        GtkWidget* stop = MCGuiFindButton(remoteWindow().statusBar, "Stop");
+        return standInPid() > 0 && stop && gtk_widget_get_visible(stop);
+    });
+    MCGuiStep("Esc in the window", [] {
+        gCancelledPid = standInPid();
+        GCHECK(gCancelledPid > 0 && !gone(gCancelledPid));
+        MCGuiSetKeyWindow(nullptr);
+        MCGuiKey("escape");
+    });
+    MCGuiWait("Esc stopped it too: ssh gone, Reconnect shown", 20, [] {
+        const MCGuiAppWindow w = remoteWindow();
+        GtkWidget* b = w.editor ? MCGuiFindButton(w.statusBar, "Reconnect") : nullptr;
+        return gone(gCancelledPid) && kill(-gCancelledPid, 0) != 0 && b && gtk_widget_get_visible(b) &&
+               statusText().find("Stopped connecting to standin:") == 0;
+    });
+    MCGuiStep("Reconnect a third time, slow no more", [] {
+        GCHECK(remoteWindow().editor->sessionLink()->lost());
+        GCHECK(ConnectWindow::shownCount() == gShownBefore);
+        unlink(gSlow.c_str());
+        unlink(gPidFile.c_str());
         MCGuiSetKeyWindow(nullptr);
         MCGuiClick(MCGuiFindButton(remoteWindow().statusBar, "Reconnect"));
     });
@@ -1194,7 +1342,8 @@ MC_GUI_SUITE(remote_ssh) {
         return w.editor && !w.editor->sessionLink()->lost() && d && d->hostSavesFile() &&
                titleOf(w).find("(disconnected)") == std::string::npos;
     });
-    MCGuiStep("a file made on disk after Reconnect", [] {
+    MCGuiStep("a file made on disk after Reconnect; no connecting window for any of the three", [] {
+        GCHECK(ConnectWindow::shownCount() == gShownBefore);
         gHostB = standInPid();
         GCHECK(gHostB > 0 && !gone(gLasting));
         GCHECK(tabOf(gFile) && tabOf(gFile)->id() == gDocId && !tabOf(gFile)->dirty());

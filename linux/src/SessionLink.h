@@ -120,6 +120,19 @@ public:
     // Which machine and account (Shared::sshMachineKey), the same for every
     // folder there.
     const std::string& machine() const { return machine_; }
+    // While it connects (connectRemote, reconnectRemote): how far it got
+    // (ssh's standard error heard for `--stdio`'s word that it started, the
+    // Welcome), the address as parsed, and the command carrying it (ssh):
+    // its pid, 0 when there is none. `onProgress` is called on the main
+    // loop whenever the stage changes (one listener; the connecting window).
+    bool connecting() const { return connecting_; }
+    const Shared::ConnectProgress& progress() const { return progress_; }
+    const Shared::SshTarget& target() const { return target_; }
+    pid_t commandPid() const { return socket_ ? socket_->pid() : 0; }
+    void onProgress(std::function<void()> f) { progressListener_ = std::move(f); }
+    // Stops connecting: ssh's process group killed, the transport let go of,
+    // the try's `done` never called. Nothing once it has connected.
+    void cancelConnecting();
     // Where an ssh:// address's path (`asked`, "~", "~/x" or "/x", as the
     // target names it) is on this link's host, resolved there (FsRead
     // "locate", SessionFiles.h): inside this folder or not, and when inside
@@ -290,12 +303,12 @@ public:
 
 private:
     friend std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
-    friend void connectRemote(const std::string& address,
-                              std::function<void(std::shared_ptr<Link>, std::string)> done);
-    friend void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
-                                 std::function<void(std::shared_ptr<Link>, std::string)> done);
-    friend void reconnectRemote(const std::shared_ptr<Link>& lost,
-                                std::function<void(std::shared_ptr<Link>, std::string)> done);
+    friend std::shared_ptr<Link> connectRemote(const std::string& address,
+                                               std::function<void(std::shared_ptr<Link>, std::string)> done);
+    friend std::shared_ptr<Link> connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+                                                  std::function<void(std::shared_ptr<Link>, std::string)> done);
+    friend std::shared_ptr<Link> reconnectRemote(const std::shared_ptr<Link>& lost,
+                                                 std::function<void(std::shared_ptr<Link>, std::string)> done);
     Held free(bool all);
     Json tabsJson(std::uint64_t window, const Model::Window& w) const;
     Link() = default;
@@ -311,6 +324,9 @@ private:
     std::string folder_, socketPath_;
     std::string address_, label_, machine_, askedFile_, failure_, resume_;
     Shared::SshTarget target_;
+    bool connecting_ = false, cancelled_ = false;
+    Shared::ConnectProgress progress_;
+    std::function<void()> progressListener_;
     pid_t startedHost_ = 0;
     std::shared_ptr<Wake> wake_;
     // Destroyed in this order (~Link): the transport first, whose thread
@@ -370,10 +386,14 @@ std::shared_ptr<Link> forFolder(const std::string& root, bool headless);
 // key confirmed, mutible missing or too old there, ssh's own last line).
 // The main loop runs meanwhile (the start is a spawn, the wait polls), so
 // nothing waits on a connection. A live link for that machine and path is
-// given again.
-void connectRemote(const std::string& address, std::function<void(std::shared_ptr<Link>, std::string)> done);
+// given again. Returns the link connecting, for its progress and
+// Link::cancelConnecting (a cancelled try never calls `done`); null when
+// ssh could not be run or the address is no ssh:// one, and the live link
+// given again (not connecting() then).
+std::shared_ptr<Link> connectRemote(const std::string& address,
+                                    std::function<void(std::shared_ptr<Link>, std::string)> done);
 
-void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+std::shared_ptr<Link> connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
                       std::function<void(std::shared_ptr<Link>, std::string)> done);
 
 // A window over SSH's connection made again after it dropped (stage 8): the
@@ -381,8 +401,8 @@ void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& l
 // stale connection and the window's documents and terminals can be taken up
 // again from it. `done` as connectRemote's; the lost link stays registered
 // until a try succeeds.
-void reconnectRemote(const std::shared_ptr<Link>& lost,
-                     std::function<void(std::shared_ptr<Link>, std::string)> done);
+std::shared_ptr<Link> reconnectRemote(const std::shared_ptr<Link>& lost,
+                                      std::function<void(std::shared_ptr<Link>, std::string)> done);
 
 // The folder a lasting host's socket is in, as `mutible host --stdio` makes
 // it (tools/mutible-cli.cpp, lastingSocketDir).
