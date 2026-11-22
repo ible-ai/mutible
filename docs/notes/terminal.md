@@ -88,6 +88,28 @@ for full-screen programs. Both can be open at once.
   a real interactive zsh reading a pipe (precmd and preexec run there):
   `zsh -n`, the marks of both modes, the nonce, OSC 7's encoding, and the
   exec hook case by case; skipped without /bin/zsh (CI's Linux jobs).
+- **Over SSH the remote's own script** (2026-11-21, session-host.md's
+  "The remote's own integration"): a window over SSH cannot hand its
+  ZDOTDIR to a shell on another machine, so its terminal asks the remote's
+  host (Welcome flag 128) to set up that machine's installed copy, with
+  the Mac's nonce, through TermSpec's `integration: ["zsh", "bash"]`; the
+  host does it for a login zsh (`src/HostIntegration.h`: its own folder,
+  the same grid stub) or bash 4.4 or later (the Linux port's script) and
+  says which in TermOpened, and only then does the view believe the marks
+  (`hostIntegrated:`, `_integrated`, `_bashShell`). The remote script is
+  the remote install's, not this app's: flag 128 dates both from
+  2026-11-21, so a change to the marks or the private keys needs a new
+  flag (or a version in TermOpened) before a newer Mac relies on it.
+  **A remote bash** has no 133;B and no zsh line editor keys: typing waits
+  for `canTypeNow`'s 0.3 s and raw tty, the push key is the same, the
+  line comes back with `kBashPopKey` at a later prompt (`giveLineBack`),
+  and Cmd+Left, Cmd+Right, Cmd+Delete and Cmd+K send readline's own keys,
+  since ESC [9998~ is the bash script's pop.
+  `watchShell` never runs for a remote shell: its pid is the other
+  machine's, so `exec sh` there is not noticed, and a command the app
+  types (`runCommand:`, Run File) waits for a prompt mark until the
+  integrated shell has the terminal again. The host could say the foreground's name in
+  TermShell if that matters.
 - **Grid mode's shell**: `zsh -l -i`, `ZDOTDIR` at the process's
   `Mutible-zsh-grid-<pid>-<start>`, whose .zshenv hands ZDOTDIR back
   and at the first precmd (after .zshrc, so last in line) installs hooks that

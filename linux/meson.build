@@ -67,6 +67,9 @@ core_sources = [
   # and a headless screen with scrollback fed its bytes, whose marks give
   # the commands and whose replay rebuilds it for a renderer.
   core_dir / 'HostPty.cpp',
+  # A remote renderer's terminal gets this machine's shell integration,
+  # set up by the host from the installed scripts (stage 8).
+  core_dir / 'HostIntegration.cpp',
   core_dir / 'TerminalStream.cpp',
   core_dir / 'TerminalScreen.cpp',
   core_dir / 'MultiCaret.cpp',

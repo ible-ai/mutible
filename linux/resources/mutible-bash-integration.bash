@@ -4,7 +4,10 @@
 # Terminal.cpp starts an interactive, non-login bash as
 #   bash --rcfile <this file's copy>
 # from a folder of the running app's own, so an older app never reads a
-# newer install's script. bash reads /etc/bash.bashrc itself first
+# newer install's script. A session's host starting the remote's login
+# shell for a window over SSH (src/HostIntegration.h) starts it the same
+# way with MUTIBLE_BASH_LOGIN=1, and this file then reads the login
+# shell's files in place of ~/.bashrc. bash reads /etc/bash.bashrc itself first
 # (Debian's and Ubuntu's system file, which --rcfile does not replace);
 # this file then reads ~/.bashrc, which is everything a non-login
 # interactive bash reads, and adds two hooks that only print:
@@ -32,11 +35,28 @@
 # run this file in a real bash.
 
 __mutible_nonce=${MUTIBLE_NONCE-}
-builtin unset MUTIBLE_NONCE
+__mutible_login=${MUTIBLE_BASH_LOGIN-}
+builtin unset MUTIBLE_NONCE MUTIBLE_BASH_LOGIN
 
-if [[ -r ~/.bashrc ]]; then
+if [[ -n $__mutible_login ]]; then
+  # In place of a login shell (a session's host over SSH, which starts the
+  # remote's login shell: src/HostIntegration.h): --rcfile is read only by
+  # a shell that is not one, so this reads what a login bash reads, and
+  # not ~/.bashrc, which a login bash leaves to those files.
+  if [[ -r /etc/profile ]]; then
+    builtin source /etc/profile
+  fi
+  if [[ -r ~/.bash_profile ]]; then
+    builtin source ~/.bash_profile
+  elif [[ -r ~/.bash_login ]]; then
+    builtin source ~/.bash_login
+  elif [[ -r ~/.profile ]]; then
+    builtin source ~/.profile
+  fi
+elif [[ -r ~/.bashrc ]]; then
   builtin source ~/.bashrc
 fi
+builtin unset __mutible_login
 
 if [[ -n $__mutible_nonce ]] &&
    (( BASH_VERSINFO[0] > 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] >= 4) )); then

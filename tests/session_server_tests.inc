@@ -18,7 +18,9 @@
 #include <iterator>
 
 #include "SessionFiles.h"   // kMaxReadBytes
+#include "HostIntegration.h"
 #include "SessionServer.h"
+#include "ShellIntegration.h"
 
 namespace {
 
@@ -167,6 +169,7 @@ struct PipeRenderer : Shared::Client::TermListener {
     void connect(int write, int read, const std::function<void(Shared::Client&)>& before = nullptr) {
         toHost = write;
         fromHost = read;
+        marks.setEventsOnly(true);
         client = std::make_unique<Shared::Client>(Model::Unit::Utf16, "mac");
         client->setKeepsBackups(true);
         client->setSavesThroughHost(true);
@@ -211,10 +214,17 @@ struct PipeRenderer : Shared::Client::TermListener {
         if (fromHost >= 0) ::close(fromHost);
     }
     void termOpened(Shared::TermId, int p) override { pid = p; }
+    void termIntegrated(Shared::TermId, const std::string& shell) override { integrated = shell; }
     void termOutput(Shared::TermId t, const std::string& b, long long, bool, bool) override {
         screen.feed(b);
+        // The marks as the Mac's view reads them: its own stream, with the
+        // nonce it gave (marks set).
+        for (const TermEvent& e : marks.feed(b)) Shared::applyTermEvent(shell, e);
         client->ackTerminal(t, b.size());
     }
+    std::string integrated;       // termIntegrated's (the dispatching thread's)
+    TerminalStream marks;         // setMarkNonce'd by a check that reads marks
+    Shared::TermShell shell;      // what those marks say
     bool wait(const std::function<bool()>& done, int ms = 8000) {
         const double end = nowMs() + ms;
         for (;;) {
@@ -699,6 +709,322 @@ static void testSessionServer() {
         server.reset();   // the host's end: its shells hung up, its output closed
         CHECK(waitUntil([&] { return gone(shell); }, 5000));
         CHECK(waitUntil([&] { return r.client->lost(); }, 5000));
+    }
+
+    GROUP("hostserver:integration-shell");
+    {
+        // A remote renderer's terminal with the host's own integration
+        // (HostIntegration.h): integrateShell lays it over ownShellSpec's
+        // login shell. zsh: ZDOTDIR at the host's folder, the user's handed
+        // back, the renderer's nonce, a stale one gone; still "-zsh".
+        auto count = [](const std::vector<std::string>& env, const std::string& e) {
+            return (int)std::count(env.begin(), env.end(), e);
+        };
+        auto named = [](const std::vector<std::string>& env, const std::string& n) {
+            int k = 0;
+            for (const std::string& e : env) k += e.compare(0, n.size() + 1, n + "=") == 0;
+            return k;
+        };
+        const std::vector<std::string> hostEnv = {"PATH=/usr/bin:/bin", "ZDOTDIR=/u/z", "MUTIBLE_NONCE=stale"};
+        const Shared::PtySpec zBefore =
+            Shared::ownShellSpec("/bin/zsh", hostEnv, {"TERM=xterm-256color"}, "/", 80, 24);
+        Shared::PtySpec z = zBefore;
+        CHECK(Shared::integrateShell(z, "/f", true, true, {"zsh"}, "n1") == "zsh");
+        CHECK(z.program == "/bin/zsh" && z.argv == std::vector<std::string>{"-zsh"});
+        CHECK(count(z.env, "ZDOTDIR=/f") == 1 && named(z.env, "ZDOTDIR") == 1);
+        CHECK(count(z.env, "MUTIBLE_USER_ZDOTDIR=/u/z") == 1);
+        CHECK(count(z.env, "MUTIBLE_NONCE=n1") == 1 && named(z.env, "MUTIBLE_NONCE") == 1);
+        CHECK(count(z.env, "PATH=/usr/bin:/bin") == 1 && count(z.env, "TERM=xterm-256color") == 1);
+        // No ZDOTDIR of the user's: none handed back.
+        Shared::PtySpec z2 = Shared::ownShellSpec("/usr/local/bin/zsh", {"PATH=/bin"}, {}, "/", 80, 24);
+        CHECK(Shared::integrateShell(z2, "/f", true, false, {"zsh", "bash"}, "n2") == "zsh");
+        CHECK(named(z2.env, "MUTIBLE_USER_ZDOTDIR") == 0 && count(z2.env, "ZDOTDIR=/f") == 1);
+        // Not asked for, no script, no nonce, no folder, another shell: the
+        // spec as it was.
+        auto untouched = [&](const Shared::PtySpec& before, const std::string& folder, bool zsh, bool bash,
+                             const std::vector<std::string>& accepted, const std::string& nonce) {
+            Shared::PtySpec p = before;
+            return Shared::integrateShell(p, folder, zsh, bash, accepted, nonce).empty() && p.env == before.env &&
+                   p.argv == before.argv && p.program == before.program;
+        };
+        CHECK(untouched(zBefore, "/f", true, true, {"bash"}, "n"));
+        CHECK(untouched(zBefore, "/f", false, true, {"zsh", "bash"}, "n"));
+        CHECK(untouched(zBefore, "/f", true, true, {"zsh"}, ""));
+        CHECK(untouched(zBefore, "", true, true, {"zsh"}, "n"));
+        CHECK(untouched(zBefore, "/f", true, true, {}, "n"));
+        CHECK(untouched(Shared::ownShellSpec("/bin/sh", hostEnv, {}, "/", 80, 24), "/f", true, true,
+                        {"zsh", "bash", "sh"}, "n"));
+        // bash, a login shell: --rcfile, which a login bash would not read,
+        // so the script reads the login files (MUTIBLE_BASH_LOGIN).
+        const Shared::PtySpec bBefore =
+            Shared::ownShellSpec("/bin/bash", {"PATH=/bin", "MUTIBLE_BASH_LOGIN=x"}, {}, "/", 80, 24);
+        Shared::PtySpec b = bBefore;
+        CHECK(Shared::integrateShell(b, "/f", false, true, {"zsh", "bash"}, "n3") == "bash");
+        CHECK(b.argv == (std::vector<std::string>{"bash", "--rcfile", "/f/mutible-bash-integration.bash"}));
+        CHECK(count(b.env, "MUTIBLE_NONCE=n3") == 1 && count(b.env, "MUTIBLE_BASH_LOGIN=1") == 1 &&
+              named(b.env, "MUTIBLE_BASH_LOGIN") == 1);
+        // The Mac follows zsh's alone: a bash runs as it would have.
+        CHECK(untouched(bBefore, "/f", true, true, {"zsh"}, "n4"));
+        CHECK(untouched(bBefore, "/f", true, false, {"zsh", "bash"}, "n4"));
+    }
+
+    GROUP("hostserver:integration-files");
+    {
+        // Where an installed mutible keeps the scripts (shippedFile): beside
+        // the program, in a bundle's Resources, in share/mutible, through a
+        // link to the program; none, "".
+        const std::string root = Shared::resolveFolder(scratchFolder());
+        auto put = [](const std::string& path) {
+            std::filesystem::create_directories(std::filesystem::path(path).parent_path());
+            std::ofstream(path) << "x\n";
+        };
+        put(root + "/build/prog");
+        put(root + "/build/a.zsh");
+        put(root + "/App/Contents/MacOS/cli");
+        put(root + "/App/Contents/Resources/a.zsh");
+        put(root + "/usr/bin/mutible");
+        put(root + "/usr/share/mutible/a.zsh");
+        CHECK(symlink((root + "/usr/bin/mutible").c_str(), (root + "/link").c_str()) == 0);
+        CHECK(Shared::shippedFile(root + "/build/prog", "a.zsh") == root + "/build/a.zsh");
+        CHECK(Shared::shippedFile(root + "/App/Contents/MacOS/cli", "a.zsh") ==
+              root + "/App/Contents/MacOS/../Resources/a.zsh");
+        CHECK(Shared::shippedFile(root + "/usr/bin/mutible", "a.zsh") == root + "/usr/bin/../share/mutible/a.zsh");
+        CHECK(Shared::shippedFile(root + "/link", "a.zsh") == root + "/usr/bin/../share/mutible/a.zsh");
+        CHECK(Shared::shippedFile(root + "/build/prog", "missing.zsh").empty());
+        CHECK(Shared::shippedFile("", "a.zsh").empty());
+        const std::string self = Shared::ownProgramPath();
+        struct stat st;
+        CHECK(!self.empty() && stat(self.c_str(), &st) == 0 && S_ISREG(st.st_mode));
+
+        // The host's copies: made at the first terminal that wants one, in
+        // a folder of its own (0700) that also clears a gone host's, made
+        // again when the system cleared them, and gone with the host.
+        const std::string base = root + "/base";
+        mkdir(base.c_str(), 0755);
+        const std::string stale = base + "/Mutible-host-999999-1", other = base + "/Mutible-host-x";
+        mkdir(stale.c_str(), 0700);
+        std::ofstream(stale + "/.zshenv") << "old\n";
+        mkdir(other.c_str(), 0700);
+        char cwd[PATH_MAX];
+        const std::string zshScript = std::string(getcwd(cwd, sizeof cwd) ? cwd : ".") + "/resources/" +
+                                      ShellIntegration::kZshScriptName;
+        const std::string scriptText = readFile(zshScript.c_str());
+        std::string folder;
+        if (scriptText.empty()) {
+            std::printf("  (no resources/%s here; the copies' checks skipped)\n", ShellIntegration::kZshScriptName);
+        } else {
+            Shared::HostIntegration hi;
+            hi.setBase(base);
+            hi.setScripts(zshScript, root + "/no-such.bash");
+            CHECK(hi.any() && hi.folder().empty());
+            Shared::PtySpec p = Shared::ownShellSpec("/bin/zsh", {"PATH=/bin"}, {}, "/", 80, 24);
+            CHECK(hi.apply(p, {"zsh", "bash"}, "n5") == "zsh");
+            folder = hi.folder();
+            CHECK(folder.compare(0, base.size() + 14, base + "/Mutible-host-") == 0);
+            CHECK(lstat(folder.c_str(), &st) == 0 && S_ISDIR(st.st_mode) && (st.st_mode & 0777) == 0700);
+            CHECK(readFile((folder + "/" + ShellIntegration::kZshScriptName).c_str()) == scriptText);
+            CHECK(readFile((folder + "/.zshenv").c_str()) == ShellIntegration::zshenvStub(true));
+            CHECK(std::count(p.env.begin(), p.env.end(), "ZDOTDIR=" + folder) == 1);
+            CHECK(!std::filesystem::exists(stale) && std::filesystem::exists(other));
+            // No bash script installed: a bash runs as it would have.
+            Shared::PtySpec pb = Shared::ownShellSpec("/bin/bash", {"PATH=/bin"}, {}, "/", 80, 24);
+            CHECK(hi.apply(pb, {"zsh", "bash"}, "n6").empty() && pb.argv == std::vector<std::string>{"-bash"});
+            // Cleared by the system meanwhile: copied again.
+            unlink((folder + "/.zshenv").c_str());
+            Shared::PtySpec p2 = Shared::ownShellSpec("/bin/zsh", {"PATH=/bin"}, {}, "/", 80, 24);
+            CHECK(hi.apply(p2, {"zsh"}, "n7") == "zsh" && hi.folder() == folder);
+            CHECK(readFile((folder + "/.zshenv").c_str()) == ShellIntegration::zshenvStub(true));
+        }
+        CHECK(folder.empty() || !std::filesystem::exists(folder));
+        // Nothing installed: nothing made, nothing laid over the shell.
+        Shared::HostIntegration none;
+        none.setBase(base);
+        Shared::PtySpec p = Shared::ownShellSpec("/bin/zsh", {"PATH=/bin"}, {}, "/", 80, 24);
+        CHECK(!none.any() && none.apply(p, {"zsh"}, "n").empty() && none.folder().empty());
+    }
+
+    GROUP("hostserver:integration");
+    {
+        // `mutible host --stdio` with its machine's zsh script (Welcome flag
+        // 128): a renderer's TermSpec asking for zsh's integration with its
+        // nonce gets the host's login zsh marked (TermOpened names zsh), the
+        // user's ZDOTDIR and .zshrc read, the nonce out of the environment, a
+        // running command busy and its status seen by the renderer's own
+        // stream; asked for bash's alone, or by a renderer from before (no
+        // integration asked), nothing is set up.
+        char cwd[PATH_MAX];
+        const std::string zshScript = std::string(getcwd(cwd, sizeof cwd) ? cwd : ".") + "/resources/" +
+                                      ShellIntegration::kZshScriptName;
+        if (access("/bin/zsh", X_OK) != 0 || access(zshScript.c_str(), R_OK) != 0) {
+            std::printf("  (no /bin/zsh, or no resources/%s here; skipped)\n", ShellIntegration::kZshScriptName);
+        } else {
+            signal(SIGPIPE, SIG_IGN);
+            const std::string proj = Shared::resolveFolder(scratchFolder());
+            mkdir((proj + "/zdot").c_str(), 0700);
+            std::ofstream(proj + "/zdot/.zshrc") << "PS1='%% '\nexport FROM_ZSHRC=yes\n";
+            int toHost[2], fromHost[2];
+            CHECK(pipe(toHost) == 0 && pipe(fromHost) == 0);
+            auto server = std::make_unique<Shared::HostServer>();
+            Shared::HostOptions o;
+            o.folder = proj;
+            o.shellEnv = {"PATH=/usr/bin:/bin", "HOME=" + proj, "ZDOTDIR=" + proj + "/zdot", "LANG=C",
+                          "SHELL=/bin/zsh"};
+            o.zshIntegration = zshScript;
+            std::string error;
+            CHECK(server->startStdio(o, toHost[0], fromHost[1], &error) == Shared::HostServer::Start::Ok);
+            std::atomic<int> result{-1};
+            std::thread run([&] { result = server->run() ? 1 : 0; });
+            PipeRenderer r;
+            r.connect(toHost[1], fromHost[0]);
+            CHECK(r.client->settle(5000));
+            CHECK(r.client->hostRunsOwnShell() && r.client->hostIntegrates());
+            const std::string nonce = "0123456789abcdef0123456789abcdef";
+            r.marks.setMarkNonce(nonce);
+            Shared::TermSpec spec;
+            spec.hostShell = true;
+            spec.env = {"TERM=xterm-256color"};
+            spec.cwd = proj;
+            spec.nonce = nonce;
+            spec.integration = {"zsh"};
+            r.client->openTerminal(7, spec, &r);
+            CHECK(r.wait([&] { return r.pid.load() > 0; }));
+            CHECK(r.integrated == "zsh");
+            CHECK(r.wait([&] { return r.shell.known && r.shell.atPrompt; }));
+            r.client->terminalInput(7, "echo \"zd=$ZDOTDIR rc=$FROM_ZSHRC n=${MUTIBLE_NONCE-unset}-end\"\n");
+            const std::string want = "zd=" + proj + "/zdot rc=yes n=unset-end";
+            CHECK(r.wait([&] { return r.screen.text().find(want) != std::string::npos; }));
+            if (r.screen.text().find(want) == std::string::npos)
+                std::printf("  screen: %s\n", r.screen.text().c_str());
+            const long long doneBefore = r.shell.done;
+            r.client->terminalInput(7, "sleep 1; false\n");
+            CHECK(r.wait([&] { return r.shell.busy && r.shell.command == "sleep 1; false"; }));
+            CHECK(r.wait([&] { return !r.shell.busy && r.shell.done == doneBefore + 1 && r.shell.atPrompt; }));
+            CHECK(r.shell.status == 1);
+
+            // bash's alone asked for (the shell is zsh), and nothing asked:
+            // no integration, so the renderer believes no mark.
+            Shared::TermSpec bashOnly = spec;
+            bashOnly.integration = {"bash"};
+            r.integrated = "none yet";
+            r.pid = 0;
+            r.client->openTerminal(8, bashOnly, &r);
+            CHECK(r.wait([&] { return r.pid.load() > 0; }));
+            CHECK(r.integrated == "none yet");
+            Shared::TermSpec before = spec;
+            before.integration.clear();
+            before.nonce.clear();
+            r.pid = 0;
+            r.client->openTerminal(9, before, &r);
+            CHECK(r.wait([&] { return r.pid.load() > 0; }));
+            CHECK(r.integrated == "none yet");
+
+            r.closeInput();
+            CHECK(waitUntil([&] { return result.load() != -1; }, 5000));
+            if (run.joinable()) run.join();
+            server.reset();
+        }
+    }
+
+    GROUP("hostserver:integration-bash");
+    {
+        // The same with a login bash (Ubuntu's default, the owner's
+        // ThinkPad): TermOpened names bash, the login files read and not
+        // ~/.bashrc, the nonce and MUTIBLE_BASH_LOGIN out of the
+        // environment, a command busy and then status 1, and a half-typed
+        // line set aside by the push key, a command run, and the line given
+        // back by the pop key (ShellIntegration::kBashPopKey) after the
+        // prompt, then run. A bash older than 4.4 gets none.
+        std::string bash;
+        for (const char* b : {"/bin/bash", "/usr/bin/bash", "/opt/homebrew/bin/bash", "/usr/local/bin/bash"})
+            if (bash.empty() && access(b, X_OK) == 0 && Shared::bashVersion(b) >= 404) bash = b;
+        char cwd[PATH_MAX];
+        const std::string here = getcwd(cwd, sizeof cwd) ? cwd : ".";
+        const std::string bashScript = here + "/linux/resources/" + ShellIntegration::kBashScriptName;
+        const int binBash = access("/bin/bash", X_OK) == 0 ? Shared::bashVersion("/bin/bash") : 0;
+        if (binBash > 0 && binBash < 404 && access(bashScript.c_str(), R_OK) == 0) {
+            // The Mac's /bin/bash 3.2: the script would load and never mark.
+            Shared::HostIntegration old;
+            old.setBase(Shared::resolveFolder(scratchFolder()));
+            old.setScripts("", bashScript);
+            Shared::PtySpec p = Shared::ownShellSpec("/bin/bash", {"PATH=/bin"}, {}, "/", 80, 24);
+            CHECK(old.apply(p, {"zsh", "bash"}, "n").empty() && p.argv == std::vector<std::string>{"-bash"});
+        }
+        if (bash.empty() || access(bashScript.c_str(), R_OK) != 0) {
+            std::printf("  (no bash 4.4 or later, or no linux/resources/%s here; skipped)\n",
+                        ShellIntegration::kBashScriptName);
+        } else {
+            // Said, so a CI log shows it ran (Linux's /bin/bash; the Mac's is 3.2).
+            std::printf("  hostserver:integration-bash: %s, bash %d\n", bash.c_str(), Shared::bashVersion(bash));
+            signal(SIGPIPE, SIG_IGN);
+            const std::string proj = Shared::resolveFolder(scratchFolder());
+            mkdir((proj + "/home").c_str(), 0700);
+            std::ofstream(proj + "/home/.bash_profile") << "export FROM_PROFILE=yes\nPS1='$ '\n";
+            std::ofstream(proj + "/home/.bashrc") << "export FROM_BASHRC=yes\n";
+            int toHost[2], fromHost[2];
+            CHECK(pipe(toHost) == 0 && pipe(fromHost) == 0);
+            auto server = std::make_unique<Shared::HostServer>();
+            Shared::HostOptions o;
+            o.folder = proj;
+            o.shellEnv = {"PATH=/usr/bin:/bin", "HOME=" + proj + "/home", "LANG=C", "SHELL=" + bash};
+            o.bashIntegration = bashScript;
+            std::string error;
+            CHECK(server->startStdio(o, toHost[0], fromHost[1], &error) == Shared::HostServer::Start::Ok);
+            std::atomic<int> result{-1};
+            std::thread run([&] { result = server->run() ? 1 : 0; });
+            PipeRenderer r;
+            r.connect(toHost[1], fromHost[0]);
+            CHECK(r.client->settle(5000));
+            CHECK(r.client->hostIntegrates());
+            const std::string nonce = "fedcba9876543210fedcba9876543210";
+            r.marks.setMarkNonce(nonce);
+            Shared::TermSpec spec;
+            spec.hostShell = true;
+            spec.env = {"TERM=xterm-256color"};
+            spec.cwd = proj;
+            spec.nonce = nonce;
+            spec.integration = {"zsh", "bash"};
+            r.client->openTerminal(7, spec, &r);
+            CHECK(r.wait([&] { return r.pid.load() > 0; }));
+            CHECK(r.integrated == "bash");
+            // At a prompt, with readline reading (a moment after the mark).
+            auto atPrompt = [&](long long prompts) {
+                const bool ok = r.wait([&] { return r.shell.known && r.shell.atPrompt && r.shell.prompts >= prompts; });
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+                return ok;
+            };
+            CHECK(atPrompt(1));
+            r.client->terminalInput(7, "echo \"p=$FROM_PROFILE r=${FROM_BASHRC-unset} n=${MUTIBLE_NONCE-unset} "
+                                       "l=${MUTIBLE_BASH_LOGIN-unset}-end\"\r");
+            const std::string want = "p=yes r=unset n=unset l=unset-end";
+            CHECK(r.wait([&] { return r.screen.text().find(want) != std::string::npos; }));
+            if (r.screen.text().find(want) == std::string::npos)
+                std::printf("  screen: %s\n", r.screen.text().c_str());
+            CHECK(atPrompt(2));
+            const long long doneBefore = r.shell.done;
+            r.client->terminalInput(7, "sleep 1; false\r");
+            CHECK(r.wait([&] { return r.shell.busy && r.shell.command == "sleep 1; false"; }));
+            CHECK(r.wait([&] { return !r.shell.busy && r.shell.done == doneBefore + 1 && r.shell.atPrompt; }));
+            CHECK(r.shell.status == 1);
+            CHECK(atPrompt(3));
+            // A half-typed line, set aside while the app runs a command, and
+            // given back after it.
+            r.client->terminalInput(7, "echo half-$((4*5))");
+            r.client->terminalInput(7, std::string(ShellIntegration::kZlePushKey) + "echo pushed-$((2*3))\r");
+            CHECK(r.wait([&] { return r.screen.text().find("pushed-6") != std::string::npos && r.shell.prompts >= 4; }));
+            CHECK(r.shell.status == 0);
+            CHECK(atPrompt(4));
+            r.client->terminalInput(7, ShellIntegration::kBashPopKey);
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            r.client->terminalInput(7, "\r");
+            CHECK(r.wait([&] { return r.screen.text().find("half-20") != std::string::npos && r.shell.prompts >= 5; }));
+            if (r.screen.text().find("half-20") == std::string::npos)
+                std::printf("  screen: %s\n", r.screen.text().c_str());
+
+            r.closeInput();
+            CHECK(waitUntil([&] { return result.load() != -1; }, 5000));
+            if (run.joinable()) run.join();
+            server.reset();
+        }
     }
 
     GROUP("hostserver:read-file");

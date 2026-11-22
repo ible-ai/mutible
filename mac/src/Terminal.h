@@ -151,6 +151,15 @@ extern NSNotificationName const MCTerminalClaudeDidStartNotification;
 // The shell's terminal id on the host, 0 when none (off the host, or no
 // shell).
 @property(nonatomic, readonly) unsigned long long sessionTerminal;
+// Whether the shell sends the integration's marks (this Mac's, or over SSH
+// the remote's own, set up by its host), and the nonce they carry; for the
+// checks. The nonce this process gave the terminal `term` of the host whose
+// link has `key` (MCSession::Link::key), nil when none.
+@property(nonatomic, readonly) BOOL integrated;
+// Whether that shell is a remote bash (its host's integration for bash).
+@property(nonatomic, readonly) BOOL integratedBash;
+@property(nonatomic, readonly, copy) NSString *integrationNonce;
++ (NSString *)nonceForHost:(NSString *)key terminal:(unsigned long long)term;
 // The first of them, or nil.
 @property(nonatomic, readonly, copy) NSString *runningCommand;
 // The process group holding the terminal's foreground when it is not the

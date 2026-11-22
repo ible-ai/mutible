@@ -126,6 +126,22 @@ void testShellBash() {
                              {env[0], env[1], env[2]}, "true\n", "/bin/bash");
         CHECK(none.out.find("\x1b]133;") == std::string::npos);
         CHECK(none.out.find("user-pc:0") != std::string::npos);
+
+        // In place of a login shell (a session's host over SSH,
+        // HostIntegration.h): MUTIBLE_BASH_LOGIN=1 reads ~/.bash_profile, not
+        // ~/.bashrc, takes itself out of the environment, and marks as before.
+        writeFile(root / "home" / ".bash_profile", "exec 2>&1\necho profile-read\n");
+        ZshRun login = runZsh(root, {"--rcfile", (root / "script.bash").string(), "-i"},
+                              {env[0], env[1], env[2], env[3], "MUTIBLE_BASH_LOGIN=1"},
+                              "echo \"login:${MUTIBLE_BASH_LOGIN-unset}\"\nfalse\n", "/bin/bash");
+        CHECK(login.out.find("profile-read") != std::string::npos);
+        CHECK(login.out.find("user-pc") == std::string::npos);
+        CHECK(login.out.find("login:unset") != std::string::npos);
+        const std::string loginStates = hostStates(login.out, "n0nce");
+        CHECK(loginStates.find("3 2 2 1") != std::string::npos);
+        if (loginStates.find("3 2 2 1") == std::string::npos)
+            std::printf("    login states: %s\n    out: %s\n", loginStates.c_str(), login.out.c_str());
+        zfs::remove(root / "home" / ".bash_profile");
     }
 
 }

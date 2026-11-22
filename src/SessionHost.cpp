@@ -378,6 +378,9 @@ void Host::onHello(ClientId c, Message& m) {
     // And does a tree's file operations (FsRead's "rename", "move", "delete",
     // "newFile", "newFolder").
     w.flag |= 64;
+    // And sets up this machine's shell integration for such a terminal
+    // (TermSpec's integration), when its mutible has the scripts.
+    if (integration_.any()) w.flag |= 128;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));
@@ -1904,8 +1907,13 @@ bool Host::openPty(ClientId c, TermId id, const TermSpec& spec, std::string* err
     p.cwd = spec.cwd;
     p.cols = std::max(2, spec.cols);
     p.rows = std::max(1, spec.rows);
-    // A renderer on another machine asks for this machine's own shell.
-    if (spec.hostShell) p = ownShellSpec(ownShell_, ownEnv_, spec.env, spec.cwd, p.cols, p.rows);
+    // A renderer on another machine asks for this machine's own shell, and
+    // perhaps for this machine's integration over it, with its nonce.
+    std::string integrated;
+    if (spec.hostShell) {
+        p = ownShellSpec(ownShell_, ownEnv_, spec.env, spec.cwd, p.cols, p.rows);
+        if (!spec.integration.empty()) integrated = integration_.apply(p, spec.integration, spec.nonce);
+    }
     std::unique_ptr<Pty> pty = Pty::spawn(p, error);
     if (!pty) return false;
     Term& t = terms_[id];
@@ -1922,6 +1930,7 @@ bool Host::openPty(ClientId c, TermId id, const TermSpec& spec, std::string* err
     t.shell.rows = p.rows;
     t.screen.setScrollbackLimit(std::max(0, spec.scrollback));
     t.nonce = spec.nonce;
+    t.integrated = integrated;
     t.screen.setMarkNonce(spec.nonce);
     t.stream.setMarkNonce(spec.nonce);
     t.stream.setEventsOnly(true);
@@ -1945,6 +1954,7 @@ void Host::onTermOpen(ClientId c, Message& m) {
     r.kind = Kind::TermOpened;
     r.term = m.term;
     r.v = (std::uint64_t)t.pty->pid();
+    r.name = t.integrated;
     send(c, std::move(r));
     look(t);
     sendShell(m.term, t, true);
@@ -2386,6 +2396,17 @@ void SessionHost::setOwnShell(std::vector<std::string> env, std::string shell) {
         std::lock_guard<std::mutex> lk(mu_);
         queue_.push_back(Item{0, Message(), [this, shared] {
                                   host_.setOwnShell(std::move(shared->first), std::move(shared->second));
+                              }});
+    }
+    wake();
+}
+
+void SessionHost::setIntegrationScripts(std::string zsh, std::string bash) {
+    auto shared = std::make_shared<std::pair<std::string, std::string>>(std::move(zsh), std::move(bash));
+    {
+        std::lock_guard<std::mutex> lk(mu_);
+        queue_.push_back(Item{0, Message(), [this, shared] {
+                                  host_.setIntegrationScripts(std::move(shared->first), std::move(shared->second));
                               }});
     }
     wake();

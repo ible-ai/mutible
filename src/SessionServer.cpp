@@ -389,6 +389,8 @@ bool HostServer::makeHost(const HostOptions& o) {
         host_->keepBackups(std::move(k));
     }
     if (!o.shellEnv.empty() || !o.loginShell.empty()) host_->setOwnShell(o.shellEnv, o.loginShell);
+    if (!o.zshIntegration.empty() || !o.bashIntegration.empty())
+        host_->setIntegrationScripts(o.zshIntegration, o.bashIntegration);
     if (!o.askedFile.empty()) host_->setAskedFile(o.askedFile, o.askedFileNew);
     return true;
 }

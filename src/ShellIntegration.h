@@ -83,6 +83,12 @@ inline const char *const kZleLineStartKey = "\x1b[9998~";
 inline const char *const kZleLineEndKey = "\x1b[9997~";
 inline const char *const kZleKillToStartKey = "\x1b[9996~";
 inline const char *const kZleClearKey = "\x1b[9995~";
+// The bash script's pop (linux/resources/mutible-bash-integration.bash):
+// the newest line kZlePushKey set aside, put back in front of the line.
+// bash has no push-input that gives it back by itself, so the app sends
+// this once the command's prompt is back. The same bytes as
+// kZleLineStartKey, which a bash never gets.
+inline const char *const kBashPopKey = "\x1b[9998~";
 
 // The .zshenv zsh reads first from ZDOTDIR. It is read with ZDOTDIR at its
 // own folder, which is where the script's copy is.
