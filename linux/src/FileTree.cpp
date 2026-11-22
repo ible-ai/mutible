@@ -213,6 +213,10 @@ constexpr std::size_t kPieceRows = 250;
 
 double nowMs() { return (double)g_get_monotonic_time() / 1000.0; }
 
+// A test's slow folder: its listing waits this long on the worker.
+std::string gSlowFolder;
+int gSlowFolderMs = 0;
+
 // One listing, as the worker hands it over: the entries sorted in the tree's
 // order, and their rows for TreeRefresh::splices.
 struct Listing {
@@ -241,6 +245,13 @@ struct DirWatch {
     std::size_t rowsOut = 0;
     std::size_t rowsIn = 0;
     guint applyIdle = 0;
+    // Whether its listing is asked for and not yet in, counted in its tree's
+    // listingsOut: a restoreView puts the scroll back only when none of its
+    // own tree's is, since rows of a folder listed late arrive above the
+    // scroll and GTK keeps its anchor row (HANDOFF 163). The tree's counter,
+    // shared, so a watch that outlives its tree still counts down safely.
+    bool listing = false;
+    std::shared_ptr<int> listingsOut;
     bool root = false;                   // the tree's top folder (StartupLog.h)
     // The Worktrees node (PARITY.md 3.5): the top folder lists
     // .claude/worktrees first as "Worktrees" when it holds a folder, and
@@ -258,6 +269,7 @@ struct DirWatch {
 };
 
 struct ListJob {
+    int delayMs = 0;
     GFile* dir;
     bool worktreesNode, hideWorktrees;
 };
@@ -300,6 +312,7 @@ Listing* sortedListing(std::vector<GFileInfo*>& infos, std::vector<TreeRefresh::
 // On the worker: the folder's entries with their keys, sorted.
 void listInThread(GTask* task, gpointer, gpointer data, GCancellable* cancel) {
     ListJob* job = static_cast<ListJob*>(data);
+    if (job->delayMs > 0) g_usleep((gulong)job->delayMs * 1000);
     GFile* dir = job->dir;
     GError* err = nullptr;
     GFileEnumerator* en =
@@ -384,6 +397,7 @@ void listSoon(DirWatch* w, double wait) {
 // The listing is in: rows now match the store, and changes reported
 // meanwhile ask for the next one.
 void listingDone(DirWatch* w) {
+    if (w->listing) { w->listing = false; if (w->listingsOut) --*w->listingsOut; }
     if (w->root)
         StartupLog::once("tree", "tree: first listing in (%zu entries)", w->rows.size());
     listSoon(w, w->pacer.finished(nowMs()));
@@ -496,6 +510,7 @@ void startRemoteListing(DirWatch* w) {
 }
 
 void startListing(DirWatch* w) {
+    if (!w->listing) { w->listing = true; if (w->listingsOut) ++*w->listingsOut; }
     if (w->remote) {
         startRemoteListing(w);
         return;
@@ -510,7 +525,13 @@ void startListing(DirWatch* w) {
             else delete listing;
             g_object_unref(store);
         }, g_object_ref(w->store));
-    g_task_set_task_data(task, new ListJob{G_FILE(g_object_ref(w->dir)), w->worktreesNode, w->hideWorktrees},
+    int delayMs = 0;
+    if (gSlowFolderMs > 0) {
+        char* path = g_file_get_path(w->dir);
+        if (path && gSlowFolder == path) delayMs = gSlowFolderMs;
+        g_free(path);
+    }
+    g_task_set_task_data(task, new ListJob{delayMs, G_FILE(g_object_ref(w->dir)), w->worktreesNode, w->hideWorktrees},
                          [](gpointer p) {
                              auto* j = static_cast<ListJob*>(p);
                              g_object_unref(j->dir);
@@ -595,6 +616,7 @@ void RemoteStores::changed(const std::vector<std::string>& folders) {
 GListModel* FileTree::makeDirModel(GFile* dir, bool root) {
     GListStore* store = g_list_store_new(G_TYPE_FILE_INFO);
     auto* w = new DirWatch;
+    w->listingsOut = listingsOut_;
     w->dir = G_FILE(g_object_ref(dir));
     w->store = store;
     w->cancel = g_cancellable_new();
@@ -631,6 +653,7 @@ GListModel* FileTree::makeDirModel(GFile* dir, bool root) {
         g_cancellable_cancel(dw->cancel);
         if (dw->timer) g_source_remove(dw->timer);
         if (dw->applyIdle) g_source_remove(dw->applyIdle);
+        if (dw->listing && dw->listingsOut) --*dw->listingsOut;
         if (dw->monitor) {
             g_signal_handlers_disconnect_by_data(dw->monitor, dw);
             g_file_monitor_cancel(dw->monitor);
@@ -1771,10 +1794,14 @@ void FileTree::afterLayout() {
     if (restoreScroll_ >= 0) {
         // Once the folders are open and their rows have stopped coming for a
         // moment: a scroll put back while rows still arrive above it would
-        // show other rows. Only on screen (a window brought back with its
-        // sidebar hidden puts it back when the sidebar shows).
+        // show other rows, and so would one put back while a folder is still
+        // being listed (its rows arrive above the scroll and GTK keeps its
+        // anchor row, moving the scroll by their height). Only on screen (a
+        // window brought back with its sidebar hidden puts it back when the
+        // sidebar shows). The deadline is a hard cap for a folder that never
+        // lists.
         const bool mapped = gtk_widget_get_mapped(listView_);
-        const bool settled = pendingExpand_.empty() && now - rowsChanged_ > 150 * 1000;
+        const bool settled = pendingExpand_.empty() && *listingsOut_ == 0 && now - rowsChanged_ > 150 * 1000;
         if (mapped && (settled || now > restoreDeadline_)) {
             selectIfListed(restoreSelect_);
             const double most = gtk_adjustment_get_upper(adj) - gtk_adjustment_get_page_size(adj);
@@ -2494,6 +2521,11 @@ double FileTree::scrolled() const {
         gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(scroller_)));
 }
 
+void FileTree::slowFolderForTests(const std::string& path, int ms) {
+    gSlowFolder = path;
+    gSlowFolderMs = ms;
+}
+
 void FileTree::restoreView(const std::vector<std::string>& open, const std::string& selected,
                            double scroll) {
     // Under the tops as they are now (restoreFocus came first) opened, the
@@ -2514,7 +2546,7 @@ void FileTree::restoreView(const std::vector<std::string>& open, const std::stri
     tryExpand();
     restoreSelect_ = selected;
     restoreScroll_ = std::max(0.0, scroll);
-    restoreDeadline_ = now + 3 * G_USEC_PER_SEC;
+    restoreDeadline_ = now + 10 * G_USEC_PER_SEC;
     rowsChanged_ = now;
     scheduleFrame();
 }

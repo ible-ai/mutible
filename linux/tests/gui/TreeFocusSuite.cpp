@@ -294,6 +294,7 @@ const char* const kNear = "m_deep/a/b/c/d/e/near.txt";
 const char* const kCut = "z_big/f00040.txt";
 std::string gSettingsBefore, gSelected;
 double gTop = 0;
+double gSeenTop = -1;   // the restored tree's scroll when its wait ended
 
 GtkAdjustment* Adj(FileTree* t) {
     return gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(t->widget()));
@@ -1088,18 +1089,34 @@ MC_GUI_SUITE(tree_focus) {
         GCHECK_EQ_STR(w[0].selected, F(kTarget));
         const EditorTabs::Session tabs = TabSessions::files(w[0].tabs);
         GCHECK(tabs.active >= 0 && tabs.files[(size_t)tabs.active] == F(kTarget));
+        // a_big lists late: its rows arrive above the scroll the record puts back
+        // (HANDOFF 163), which must wait for them
+        FileTree::slowFolderForTests(F("a_big"), 1500);
         MCGuiOpenWindowRestoring(gRepo, gRecord);
         MCGuiSetKeyWindow(nullptr);
     });
+    gSeenTop = -1;
     MCGuiWait("a window brought back from it, its tree as it was", 20, [] {
         FileTree* back = MCGuiApp().tree;
-        return MCGuiAppWindows().size() == gWindowsBefore + 2 && back->selectedPath() == F(kTarget) &&
-               Expanded(back, F("m_deep/a/b/c/d/e")) && Near(TreeTop(back), gTop);
+        const bool ok = MCGuiAppWindows().size() == gWindowsBefore + 2 && back->selectedPath() == F(kTarget) &&
+                        Expanded(back, F("m_deep/a/b/c/d/e")) && Near(TreeTop(back), gTop);
+        if (ok && gSeenTop < 0) gSeenTop = TreeTop(back);
+        return ok;
+    });
+    MCGuiWait("a_big's rows in, after the scroll was put back", 20, [] {
+        return g_list_model_get_n_items(Rows(MCGuiApp().tree)) > kBigFiles + 100;
     });
     MCGuiPause(0.5);   // a negative check: no reveal jumps it afterwards
     MCGuiStep("its scroll kept: the target's tab on show, its row not centered", [] {
         FileTree* back = MCGuiApp().tree;
+        FileTree::slowFolderForTests("", 0);
         MCGuiNote("the tree at %.0f, the record's %.0f", TreeTop(back), gTop);
+        // For the next failure: the wait saw the record's scroll, so a jump after it (rows arriving
+        // above the restored scroll once the restore's deadline passed, GTK keeping its anchor row)
+        // shows as a tree far from both; upper and page say how tall the list is.
+        MCGuiNote("seen when the wait ended %.0f; upper %.0f, page %.0f, a_big %s, %u rows", gSeenTop,
+                  gtk_adjustment_get_upper(Adj(back)), gtk_adjustment_get_page_size(Adj(back)),
+                  Expanded(back, F("a_big")) ? "open" : "closed", g_list_model_get_n_items(Rows(back)));
         GCHECK_EQ_STR(MCGuiApp().editor->currentPath(), F(kTarget));
         GCHECK(Near(TreeTop(back), gTop));
         GCHECK(!RowWidget(back, F(kTarget)) || RowsFromMiddle(back, F(kTarget)) > 1);
