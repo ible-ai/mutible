@@ -414,6 +414,31 @@ public:
     void forgetRead(std::uint64_t req);
     // The same, waiting: null when the host did not answer in time.
     Json read(std::uint64_t window, Json request, int timeoutMs = 10000);
+    // Several reads sent at once and waited for together, so they cost one
+    // round trip, not one each (a tree opening the folders down to a file
+    // over SSH): each answer at its request's place, null where none came
+    // in time.
+    std::vector<Json> readAll(std::uint64_t window, std::vector<Json> requests, int timeoutMs = 10000);
+    // A file's bytes by the host's "read" (SessionFiles.h), every piece of
+    // it: the first piece asked and waited for, which for a file under
+    // kMaxReadBytes is the whole file and one round trip; then, its size
+    // known, the pieces left asked four at a time, each four waited for
+    // together (a 64 MB file in five round trips, not sixteen). Only
+    // the read's own answers are waited for (no Ping behind them, as
+    // settle() would send): they say all there is to say. `rel` is from
+    // the folder, dotfiles allowed. Over `limit` bytes it reads nothing.
+    struct FileRead {
+        bool ok = false;         // every byte the host had
+        bool tooLarge = false;   // over the limit: nothing read
+        std::string bytes;
+        std::string error;       // the host's refusal ("no file named", ...)
+    };
+    FileRead readFile(std::uint64_t window, const std::string& rel, std::size_t limit, int timeoutMs = 20000);
+    // How many times a caller has waited for the host's answers (settle,
+    // undo, the queries, read, readAll, readFile): each wait is at least one
+    // round trip on the caller's thread, which over SSH is the network's.
+    // For checks that bound what an action costs (remote_ssh).
+    std::uint64_t waits() const { return waits_; }
     // The heavier reads (SessionSearch.h: "files", "search"), on the host's
     // workers, answered as they go: several answers for one request, the
     // last with "done". Whether the host takes them (its Welcome's flag 8),
@@ -494,6 +519,7 @@ private:
     bool inFlight_ = false;
     Message head_;   // the edit in flight
     std::uint64_t seq_ = 0, nextStep_ = 0, nextReq_ = 0;
+    std::uint64_t waits_ = 0;   // waitFor's calls (waits())
     std::map<std::uint64_t, Message> replies_;
     std::map<TermId, TermListener*> terms_;
     void sendNow(Message&& m);

@@ -1036,6 +1036,30 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
     }
 }
 
+// Over SSH, the folders treeOpenFoldersTo: is about to list one after
+// another (those on the way to `parts` from `node`, at `acc`, not listed
+// yet) are asked of the host together: one round trip, not one each.
+- (void)treePrefetchFoldersFrom:(FileItem *)node at:(NSString *)acc to:(NSArray<NSString *> *)parts
+                           skip:(NSUInteger)skip {
+    id<MCTreeSource> source = node.source;
+    if (![source respondsToSelector:@selector(treePrefetchFolders:hidden:)] || parts.count < skip + 2) return;
+    NSMutableArray<NSString *> *wanted = [NSMutableArray array];
+    FileItem *at = node;   // the item for `acc` while the tree has one
+    for (NSUInteger i = skip; i < parts.count; i++) {   // the loop's folders: each before parts[i]
+        if (!at || !at.loaded) [wanted addObject:acc];
+        if (i + 1 == parts.count) break;
+        acc =[acc stringByAppendingPathComponent:parts[i]];
+        FileItem *next = nil;
+        for (FileItem *c in at.loaded ? at.children : @[])
+            if ([c.path isEqualToString:acc]) {
+                next = c;
+                break;
+            }
+        at = next;
+    }
+    if (wanted.count >= 2) [source treePrefetchFolders:wanted hidden:gShowHidden];
+}
+
 // Opens the folders down to `path`, listing only those on the way (no
 // reload), and gives the deepest row reached: `path`'s own, or the folder
 // where the way ends (a dotfile the tree hides). nil when the path is left
@@ -1053,6 +1077,8 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
     NSArray<NSString *> *parts = path.pathComponents;
     FileItem *node = base;
     NSString *acc = base.path;
+    // Over SSH, the folders on the way not listed yet: asked together.
+    [self treePrefetchFoldersFrom:node at:acc to:parts skip:rootParts.count];
     if (!top && parts.count > rootParts.count) [self.outline expandItem:base];
     // A worktree's files are reached through the Worktrees node.
     if (top == _root && _worktreesItem &&

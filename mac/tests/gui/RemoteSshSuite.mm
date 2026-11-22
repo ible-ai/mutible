@@ -31,7 +31,11 @@
 //   - The tree lists the folder through the host (folders first, what
 //     .gitignore ignores marked; this Mac's MCTreeList never lists it), a
 //     folder opens through it, files made on disk there come into the tree
-//     by the host's notices, and a row opens its file through the host.
+//     by the host's notices, and a row opens its file through the host
+//     waiting on it once at most (Client::waits: the read's own answer,
+//     no Ping behind it). Quick Open's open of a file two folders down
+//     that the tree has not listed waits twice: both folders' listings
+//     asked together, then the read.
 //   - Cmd+P lists the host's files (the ignored one left out) and opens one;
 //     Find in Folder searches on the host, its rows open their files, and
 //     Replace All says it does not work over SSH; New Folder says so too.
@@ -156,6 +160,15 @@ void TypeAtEnd(EditorController *c, NSString *s) {
     NSTextView *tv = [c valueForKey:@"textView"];
     MCGuiUndoGroup(tv.undoManager, ^{ [tv insertText:s replacementRange:NSMakeRange(tv.string.length, 0)]; });
 }
+
+// How many times the window's client has waited for its host (Client::
+// waits): each wait is a round trip on the main thread, over SSH the
+// network's.
+unsigned long long HostWaits(EditorController *c) {
+    MCSessionLinkRef *ref = [c sessionRemoteLink];
+    return ref.link ? (unsigned long long)ref.link->client().waits() : 0;
+}
+unsigned long long gWaitsBefore;
 
 // How many times the stand-in refused to connect (gBlock there).
 NSUInteger RefusedTries() {
@@ -450,10 +463,36 @@ MC_GUI_SUITE(remote_ssh) {
     MCGuiStep(@"files made on disk there", ^{
         MCGuiWriteFile([gFolder stringByAppendingPathComponent:@"later.txt"], @"made on disk\n");
         MCGuiWriteFile([gFolder stringByAppendingPathComponent:@"src/made-there.c"], @"int there;\n");
+        // A file two folders down that the tree has not listed (Quick Open
+        // into it, below).
+        [NSFileManager.defaultManager createDirectoryAtPath:[gFolder stringByAppendingPathComponent:@"lib/inner"]
+                                withIntermediateDirectories:YES
+                                                 attributes:nil
+                                                      error:nil];
+        MCGuiWriteFile([gFolder stringByAppendingPathComponent:@"lib/inner/deep.c"], @"int deep;\n");
     });
     MCGuiWait(@"files made on disk appear in the tree", 15, ^BOOL {
         return TreeRow(gC, [gFolder stringByAppendingPathComponent:@"later.txt"]) != nil &&
-               TreeRow(gC, [gFolder stringByAppendingPathComponent:@"src/made-there.c"]) != nil;
+               TreeRow(gC, [gFolder stringByAppendingPathComponent:@"src/made-there.c"]) != nil &&
+               TreeRow(gC, [gFolder stringByAppendingPathComponent:@"lib"]) != nil;
+    });
+    MCGuiStep(@"Quick Open's open of a file in folders not listed yet: their listings in one round trip", ^{
+        NSString *lib = [gFolder stringByAppendingPathComponent:@"lib"];
+        NSString *deep = [gFolder stringByAppendingPathComponent:@"lib/inner/deep.c"];
+        GCHECK(!TreeRow(gC, lib).loaded && TabFor(gC, deep) == nil);
+        const NSUInteger listingsBefore = [gC remoteWorkspace].listings;
+        const unsigned long long before = HostWaits(gC);
+        const double t0 = MCGuiNowMs();
+        [gC openFileFromQuickOpen:deep];   // the tree opens lib and lib/inner on the way
+        MCGuiNote(@"lib/inner/deep.c opened in %.1f ms, %llu waits on the host, %lu folders listed",
+                  MCGuiNowMs() - t0, HostWaits(gC) - before,
+                  (unsigned long)([gC remoteWorkspace].listings - listingsBefore));
+        // lib and lib/inner asked together, then the read: two, not three.
+        GCHECK(HostWaits(gC) - before <= 2);
+        GCHECK([gC remoteWorkspace].listings - listingsBefore >= 2);
+        GCHECK([gC.currentPath isEqualToString:deep]);
+        GCHECK_EQ_STR(TabFor(gC, deep).currentText, @"int deep;\n");
+        GCHECK(TreeRow(gC, deep) != nil);   // revealed: its folders open in the tree
     });
     MCGuiStep(@"by the host's notices; a row opens its file through the host", ^{
         GCHECK([gC remoteWorkspace].notices > 0);
@@ -461,7 +500,16 @@ MC_GUI_SUITE(remote_ssh) {
         NSString *mainC = [gFolder stringByAppendingPathComponent:@"src/main.c"];
         const NSInteger row = [gC.outline rowForItem:TreeRow(gC, mainC)];
         GCHECK(row >= 0);
+        GCHECK(TabFor(gC, mainC) == nil);   // so the open reads it
+        // Opening a file costs one round trip: its read, whose own answer
+        // is all that is waited for (no Ping behind it), and nothing else
+        // asks the host on the way (1.6.19 sent a Ping behind every read).
+        const unsigned long long before = HostWaits(gC);
+        const double t0 = MCGuiNowMs();
         if (row >= 0) [gC activateRow:row];   // Return in the tree
+        MCGuiNote(@"a tree row's file opened in %.1f ms, %llu waits on the host", MCGuiNowMs() - t0,
+                  HostWaits(gC) - before);
+        GCHECK(HostWaits(gC) - before <= 1);
         MCTab *t = TabFor(gC, mainC);
         GCHECK(t != nil && t.session != nil);
         GCHECK_EQ_STR(t.currentText, @"int needle = 1;\n");
@@ -490,11 +538,18 @@ MC_GUI_SUITE(remote_ssh) {
         }
         GCHECK(util && !log);
         [PaletteEditor(gC) insertText:@"util" replacementRange:PaletteEditor(gC).selectedRange];
+        gWaitsBefore = HostWaits(gC);
         [PaletteEditor(gC) doCommandBySelector:@selector(insertNewline:)];
     });
     MCGuiWait(@"src/util.c open, read through the host", 10, ^BOOL {
         return [gC.currentPath isEqualToString:[gFolder stringByAppendingPathComponent:@"src/util.c"]] &&
                [TabFor(gC, gC.currentPath).currentText isEqualToString:@"// a needle here\n"];
+    });
+    MCGuiStep(@"Quick Open's open waited on the host once at most", ^{
+        // src is listed already (the tree opened it): the read at most
+        // (none when util.c's tab, from its address above, is still open).
+        MCGuiNote(@"Quick Open's open: %llu waits on the host", HostWaits(gC) - gWaitsBefore);
+        GCHECK(HostWaits(gC) - gWaitsBefore <= 1);
     });
     MCGuiStep(@"Shift+Cmd+F searches on the host", ^{
         MCGuiSetKeyWindow(nil);

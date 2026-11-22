@@ -161,10 +161,11 @@ public:
     // Why the connection went (ssh's status and last words, in the
     // window's words), once lost.
     const std::string& failure() const { return failure_; }
-    // A file's text read through the host (FsRead "read", piece by piece,
-    // decoded as the Mac decodes a file): nil text when it cannot be read
-    // or does not read as text (MCDiskText's rules), tooLarge past 64 MB.
-    // Never a stamp: the file is on the other machine. Waits on the host.
+    // A file's text read through the host (Client::readFile: one round
+    // trip under 4 MB, the pieces past that asked together; decoded as the
+    // Mac decodes a file): nil text when it cannot be read or does not
+    // read as text (MCDiskText's rules), tooLarge past 64 MB. Never a
+    // stamp: the file is on the other machine. Waits on the host.
     MCDiskText *readText(const std::string &path);
     // The address named a file not there yet (the Welcome's "new"): the
     // window opens it empty, and its first save makes it.

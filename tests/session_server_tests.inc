@@ -17,6 +17,7 @@
 
 #include <iterator>
 
+#include "SessionFiles.h"   // kMaxReadBytes
 #include "SessionServer.h"
 
 namespace {
@@ -698,6 +699,114 @@ static void testSessionServer() {
         server.reset();   // the host's end: its shells hung up, its output closed
         CHECK(waitUntil([&] { return gone(shell); }, 5000));
         CHECK(waitUntil([&] { return r.client->lost(); }, 5000));
+    }
+
+    GROUP("hostserver:read-file");
+    {
+        // A window over SSH opening a file (Client::readFile): one wait,
+        // so one round trip, for a file under kMaxReadBytes, and only the
+        // read's own answer waited for (no Ping behind it); past that the
+        // pieces left asked four at a time. Errors, the limit and dotfiles
+        // as before; readAll's listings in one wait.
+        signal(SIGPIPE, SIG_IGN);
+        const std::string proj = Shared::resolveFolder(scratchFolder());
+        mkdir((proj + "/src").c_str(), 0755);
+        mkdir((proj + "/src/deep").c_str(), 0755);
+        {
+            std::ofstream(proj + "/src/a.c") << "int a;\n";
+            std::ofstream(proj + "/.env") << "X=1\n";
+            std::ofstream(proj + "/empty.txt");
+        }
+        // Three pieces (two rounds), and six (three: four at most at once).
+        auto pattern = [](std::size_t n) {
+            std::string s(n, '\0');
+            for (std::size_t i = 0; i < n; i++) s[i] = (char)('a' + (i * 7 + i / 4093) % 26);
+            return s;
+        };
+        const std::string three = pattern(2 * Shared::kMaxReadBytes + 1000);
+        const std::string six = pattern(5 * Shared::kMaxReadBytes + 17);
+        std::ofstream(proj + "/three.txt", std::ios::binary) << three;
+        std::ofstream(proj + "/six.txt", std::ios::binary) << six;
+        int toHost[2], fromHost[2];
+        CHECK(pipe(toHost) == 0 && pipe(fromHost) == 0);
+        auto server = std::make_unique<Shared::HostServer>();
+        Shared::HostOptions o;
+        o.folder = proj;
+        std::string error;
+        CHECK(server->startStdio(o, toHost[0], fromHost[1], &error) == Shared::HostServer::Start::Ok);
+        std::atomic<int> result{-1};
+        std::thread run([&] { result = server->run() ? 1 : 0; });
+        PipeRenderer r;
+        r.connect(toHost[1], fromHost[0]);
+        CHECK(r.client->settle(5000));
+        Shared::Client& c = *r.client;
+        const std::size_t limit = std::size_t(64) << 20;
+        // How many times the client waited since `from`, said when not `want`.
+        auto waited = [&c](std::uint64_t from, std::uint64_t want) {
+            const std::uint64_t got = c.waits() - from;
+            if (got != want) std::printf("  waits: %llu, not %llu\n", (unsigned long long)got, (unsigned long long)want);
+            return got == want;
+        };
+
+        std::uint64_t w = c.waits();
+        Shared::Client::FileRead f = c.readFile(0, "src/a.c", limit);
+        CHECK(f.ok && f.bytes == "int a;\n" && !f.tooLarge && f.error.empty());
+        CHECK(waited(w, 1));
+        w = c.waits();
+        f = c.readFile(0, ".env", limit);   // dotfiles: the window shows what the tree lists
+        CHECK(f.ok && f.bytes == "X=1\n");
+        CHECK(waited(w, 1));
+        f = c.readFile(0, "empty.txt", limit);
+        CHECK(f.ok && f.bytes.empty());
+        w = c.waits();
+        f = c.readFile(0, "three.txt", limit);
+        CHECK(f.ok && f.bytes.size() == three.size() && f.bytes == three);
+        CHECK(waited(w, 2));
+        w = c.waits();
+        f = c.readFile(0, "six.txt", limit);
+        CHECK(f.ok && f.bytes.size() == six.size() && f.bytes == six);
+        CHECK(waited(w, 3));
+        // Over the limit: nothing read, said so, after the first answer.
+        w = c.waits();
+        f = c.readFile(0, "three.txt", Shared::kMaxReadBytes);
+        CHECK(!f.ok && f.tooLarge && f.bytes.empty());
+        CHECK(waited(w, 1));
+        // The host's refusals.
+        f = c.readFile(0, "src/missing.c", limit);
+        CHECK(!f.ok && !f.tooLarge && !f.error.empty());
+        f = c.readFile(0, "src", limit);
+        CHECK(!f.ok && f.error == "not a file");
+        f = c.readFile(0, "../outside", limit);
+        CHECK(!f.ok && !f.error.empty());
+        // Nothing left behind: every answer was taken.
+        CHECK(c.settle(5000));
+
+        // Two folders listed in one wait, each answer at its place.
+        auto list = [](const std::string& rel) {
+            Json j = Json::object();
+            j.set("op", Json("list"));
+            j.set("path", Json(rel));
+            j.set("hidden", Json(true));
+            return j;
+        };
+        w = c.waits();
+        const std::vector<Json> both = c.readAll(0, {list("src"), list("src/deep"), list("nowhere")});
+        CHECK(waited(w, 1));
+        CHECK(both.size() == 3);
+        if (both.size() == 3) {
+            CHECK(both[0]["path"].asString() == "src" && both[0]["entries"].size() == 2);   // deep, a.c
+            CHECK(both[1]["path"].asString() == "src/deep" && both[1]["entries"].size() == 0);
+            CHECK(!both[2]["error"].isNull());
+        }
+
+        // The host gone: no answer, at once.
+        r.closeInput();
+        CHECK(waitUntil([&] { return result.load() != -1; }, 5000));
+        if (run.joinable()) run.join();
+        server.reset();
+        CHECK(waitUntil([&] { return c.lost(); }, 5000));
+        f = c.readFile(0, "src/a.c", limit, 5000);
+        CHECK(!f.ok && f.bytes.empty());
     }
 
     GROUP("hostserver:stdio-target");

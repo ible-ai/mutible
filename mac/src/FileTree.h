@@ -33,6 +33,12 @@
 // A folder's entries as MCTreeList gives them (folders first, dotfiles
 // only with `hidden`), nil when it cannot be read. Main thread.
 - (NSArray<MCTreeEntry *> *)treeListFolder:(NSString *)path hidden:(BOOL)hidden;
+@optional
+// The folders about to be listed one after another (the tree opening the
+// way down to a file), asked all at once: a host answers them in one round
+// trip, and the next treeListFolder: of each in this main queue turn takes
+// its answer instead of asking again.
+- (void)treePrefetchFolders:(NSArray<NSString *> *)paths hidden:(BOOL)hidden;
 @end
 
 // The entry's kind, size and dates. A symbolic link shows what it points to

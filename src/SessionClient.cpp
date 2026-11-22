@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <chrono>
 
+#include "SessionFiles.h"   // kMaxReadBytes: a "read"'s pieces
+
 namespace Shared {
 
 Client::Client(Model::Unit unit, std::string name) : unit_(unit), name_(std::move(name)) {}
@@ -758,6 +760,7 @@ void Client::onEdited(Message& m) {
 }
 
 bool Client::waitFor(const std::function<bool()>& done, int timeoutMs) {
+    waits_++;
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
     for (;;) {
         Message m;
@@ -1046,6 +1049,100 @@ Json Client::read(std::uint64_t window, Json request, int timeoutMs) {
     }
     readAnswer(req, &out);
     return out;
+}
+
+std::vector<Json> Client::readAll(std::uint64_t window, std::vector<Json> requests, int timeoutMs) {
+    std::vector<std::uint64_t> reqs;
+    for (Json& r : requests) reqs.push_back(requestRead(window, std::move(r)));
+    std::vector<Json> out(reqs.size());
+    if (reqs.empty()) return out;
+    waitFor(
+        [&] {
+            for (std::uint64_t r : reqs)
+                if (r && !replies_.count(r)) return false;
+            return true;
+        },
+        timeoutMs);
+    for (std::size_t i = 0; i < reqs.size(); i++)
+        if (reqs[i] && !readAnswer(reqs[i], &out[i])) forgetRead(reqs[i]);
+    return out;
+}
+
+Client::FileRead Client::readFile(std::uint64_t window, const std::string& rel, std::size_t limit, int timeoutMs) {
+    FileRead out;
+    auto ask = [&](std::uint64_t offset) {
+        Json j = Json::object();
+        j.set("op", Json("read"));
+        j.set("path", Json(rel));
+        j.set("offset", Json((double)offset));
+        j.set("length", Json((double)kMaxReadBytes));
+        j.set("hidden", Json(true));
+        return requestRead(window, std::move(j));
+    };
+    double size = -1;   // the file's, as the host said last; unknown before its first answer
+    for (;;) {
+        // This round's pieces: the first, then the pieces the size says are
+        // left, four at most (16 MB the host holds for this renderer at
+        // once), all sent before any is waited for.
+        constexpr std::size_t kPiecesAtOnce = 4;
+        std::vector<std::uint64_t> reqs;
+        if (size < 0) reqs.push_back(ask(0));
+        else
+            for (std::uint64_t at = out.bytes.size(); (double)at < size && reqs.size() < kPiecesAtOnce;
+                 at += kMaxReadBytes)
+                reqs.push_back(ask(at));
+        if (reqs.empty()) {   // shrunk below what was read already: what was read is all
+            out.ok = true;
+            return out;
+        }
+        bool sent = true;
+        for (std::uint64_t r : reqs) sent = sent && r != 0;
+        const bool came = sent && waitFor(
+                                      [&] {
+                                          for (std::uint64_t r : reqs)
+                                              if (!replies_.count(r)) return false;
+                                          return true;
+                                      },
+                                      timeoutMs);
+        if (!came) {   // the host gone, or slower than the timeout
+            for (std::uint64_t r : reqs)
+                if (r) forgetRead(r);
+            out.bytes.clear();
+            return out;
+        }
+        // In order. A piece that does not start where the bytes end (the
+        // file changed size meanwhile) ends the round, and the next round
+        // asks again from there; every answer is taken either way.
+        bool done = false, failed = false, again = false;
+        for (std::uint64_t r : reqs) {
+            Json answer;
+            std::string piece;
+            const bool got = readAnswer(r, &answer, &piece);
+            if (done || failed || again) continue;
+            if (!got) {
+                failed = true;
+            } else if (!answer["error"].isNull()) {
+                out.error = answer["error"].asString();
+                failed = true;
+            } else if ((size = answer["size"].asNumber(0)) > (double)limit) {
+                out.tooLarge = true;
+                failed = true;
+            } else if ((double)out.bytes.size() != answer["offset"].asNumber(-1)) {
+                again = true;
+            } else {
+                out.bytes += piece;
+                done = piece.empty() || (double)out.bytes.size() >= size;
+            }
+        }
+        if (failed) {
+            out.bytes.clear();
+            return out;
+        }
+        if (done) {
+            out.ok = true;
+            return out;
+        }
+    }
 }
 
 // ---------------------------------------------------------------- windows
