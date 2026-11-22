@@ -101,6 +101,7 @@ GtkApplication* MCGuiApplication();
 // in front's bookmarks: its .mutible/bookmarks, then "Shared" (~/Bookmarks).
 GMenu* MCGuiBookmarksMenu();
 std::vector<MCGuiAppWindow> MCGuiAppWindows();   // open windows, oldest first
+void MCGuiDropAgents();   // the newest window's hidden Agents panel, made again by the next toggle
 MCGuiAppWindow MCGuiApp();                       // the newest; empty with none open
 
 // The file in the newest window, as a single click in the tree opens it: in

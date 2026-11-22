@@ -9624,3 +9624,11 @@ side's; two are fixed, one left alone on purpose.
 - **Limits.** A text with a NUL byte (UTF-16) or a name with a quote or backslash is refused with a note. Conflict choices keep no copy (the local ones do not).
 - **Checks.** remote_ssh: Discard of one block of a closed file and of one of a file open in a clean tab, the object's text, Keep Incoming on one of two conflicts in a merge made there.
 - **Not done.** Apply to Main and the worktree page; real ssh never run.
+
+### 173. Three flaky GTK checks from the soak (November 2026)
+
+- **What.** The nightly soak (run 45018189712) failed three suites once each, all three replayed at will with `MC_GUI_IN_ORDER=1` and the round's suites in its logged order. Checks only; the app is unchanged.
+- **editor_words** (seed 1761923150): after `bookmark_save`, whose last click is on the same spot of the same view, the first double-click was counted a triple click (Carets' own count keeps the click across suites): a 0.6 s pause first, as between its other double-clicks.
+- **agents** (seed 3661827657): `plan_usage` opens and closes the Agents panel, which is kept with its model reading the Claude folders as they were when it was made; `agents` found a panel before its key and no rows. It still failed on main with Line History, so the gutter hover was not the cause. `agents` now drops a hidden panel first (`MCGuiDropAgents` in AppSeam.inc).
+- **session_browser** (seed 1761923150): the state's tabs were compared with the window's by a set of paths; four untitled tabs earlier suites left share the path "". Counted now.
+- **Also seen.** `shell_integration`'s `pad > 0` failed in these replays, from this worktree; the prompt it measures shows the scratch world's path, so a long one makes it longer than the line. With `MC_GUI_ROOT=/tmp`, as CI's short paths, it passes (a prompt of 53 in 104 columns). Not a regression.

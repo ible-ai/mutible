@@ -69,6 +69,21 @@ MCGuiAppWindow MCGuiApp() {
     return g.windows.empty() ? MCGuiAppWindow() : appWindowParts(g.windows.back());
 }
 
+// The newest window's Agents panel and the worktrees over its model, gone
+// while hidden (the window's teardown order), so the next View > Toggle
+// Agents makes them over the Claude folders as the environment names them.
+void MCGuiDropAgents() {
+    if (g.windows.empty()) return;
+    App* app = g.windows.back();
+    if (app->agentsShown || !app->agents) return;
+    GtkWidget* widget = app->agents->widget();
+    delete app->worktrees;
+    app->worktrees = nullptr;
+    delete app->agents;
+    app->agents = nullptr;
+    if (GtkWidget* stack = gtk_widget_get_parent(widget)) gtk_stack_remove(GTK_STACK(stack), widget);
+}
+
 void MCGuiOpenFile(const std::string& path) {
     if (!g.windows.empty()) treeOpenCb(path, EditorTabs::OpenFrom::TreeClick, g.windows.back());
 }
