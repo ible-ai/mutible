@@ -3460,6 +3460,9 @@ static void wireReviewPage(App* app, const std::shared_ptr<ChangeReviewPage>& pa
             if (d->path() == path) return true;
         return false;
     };
+    page->workWritten = [app](const std::string& path) {
+        if (!app->dead) app->editor->followHostFile(path);
+    };
     page->syntaxColor = [](int style) { return g.settings->settings().syntax((TokenStyle)style); };
     page->mergeColor = [](bool incoming) {
         const Settings& st = g.settings->settings();
@@ -3865,6 +3868,9 @@ static void compareWorktree(App* app) {
         for (Document* d : app->editor->dirtyDocuments())
             if (d->path() == file) return true;
         return false;
+    };
+    page->workWritten = [app](const std::string& path) {
+        if (!app->dead) app->editor->followHostFile(path);
     };
     page->syntaxColor = [](int style) { return g.settings->settings().syntax((TokenStyle)style); };
     page->mergeColor = [](bool incoming) {

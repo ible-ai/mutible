@@ -92,6 +92,36 @@ static void testChangeReviewRead() {
                 r3, fi, u"x", run, [&](std::string*, std::string*) { trashCalls++; return true; }, nullptr);
             CHECK(again == staleText("f.txt", false) && trashCalls == 0);
         }
+        // Over SSH (`discardTextOnHost`, `writeWorkOnHost`): git apply of one
+        // patch writes the work tree, the file as it was is kept as a git
+        // object first, and a file that moved meanwhile is refused.
+        {
+            CHECK(workPatch("f.txt", "a\n", "a\n").empty());
+            CHECK(workPatch("f.txt", std::string("a\0b", 3), "x\n").empty());   // a NUL
+            CHECK(workPatch("q\"x", "a\n", "b\n").empty());                      // a quote in the name
+            CHECK(workPatch("f.txt", "", "x\n") == "--- a/f.txt\n+++ b/f.txt\n@@ -0,0 +1,1 @@\n+x\n");
+            CHECK(sh("printf 'q\\nr' >h.txt && git add h.txt && git commit -q -m h && printf 'q\\nR' >h.txt"));
+            Read rh = readUncommitted(root, run);
+            size_t hi = rh.diffs.size();
+            for (size_t i = 0; i < rh.diffs.size(); i++)
+                if (rh.diffs[i].file.path == "h.txt" && rh.diffs[i].file.section == Section::Changes) hi = i;
+            CHECK(hi < rh.diffs.size() && !rh.diffs[hi].blocks.empty());
+            if (hi < rh.diffs.size() && !rh.diffs[hi].blocks.empty()) {
+                // The file moved since it was read: nothing is kept or written.
+                CHECK(sh("printf 'q\\nS' >h.txt"));
+                std::string kept = "x";
+                CHECK(discardTextOnHost(rh, hi, blockResult(rh.diffs[hi], 0, Op::Discard), run, &kept) ==
+                      staleText("h.txt", false));
+                CHECK(kept.empty() && slurp(root + "/h.txt") == "q\nS");
+                CHECK(sh("printf 'q\\nR' >h.txt"));
+                // No newline at the end, kept as it was.
+                const std::string why =
+                    discardTextOnHost(rh, hi, blockResult(rh.diffs[hi], 0, Op::Discard), run, &kept);
+                CHECK(why.empty());
+                CHECK(slurp(root + "/h.txt") == "q\nr");
+                CHECK(kept.size() == 40 && run(root, {"cat-file", "-p", kept}, "").out == "q\nR");
+            }
+        }
         // Unstage g.txt's block: the index goes back to HEAD's text.
         CHECK(stageText(r, 0, blockResult(r.diffs[0], 0, Op::Unstage), run).empty());
         CHECK(run(root, {"show", ":g.txt"}, "").out == "x\n");

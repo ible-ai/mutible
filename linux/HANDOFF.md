@@ -35,16 +35,20 @@ FLAKY line.
 - #360 GTK over SSH: language servers run by the host (item 167).
 - #361 (the Mac session's) formatters over SSH (FsRead "format", Welcome
   flag 1024) and fetch, pull and push through the host's git.
-- GTK over SSH: language servers' edits reach files no tab holds, and
+- #362 this list.
+- #363 GTK over SSH: language servers' edits reach files no tab holds, and
   URIs are the host's paths, never this machine's realpath (item 168).
-- GTK over SSH: fetch, pull, push, Sync and autofetch run on the host,
+- #364 GTK over SSH: fetch, pull, push, Sync and autofetch run on the host,
   and Format Document and format on save run its formatter (item 169);
   the core's unused `Shared::gitRemoteOpText` is deleted.
-- GTK over SSH: Preserve Case and Replace This Match through the host (Welcome
+- #365 GTK over SSH: Preserve Case and Replace This Match through the host (Welcome
   flag 2048, item 170). The Mac client still refuses both until it checks
   `hostReplacesOne()`.
-- GTK Line History: the gutter's hover box and View > Show Line History,
+- #366 GTK Line History: the gutter's hover box and View > Show Line History,
   commits through the host's git over SSH (item 171).
+- #367 ROADMAP's terminal line (docs only).
+- GTK over SSH: Discard of a block or lines and the conflict choices on the
+  review page, written by git on the host (item 172; `src/ChangeReviewRead`).
 
 ## Where it stands
 
@@ -9613,3 +9617,10 @@ side's; two are fixed, one left alone on purpose.
 - **Differences from the Mac.** A click on a session's words says in the status bar that there is no page of what a session changed (the Agents panel has none on GTK); the date is `%b %e, %Y at %H:%M` in local time; no check on a 50,000-line file's main-thread share yet.
 - **Checks.** `line_history`: two commits by two authors, the box for a line of each and for a session's line and a hand-typed one, following down the gutter, closing on leave; the palette runs the command (no key), the menu has it, the words are drawn after the text and read as the Mac's, a click on a commit opens `commit:`, a click on a session's words says no page, the pointer on the words shows the box, an edit hides the words below it and the next look puts them on their new lines, pressing the command again takes them away. **Not run:** real ssh, a real mouse hover and the look of the box (needs a person's eyes).
 - **Not done.** Over SSH the Claude Code part; real ssh never run; the box's colors are the theme's popover, not tuned.
+
+### 172. The window over SSH, Discard of a block and conflict choices on the review page (November 2026)
+
+- **What.** The two refusals of item 166 are gone. The page's Discard of a block or lines and Keep Current, Incoming and Both write the host's work tree with `git apply` of one whole-file patch (`ChangeReview::workPatch`, `writeWorkOnHost`, `discardTextOnHost` in src/ChangeReviewRead.{h,cpp}, generic: the Mac can use them; core tests in `review-read:git`): old lines are the file as the page read it, so git refuses it if the file moved (the stale text), and no write goes to this computer's disk. Discard first keeps the file as it is as a git object there (`GitUi::keepCopyArgs`, the panel's way) and the message names it (`keptCopiesText`); its question says the other machine has no Trash; there is no Undo Discard. A tab with unsaved text is refused as locally; a clean tab of the file takes the host's new text (`Editor::followHostFile`, one "Reload from Disk" step: a GTK tab over SSH does not follow the host's disk by itself).
+- **Limits.** A text with a NUL byte (UTF-16) or a name with a quote or backslash is refused with a note. Conflict choices keep no copy (the local ones do not).
+- **Checks.** remote_ssh: Discard of one block of a closed file and of one of a file open in a clean tab, the object's text, Keep Incoming on one of two conflicts in a merge made there.
+- **Not done.** Apply to Main and the worktree page; real ssh never run.

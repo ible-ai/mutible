@@ -598,7 +598,9 @@ Trash (Discard uses `discardPlanOverSsh` and keeps a
 git object). Over SSH the review and commit pages and the comparisons of a
 revision run through the same runner and a host file reader (session-host.md,
 "the review pages and comparisons"); `mutible diff`, the agents' worktrees,
-Apply to Main and a page's Discard of a block are refused with a note; line history is not routed.
+Apply to Main are refused with a note; line history is not routed. A page's Discard of a block or
+lines and its conflict choices are written by `git apply` on the host (`ChangeReview::writeWorkOnHost`, `discardTextOnHost`;
+Discard keeps the changed copy as a git object first, as the panel's does).
 - Over SSH on GTK, fetch, pull, push, Sync and autofetch (the Mac's #361): `hostGitRunner` no longer
   answers `Git::talksToRemote` commands itself, so they take the same path as
   every command (the host runs them with that machine's credentials and never

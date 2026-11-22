@@ -311,6 +311,22 @@ bool Editor::readHostTextForEdit(const std::string& path, std::string* text) {
     return true;
 }
 
+bool Editor::followHostFile(const std::string& path) {
+    if (!remote()) return false;
+    bool any = false;
+    for (Document* d : documents()) {
+        if (d->path() != path || d->kind() != Document::Kind::Text || d->dirty() || d->loading()) continue;
+        const SessionLink::Link::RemoteText r = link_->readText(path);
+        if (!r.ok) return any;
+        Document::FileEncoding enc;
+        enc.encoding = r.encoding;
+        enc.bom = r.bom;
+        d->followHostText(r.text, enc);
+        any = true;
+    }
+    return any;
+}
+
 Document* Editor::agentPreviewTab() const {
     return documentById(win_->previewTab(Model::Preview::Agent));
 }

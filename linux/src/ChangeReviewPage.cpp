@@ -1503,7 +1503,18 @@ void ChangeReviewPage::runOpOn(std::shared_ptr<Data> d, Op op, size_t fi, long b
         return;
     }
     const FileDiff& fd = d->read.diffs[fi];
-    const GitUi::ActionPlan plan = ChangeReview::plan(fd, op, lines);
+    GitUi::ActionPlan plan = ChangeReview::plan(fd, op, lines);
+    if (op == Op::Discard && plan.refusal.empty() && panel_->overSsh()) {
+        // The other machine has no Trash: the file as it is is kept there as
+        // a git object (named once discarded), and git writes the new text.
+        plan.detail = std::string(lines ? "They go" : "Its lines go") +
+                      " back to the version git has (staged, or else in the last commit). The other "
+                      "machine has no Trash: the file as it is now is kept there as a git object, "
+                      "named once it is discarded (git cat-file -p shows it).";
+        plan.doneText = "Discarded " +
+                        std::string(lines ? "the selected lines of " : "a change to ") +
+                        nameOf(fd.file.path) + ".";
+    }
     if (!plan.refusal.empty()) {
         actedPending_ = false;   // refused: nothing moves
         finish(plan.refusal, false);
@@ -1558,10 +1569,21 @@ void ChangeReviewPage::writeIndex(std::u16string text, size_t fi, std::shared_pt
 // to be what the view was drawn from.
 void ChangeReviewPage::writeDiscard(std::u16string text, size_t fi, std::shared_ptr<Data> d,
                                     const GitUi::ActionPlan& plan) {
-    if (panel_->overSsh()) {   // it would write this computer's disk
-        actedPending_ = false;
-        finish("Discarding a block does not work in a window over SSH yet: discard the file from "
-               "Source Control.", false);
+    if (panel_->overSsh()) {   // the work tree is on the other machine: git there writes it
+        const std::string done = plan.doneText;
+        actionPosted();
+        panel_->runOnGitThread([this, text, fi, d, done, alive = alive_] {
+            std::string kept;
+            const std::string failure = ChangeReview::discardTextOnHost(d->read, fi, text, runner, &kept);
+            if (!*alive) return;
+            const std::string rel = d->read.diffs[fi].file.path;
+            const std::string path = d->read.top + "/" + rel;
+            onMain(alive, this, [failure, done, kept, rel, path](ChangeReviewPage* p) {
+                if (failure.empty() && p->workWritten) p->workWritten(path);
+                p->finish(failure.empty() ? GitUi::keptCopiesText(done, {{rel, kept}}) : failure,
+                          failure.empty());
+            });
+        });
         return;
     }
     const std::string done = plan.doneText;
@@ -1703,10 +1725,6 @@ void ChangeReviewPage::keepConflict(MergeConflicts::Keep keep, size_t fi, long b
     auto d = data_;
     if (!d || fi >= d->read.diffs.size()) return;
     const FileDiff& fd = d->read.diffs[fi];
-    if (panel_->overSsh()) {   // it would write this computer's disk
-        finish("Resolving a conflict block does not work in a window over SSH yet.", false);
-        return;
-    }
     if (block < 0 || (size_t)block >= fd.conflicts.size()) {
         gtk_widget_error_bell(root_);
         return;
@@ -1728,6 +1746,18 @@ void ChangeReviewPage::keepConflict(MergeConflicts::Keep keep, size_t fi, long b
                                  ? "No conflicts left in " + name + ". Mark Resolved stages it."
                                  : MergeConflicts::resolvedNote(name, left);
     const std::string read = x.workBytes;
+    if (panel_->overSsh()) {   // git on the other machine writes it (writeWorkOnHost)
+        actionPosted();
+        panel_->runOnGitThread([this, fi, d, bytes, done, path, alive = alive_] {
+            const std::string failure = ChangeReview::writeWorkOnHost(d->read, fi, bytes, runner);
+            if (!*alive) return;
+            onMain(alive, this, [failure, done, path](ChangeReviewPage* p) {
+                if (failure.empty() && p->workWritten) p->workWritten(path);
+                p->finish(failure.empty() ? done : failure, failure.empty());
+            });
+        });
+        return;
+    }
     panel_->runOnGitThread([this, path, rel, name, bytes, read, done, alive = alive_] {
         std::string failure, now, error;
         FolderSearch::FileStamp stamp;

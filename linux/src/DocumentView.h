@@ -420,6 +420,12 @@ public:
     // Reload chosen: the disk's text replaces the buffer's, in place, as one
     // undoable edit. False when it can no longer be read as text.
     bool reloadFromDisk();
+    // A window over SSH: the file's text as its host has it now replaces a
+    // clean buffer's, in place, as that same one undoable step; the host
+    // counts it saved (a reload cannot read the other machine's disk).
+    void followHostText(const std::string& content, const FileEncoding& encoding) {
+        applyDiskText(content, encoding);
+    }
 
     // Highlighting from scratch (the settings changed: the swatches).
     void restartHighlighting();
