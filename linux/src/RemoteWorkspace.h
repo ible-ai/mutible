@@ -94,6 +94,9 @@ public:
     // or the host does not run git. Called by hostGitRunner's requests, on
     // the main loop.
     bool hostRunsGit() const;
+    // Whether the host's replace honours Preserve Case and one match of a
+    // row (Welcome flag 2048).
+    bool hostReplacesOne() const;
     bool git(const std::string& dir, const std::vector<std::string>& args, std::string input, double timeout,
              std::function<void(bool answered, const Shared::GitReply& reply)> done);
     // A file of the host's work tree (absolute, under the folder): `done(ok,

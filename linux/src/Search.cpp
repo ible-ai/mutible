@@ -760,6 +760,7 @@ void SearchPanel::hostBatch(unsigned, const std::string& note, std::vector<Json>
             m.path = root_ + "/" + m.relativePath;
             m.line = (int)r["line"].asNumber(0);
             m.column = (int)r["column"].asNumber(0);
+            m.byteColumn = (std::size_t)r["byteColumn"].asNumber(0);   // a host with flag 2048 sends it
             m.text = r["text"].asString();
             for (const Json& l : r["before"].elements()) m.before.push_back(l.asString());
             for (const Json& l : r["after"].elements()) m.after.push_back(l.asString());
@@ -926,11 +927,13 @@ void SearchPanel::giveKeyboardBack() {
 // The query, replacement and options as they are now, or false (with the
 // bell and a word in the status line) when there is nothing to replace.
 bool SearchPanel::readyToReplace() {
-    if (hostSearch_ && (!hostReplace_ || active(preserve_))) {
+    // An older host would ignore Preserve Case and replace wrongly.
+    if (hostSearch_ && (!hostReplace_ || (active(preserve_) && !hostReplacesOne()))) {
         gtk_widget_error_bell(window_);
         setStatus(!hostReplace_ ? "Replace in Folder does not work in a window over SSH here: the host on " +
                                       hostPlace_ + " does not replace in its folder"
-                                : "Preserve Case does not work in Replace in Folder over SSH yet");
+                                : "Preserve Case does not work in Replace in Folder over SSH yet: "
+                                  "the host on " + hostPlace_ + " is too old");
         return false;
     }
     if (mode_ != Mode::Find || replacing_ || scope_.empty()) {
@@ -1081,6 +1084,7 @@ void SearchPanel::replaceAllOnHost() {
     ask.set("caseSensitive", Json(o.caseSensitive));
     ask.set("wholeWord", Json(o.wholeWord));
     ask.set("regex", Json(o.regex));
+    if (o.preserveCase) ask.set("preserveCase", Json(true));   // only to a host that honours it
     ask.set("include", Json(o.include));
     ask.set("exclude", Json(o.exclude));
     ask.set("replacement", Json(with));
@@ -1257,15 +1261,69 @@ void SearchPanel::planned(PlanJob* job) {
 
 void SearchPanel::replaceMatchAt(guint row) {
     if (hostSearch_ && row < hits_.size()) {
-        // The host replaces the matches of a row's line, as the page does.
-        gtk_widget_error_bell(window_);
-        setStatus("Replacing one match does not work in a window over SSH yet: use Replace All");
+        // An older host replaces every match of a row's line, as the page does.
+        if (!hostReplacesOne()) {
+            gtk_widget_error_bell(window_);
+            setStatus("Replacing one match does not work in a window over SSH yet: the host on " + hostPlace_ +
+                      " is too old. Use Replace All");
+            return;
+        }
+        if (!readyToReplace()) return;
+        replaceMatchOnHost(hits_[row]);
         return;
     }
     if (row >= hits_.size() || !readyToReplace()) return;
     replacing_ = true;
     const FolderSearchMatch hit = hits_[row];
     replaceInPaths({hit.path}, &hit, {}, FolderReplaceExclusions());
+}
+
+// Replace This Match in a window over SSH: the row's first match (the
+// column the host's row carried) goes to the host's "replace" as one row of
+// one file with its "byteColumn"; the host checks it still reads as the row
+// showed and a match still starts there, else says the file changed.
+void SearchPanel::replaceMatchOnHost(const FolderSearchMatch& hit) {
+    // A tab with unsaved changes is the person's: left alone, as Replace All does.
+    if (holdOf(hit.path, nullptr) == Hold::Conflict) {
+        gtk_widget_error_bell(window_);
+        setStatus("Nothing replaced: " + baseName(hit.path) + " is in a tab with unsaved changes");
+        return;
+    }
+    const FolderSearchOptions o = options();
+    Json ask = Json::object();
+    ask.set("query", Json(std::string(gtk_editable_get_text(GTK_EDITABLE(entry_)))));
+    ask.set("caseSensitive", Json(o.caseSensitive));
+    ask.set("wholeWord", Json(o.wholeWord));
+    ask.set("regex", Json(o.regex));
+    ask.set("preserveCase", Json(o.preserveCase));
+    ask.set("include", Json(o.include));
+    ask.set("exclude", Json(o.exclude));
+    ask.set("replacement", Json(replacement()));
+    ask.set("hidden", Json(true));   // as the search read them
+    Json row = Json::object();
+    row.set("line", Json((int64_t)hit.line));
+    row.set("text", Json(hit.text));
+    row.set("count", Json((int64_t)hit.count));
+    row.set("byteColumn", Json((int64_t)hit.byteColumn));
+    Json rows = Json::array();
+    rows.push(std::move(row));
+    Json file = Json::object();
+    file.set("path", Json(hit.relativePath));
+    file.set("rows", std::move(rows));
+    Json files = Json::array();
+    files.push(std::move(file));
+    ask.set("files", std::move(files));
+    replacing_ = true;
+    setStatus("Replacing…");
+    std::weak_ptr<int> alive = life_;
+    const std::uint64_t req = hostReplace_(std::move(ask), [this, alive](std::vector<Json>&& a, bool done) {
+        if (alive.expired()) return;
+        hostReplaced(std::move(a), done, {});
+    });
+    if (!req) {
+        replacing_ = false;
+        setStatus("Cannot replace: the connection to " + hostPlace_ + " is lost");
+    }
 }
 
 // Replace every match in these files, or only `hit`'s. Tabs first, on the

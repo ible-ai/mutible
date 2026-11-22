@@ -107,7 +107,16 @@ struct ReplaceRow {
     std::string text;
     std::size_t count = 1;
     bool on = true;
+    // Only the match starting at this 0-based byte of the line ("byteColumn"
+    // in the row, as the search row carries it; -1: every match of the line,
+    // as before). A request with such a row holds that one row and nothing
+    // else (Welcome flag 2048, kHostReplacesOne).
+    std::int64_t only = -1;
 };
+// The Welcome's flag 2048: the host's replace honours Preserve Case (the
+// request's "preserveCase") and one match of a row (a row's "byteColumn"),
+// and its search rows carry "byteColumn". A host without it ignores both.
+constexpr int kHostReplacesOne = 2048;
 enum class ReplaceCheck {
     Replaced,   // *out holds the text with the rows' matches replaced
     Nothing,    // every row taken out: nothing to replace

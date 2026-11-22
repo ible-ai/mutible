@@ -192,6 +192,8 @@ void RemoteWorkspace::cancelSearch(std::uint64_t req) {
 
 bool RemoteWorkspace::hostRunsGit() const { return live() && link_->runsGit(); }
 
+bool RemoteWorkspace::hostReplacesOne() const { return live() && link_->replacesOne(); }
+
 std::string RemoteWorkspace::label() const { return link_ ? link_->label() : std::string(); }
 
 bool RemoteWorkspace::readFile(const std::string& path,

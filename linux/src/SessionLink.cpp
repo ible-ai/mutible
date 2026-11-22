@@ -451,6 +451,7 @@ bool Link::fileOpAsync(Json request, std::function<void(bool, const Json&)> done
 }
 
 bool Link::runsGit() const { return !lost() && client_->hostRunsGit(); }
+bool Link::replacesOne() const { return !lost() && client_->hostReplacesOne(); }
 
 bool Link::gitAsync(Json request, std::string input, BytesFn done) {
     if (!runsGit()) return false;

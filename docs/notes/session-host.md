@@ -4992,13 +4992,51 @@ checked by the host against rows it was not sent: left alone and said).
   `RemoteWorkspace::replace`, `SearchPanel::setHostReplace`. Without it (a
   host whose Welcome lacks flag 16, `hostWritesForPages`: every host of this
   tree sets it) or a lost link, the status line refuses with a note.
-- **Traps.** The host ignores Preserve Case (`searchOptions`), so it is
-  refused over SSH. One match of a row cannot be sent: the host replaces
-  every match of a row's line, so Replace Match is refused with a note.
+- **Traps.** A host without Welcome flag 2048 ignores Preserve Case
+  (`searchOptions`) and replaces every match of a row's line, so a client
+  refuses both with a note unless `Client::hostReplacesOne()` (below).
 - **Checked** (`remote_ssh`): a panel without the op refuses; with it, util.c
   (closed) is rewritten on disk, main.c's clean tab shows the new text unsaved
   with the disk as it was, fresh.c's tab with a typed change is left alone
   and named, and the question and the status are in the words above.
+
+#### Preserve Case and one match through the host (2026-11-22, Welcome flag 2048)
+
+Replace in Folder's two refusals over SSH (the host ignored Preserve Case and
+replaced a row's whole line) are gone for a host that says it can.
+
+- **Protocol.** The "replace" request's `preserveCase` (bool, the same
+  spelling the local options use; read by `searchOptions`, so
+  `FolderSearch::replaceInText` and `TextFind`'s one `preserveCase` do the
+  work for held documents and files alike). A row of a file may carry
+  `byteColumn` (0-based byte of the match in the raw line,
+  `ReplaceRow::only`): such a row is the only one of the request. The host
+  checks the line still reads as the row showed, then replaces the match
+  starting there (`FolderSearch::replaceMatchInText`, `TextFind::
+  replaceOneInText`, the local Replace This Match's function); no match
+  starting there, a changed line or more than one row is `ReplaceCheck::
+  Changed`, reported as "changed since the search" like a stale row. A row
+  without `byteColumn` and a request without `preserveCase` behave as before
+  (the Mac's shape). The search rows carry `byteColumn` now (the first
+  match's, the one Replace This Match replaces).
+- **Flag.** Welcome flag 2048, `kHostReplacesOne` (SessionSearch.h), set in
+  the Host's Welcome (SessionHost.cpp) beside 1024; `Client::hostReplacesOne()`. A client sends
+  neither field without it (an older host would ignore them and replace
+  wrongly). Welcome flags: 1 saves, 2 saves in an encoding, 4 watches the
+  disk, 8 searches and lists on workers, 16 writes for pages, 32 hostShell
+  terminal, 64 file operations, 128 shell integration, 256 git, 512 language
+  servers, 1024 formatters, 2048 this.
+- **GTK.** `Link::replacesOne`, `RemoteWorkspace::hostReplacesOne`,
+  `SearchPanel::setHostReplace(replace, replacesOne)`; `replaceMatchOnHost`
+  sends the row (no question, as the local one) and the answer goes through
+  `hostReplaced`. A panel whose host lacks the flag keeps the two notes. A
+  tab with unsaved changes is refused with a note, as Replace All names it.
+- **The Mac** still refuses both (its client was not changed): it can drop
+  its two refusals once it checks `hostReplacesOne()`, sending `preserveCase`
+  in Replace All and Replace in This File, and a row's `byteColumn` for
+  Replace This Match.
+- **Checked.** Core `host:replace-one` (preserve case on "Foo"/"FOO", one
+  match, a stale column, the old shape); `remote_ssh`'s Preserve Case block.
 
 #### The GTK window over SSH, the connecting window (2026-11-21, seventh slice)
 

@@ -206,7 +206,9 @@ enum class Kind {
                  // SessionGit.h: a window over SSH's Source Control);
                  // flag 512: it runs language servers for one (LspStart,
                  // SessionLsp.h); flag 1024: it runs formatters for one
-                 // (FsRead's "format", SessionFormat.h)
+                 // (FsRead's "format", SessionFormat.h); flag 2048: its
+                 // replace takes "preserveCase" and one match of a row
+                 // (SessionSearch.h)
     DocOpened,   // doc, v (and text16 when it was open already: another renderer's)
     DocEdited,   // doc, v, by, seq, ops, ops16, flag (1 undo, 2 redo), select
     DocUndone,   // doc, req, outcome

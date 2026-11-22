@@ -315,6 +315,11 @@ public:
     // Whether the host runs formatters for an app's window (its Welcome's
     // flag 1024, SessionFormat.h): a window over SSH's Format Document.
     bool hostFormats() const { return (hostFlags_ & 1024) != 0; }
+    // Whether the host's Replace in Folder honours the request's
+    // "preserveCase" and a row's "byteColumn" (one match; flag 2048,
+    // SessionSearch.h's kHostReplacesOne). An older host would ignore both
+    // and replace wrongly, so a client sends neither without it.
+    bool hostReplacesOne() const { return (hostFlags_ & 2048) != 0; }
     // A document's formatter planned and run on the host (SessionFormat.h's
     // formatRequestJson as `request`, `text` its standard input), queued
     // behind this renderer's edits and saves. 0, sending nothing, when the
