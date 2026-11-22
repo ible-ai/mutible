@@ -3933,10 +3933,15 @@ which `openRemoteAddress`es it; no other argument is read as a path.
   `applyShell` is unchanged). An older host, a shell that is neither zsh
   nor bash, or bash before 4.4 gets no name: `nonce_` stays empty and the
   shell is unmarked as before. `attachShell` (a held terminal) does not
-  read `/proc/<pid>/comm` of a remote pid: a held remote terminal is
-  unmarked until it is started again (the Mac keeps the nonce by link and
-  terminal id; GTK does not yet). remote_ssh checks the marked prompt,
-  `sleep 2` busy then idle and `false`'s status 1 with the login bash;
+  read `/proc/<pid>/comm` of a remote pid: it finds the nonce and the
+  shell's name in `remoteMarks()` (Terminal.cpp, a process-wide map by the
+  link's key and the terminal's id, as the Mac's `HostNonces`; set in
+  `termIntegrated`, erased when the shell exits or the terminal closes), so
+  a terminal re-attached after a reconnect keeps its marks. One that this
+  process never opened (before a relaunch) stays unmarked. remote_ssh
+  checks the marked prompt, `sleep 2` busy then idle, `false`'s status 1,
+  and after the drop and the reconnect by itself the same shell's prompt
+  marked and `(exit 3)`'s status 3, with the login bash;
   zsh was not installed where this was written.
 - **A dropped connection**: the link's lost listener says so in the status
   bar (the core's `explainSshFailure` of the reaped status, "Disconnected

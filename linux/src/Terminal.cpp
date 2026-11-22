@@ -34,6 +34,22 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+// The nonce and shell of each remote shell this process opened with the
+// remote's own integration, by its link's key (machine and folder) and the
+// terminal's id there, as the Mac's HostNonces: a window that connects again
+// to the lasting host (a reconnect, the session browser) attaches to the same
+// terminal in a new Terminal or link, which never saw TermOpened's name, and
+// finds its marks' nonce here. Not by the id alone: every host hands out the
+// same ids. A shell from before a relaunch has none, and runs unmarked.
+namespace {
+struct RemoteMarks { std::string nonce; bool bash = false; };
+using RemoteMarksKey = std::pair<std::string, Shared::TermId>;
+std::map<RemoteMarksKey, RemoteMarks>& remoteMarks() {
+    static auto* m = new std::map<RemoteMarksKey, RemoteMarks>();
+    return *m;
+}
+}  // namespace
+
 namespace {
 
 // The 16 ANSI slots, in VTE's order: black, red, green, yellow, blue, magenta,
@@ -672,6 +688,16 @@ void Terminal::attachShell() {
     forgetHeld();
     bashShell_ = comm == "bash";
     nonce_ = comm == "zsh" || bashShell_ ? std::string("held") : std::string();
+    if (link_->kind() == SessionLink::Link::Kind::Remote) {
+        // The remote's own marks carry the nonce this window gave its
+        // shell, kept by the link and the id (remoteMarks).
+        const auto known = remoteMarks().find({link_->key(), id});
+        if (known != remoteMarks().end()) {
+            nonce_ = known->second.nonce;
+            bashShell_ = known->second.bash;
+            remoteNonce_ = nonce_;
+        }
+    }
     popOwed_ = 0;
     shellSpoke_ = true;   // at its prompt or running: nothing to wait for
     seenPrompt_ = true;   // it ran before: its `exit` closes the terminal
@@ -730,9 +756,13 @@ void Terminal::closeOnHost() {
     if (heldTerm_) {
         link_->client().attachTerminal(heldTerm_, nullptr);
         link_->client().closeTerminal(heldTerm_);
+        remoteMarks().erase({link_->key(), heldTerm_});
         heldTerm_ = 0;
     }
-    if (hostTerm_) link_->client().closeTerminal(hostTerm_);
+    if (hostTerm_) {
+        link_->client().closeTerminal(hostTerm_);
+        remoteMarks().erase({link_->key(), hostTerm_});
+    }
     hostTerm_ = 0;
 }
 
@@ -740,6 +770,7 @@ void Terminal::rehost(std::shared_ptr<SessionLink::Link> link) {
     if (!link || link == link_) return;
     link_->removeLostListener(lostListener_);
     if (hostTerm_ && !link_->lost()) link_->client().closeTerminal(hostTerm_);
+    if (hostTerm_) remoteMarks().erase({link_->key(), hostTerm_});
     hostTerm_ = heldTerm_ = 0;
     link_ = std::move(link);
     listenForLoss();
@@ -902,8 +933,12 @@ Terminal::~Terminal() {
     if (heldTerm_ && !link_->lost()) {
         link_->client().attachTerminal(heldTerm_, nullptr);
         link_->client().closeTerminal(heldTerm_);
+        remoteMarks().erase({link_->key(), heldTerm_});
     }
-    if (hostTerm_) link_->client().closeTerminal(hostTerm_);
+    if (hostTerm_) {
+        link_->client().closeTerminal(hostTerm_);
+        remoteMarks().erase({link_->key(), hostTerm_});
+    }
     link_->removeLostListener(lostListener_);
     if (ackIdle_) g_source_remove(ackIdle_);
     if (catchUpTimer_) g_source_remove(catchUpTimer_);
@@ -1660,6 +1695,7 @@ void Terminal::shellExited(int status, const std::string& error) {
     const bool prompted = seenPrompt_ || host_.prompts > 0 ||
                           g_get_monotonic_time() - lastSpawn_ > 2 * G_USEC_PER_SEC;
     shellPid_ = -1;
+    if (hostTerm_) remoteMarks().erase({link_->key(), hostTerm_});
     hostTerm_ = 0;
     navLine_ = -1;
     if (!error.empty()) feedNotice("[could not start the shell: " + error + "]", true);
@@ -1713,6 +1749,7 @@ void Terminal::HostListener::termIntegrated(Shared::TermId id, const std::string
     if (shell != "zsh" && shell != "bash") return;
     t->nonce_ = t->remoteNonce_;
     t->bashShell_ = shell == "bash";
+    remoteMarks()[{t->link_->key(), id}] = {t->remoteNonce_, t->bashShell_};
 }
 
 void Terminal::HostListener::termOpened(Shared::TermId id, int pid) {

@@ -9512,3 +9512,9 @@ side's; two are fixed, one left alone on purpose.
   passes. The note at that check stays.
 - **Where.** `linux/src/FileTree.cpp` (`restoreView`, `afterLayout`'s restore, `startListing`,
   `listingDone`), `FileTree.h`, `tests/gui/TreeFocusSuite.cpp`.
+
+### 163. The remote shell's marks kept across a reconnect (stage 8; November 2026)
+
+- **What.** Entry 161's gap: a remote terminal re-attached after a reconnect (or taken from the session browser) stayed unmarked. `Terminal.cpp` now keeps `{nonce, bash}` in a process-wide map by the link's key (machine and folder) and the terminal's id on the host (`remoteMarks()`, as the Mac's `HostNonces`); `termIntegrated` stores it, `attachShell` on a remote link looks it up and sets `nonce_`, `bashShell_` and `remoteNonce_`, and the shell's exit, `closeOnHost`, `rehost` and the destructor erase it. The key is the link's, not the Link object's, so the new link of a reconnect finds it. No `src/` change.
+- **Checks.** remote_ssh: after the connection drops and the window reconnects by itself to the same lasting host, the same shell's prompt is marked and `(exit 3)` is seen with status 3.
+- **Not done.** A shell from before a relaunch has no nonce here and stays unmarked. Real ssh never run.
