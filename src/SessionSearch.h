@@ -162,6 +162,13 @@ public:
     // `seconds` overrides the op's own time limit (checks; < 0 the op's).
     bool start(ClientId c, std::uint64_t req, std::uint64_t window, const std::string& root,
                const Json& request, std::string* why, double seconds = -1);
+    // Runs one task of the host's that answers once (a window's git,
+    // SessionGit.h) on a thread of its own: `task` fills the answer's json
+    // and bytes, and should stop early when `cancel` goes up. False, with
+    // why, when `most` reads and tasks run already.
+    using Task = std::function<void(std::atomic<bool>& cancel, Json* json, std::string* bytes)>;
+    bool startTask(ClientId c, std::uint64_t req, std::uint64_t window, Task task, std::string* why,
+                   std::size_t most = kMaxReadJobs);
     // Stops a read (its last answer still comes, saying "cancelled"), or
     // every read of a renderer that went.
     void cancel(ClientId c, std::uint64_t req);
@@ -171,6 +178,7 @@ public:
         ClientId to = 0;
         std::uint64_t req = 0, window = 0;
         Json json;
+        std::string bytes;   // a task's (FsData's bytes)
     };
     // What the workers answered since the last take, in order per read.
     std::vector<Answer> take();

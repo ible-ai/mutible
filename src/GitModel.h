@@ -170,6 +170,7 @@ ActionPlan unstageAllPlan(const Snapshot& s);
 // an empty folder).
 struct DiscardPlan : ActionPlan {
     bool trashFirst = false;   // move the file to the Trash before `args`
+    bool keepFirst = false;    // over SSH: keep it as a git object first (keepCopyArgs)
 };
 DiscardPlan discardPlan(const Row& r);
 // "Undo Discard of a.txt", for the menus; what is said once it is undone.
@@ -578,5 +579,26 @@ StyledText commitText(const std::string& show, long long now, DateFormat date = 
 
 // "a1b2c3d Subject": the title of a commit view.
 std::string commitTitle(const Git::Commit& c);
+
+// ------------------------------------- a window over SSH (stage 9)
+// Its git runs on the other machine (SessionGit.h), which has no Trash
+// mutible can reach, so Discard cannot put the changed copy there. Instead
+// the copy is kept in that repository as a git object first (keepCopyArgs:
+// `hash-object -w --no-filters`, the bytes as they are), and what is said
+// afterwards names it (keptCopiesText: `git cat-file -p <object>` shows
+// it); there is no Undo Discard. A file git does not track is refused:
+// discarding it would delete it, which the tree's Delete does, asking
+// first. A deleted file, restored, has nothing to keep. The rest (staged,
+// conflicts, submodules, add -N) is refused as on this Mac.
+DiscardPlan discardPlanOverSsh(const Row& r);
+DiscardBatch discardBatchPlanOverSsh(const std::vector<Row>& rows);
+// A hunk's or lines' Discard said the same way (its question and done
+// words; the copy kept as above); Stage and Unstage are as they are.
+HunkPlan hunkPlanOverSsh(HunkPlan p);
+std::vector<std::string> keepCopyArgs(const std::string& path);
+// `done`, then the kept copies' objects (file name, object), each named
+// by its first twelve characters.
+std::string keptCopiesText(const std::string& done,
+                           const std::vector<std::pair<std::string, std::string>>& kept);
 
 }  // namespace GitUi

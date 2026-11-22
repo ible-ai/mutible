@@ -1,5 +1,6 @@
 // SessionLink.mm — see SessionLink.h.
 #import "SessionLink.h"
+#include "SessionGit.h"
 
 #import "AppSettings.h"
 #import "BackupStore.h"
@@ -307,6 +308,10 @@ Link::~Link() {
     if (socket_) socket_->close();   // detaches: the host keeps everything else
     socket_.reset();
     owned_.reset();
+    // git waited for on a queue: no answer will come.
+    auto gits = std::move(gits_);
+    for (auto &[req, done] : gits)
+        if (done) done(false, Json(), std::string());
 }
 
 void Link::detach() {
@@ -335,6 +340,7 @@ void Link::dispatch() {
     }
     pumpStreams();
     pumpFetches();
+    pumpGits();
     if (!client_) return;
     for (const std::string &e : client_->takeErrors())
         os_log_error(SessionLog(), "the session's host%{public}s%{public}s: %{public}s",
@@ -392,6 +398,34 @@ bool Link::fileOp(Json request, Json *answer, int timeoutMs) {
         return false;
     }
     return true;
+}
+
+std::uint64_t Link::git(const std::string &dir, const std::vector<std::string> &args, std::string input,
+                        double timeout, std::function<void(bool, Json &&, std::string &&)> done) {
+    if (!runsGit()) return 0;
+    const std::uint64_t req = client_->requestGit(0, Shared::gitRequest(dir, args, timeout), std::move(input));
+    if (req) gits_[req] = std::move(done);
+    return req;
+}
+
+// Each git answer that came, to its `done` (taken out first); every one
+// still waiting once the host is gone, without an answer.
+void Link::pumpGits() {
+    if (gits_.empty() || !client_) return;
+    const bool gone = client_->lost();
+    std::vector<std::uint64_t> reqs;
+    for (const auto &[req, f] : gits_) reqs.push_back(req);
+    for (std::uint64_t req : reqs) {
+        auto it = gits_.find(req);
+        if (it == gits_.end()) continue;
+        Json answer;
+        std::string out;
+        const bool answered = client_->readAnswer(req, &answer, &out);
+        if (!answered && !gone) continue;
+        auto done = std::move(it->second);
+        gits_.erase(it);
+        if (done) done(answered, std::move(answer), std::move(out));
+    }
 }
 
 void Link::cancelStream(std::uint64_t req) {

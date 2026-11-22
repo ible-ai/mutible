@@ -41,6 +41,8 @@ struct GitOut {
     // The exit status when the runner knows it (-1 when it does not: then
     // `ok` alone is read). `diff --no-index` exits 1 when files differ.
     int status = -1;
+    // Stopped at its time limit (or its output's), not ended by itself.
+    bool timedOut = false;
 };
 // git `args` in `dir`, `input` on its stdin (empty for none).
 using GitRunner = std::function<GitOut(const std::string& dir, const std::vector<std::string>& args,

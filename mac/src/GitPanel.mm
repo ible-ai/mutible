@@ -9,6 +9,7 @@
 #include "GitStatus.h"
 #include "GitGraph.h"
 #include "GitModel.h"
+#include "SessionGit.h"
 #include <algorithm>
 #include <fcntl.h>
 #include <signal.h>
@@ -87,6 +88,20 @@ static void MCGitDrain(int fd, NSMutableData *into) {
 static MCGitResult *MCGitRun(NSString *dir, NSArray<NSString *> *args, NSTimeInterval timeout,
                              NSData *input);
 
+// The queue's runner (a window over SSH's), kept retained by the queue.
+static char kMCGitRunnerKey;
+static void MCGitReleaseRunner(void *p) {
+    if (p) CFRelease(p);
+}
+
+void MCGitSetQueueRunner(dispatch_queue_t queue, MCGitRunner runner) {
+    if (!queue) return;
+    void *ctx = runner ? (__bridge_retained void *)[runner copy] : NULL;
+    dispatch_queue_set_specific(queue, &kMCGitRunnerKey, ctx, ctx ? MCGitReleaseRunner : NULL);
+}
+
+BOOL MCGitOnHost(void) { return dispatch_get_specific(&kMCGitRunnerKey) != NULL; }
+
 MCGitResult *MCGitRunSync(NSString *dir, NSArray<NSString *> *args) {
     return MCGitRun(dir, args, MCGitTimeoutFor(args), nil);
 }
@@ -106,6 +121,11 @@ MCGitResult *MCGitRunSyncWithInput(NSString *dir, NSArray<NSString *> *args, NSD
 // with `input` a pipe that a thread of its own fills and closes.
 static MCGitResult *MCGitRun(NSString *dir, NSArray<NSString *> *args, NSTimeInterval timeout,
                              NSData *input) {
+    // A window over SSH's queue: the other machine's git, through its host.
+    if (void *ctx = dispatch_get_specific(&kMCGitRunnerKey)) {
+        MCGitRunner run = (__bridge MCGitRunner)ctx;
+        return run(dir, args, input, timeout);
+    }
     MCGitResult *r = [MCGitResult new];
     r.status = -1;
     r.output = [NSData data];
@@ -979,6 +999,7 @@ static NSColor *LetterColor(unichar c, BOOL unmerged) {
     // Discards that Undo Discard can put back, the last one last.
     NSMutableArray<MCGitDiscard *> *_discards;
     MCGitShownDiff *_shownDiff;       // the last diff given to onShowDiff
+    NSString *_overSshHost;           // a window over SSH's "host:path"; nil on this Mac
 }
 
 - (instancetype)initWithRoot:(NSString *)root {
@@ -1004,6 +1025,23 @@ static NSColor *LetterColor(unichar c, BOOL unmerged) {
 - (void)stop {
     [_autoTimer invalidate];
     _autoTimer = nil;
+}
+
+- (void)useGitRunner:(MCGitRunner)runner overSsh:(NSString *)host {
+    MCGitSetQueueRunner(_queue, runner);
+    _overSshHost = runner ? [host copy] : nil;
+    if (_overSshHost) _reviewButton.hidden = YES;
+}
+
+- (NSString *)overSshHost { return _overSshHost; }
+
+// Discard's plans: over SSH the copy is kept as a git object there, which
+// has no Trash (GitUi::discardPlanOverSsh).
+- (GitUi::DiscardPlan)discardPlanFor:(const GitUi::Row &)row {
+    return _overSshHost ? GitUi::discardPlanOverSsh(row) : GitUi::discardPlan(row);
+}
+- (GitUi::DiscardBatch)discardBatchFor:(const std::vector<GitUi::Row> &)rows {
+    return _overSshHost ? GitUi::discardBatchPlanOverSsh(rows) : GitUi::discardBatchPlan(rows);
 }
 
 - (void)dealloc { [_autoTimer invalidate]; }
@@ -1239,13 +1277,14 @@ static NSColor *LetterColor(unichar c, BOOL unmerged) {
     if (item.action == @selector(undoDiscardFromMenu:)) return _discards.count > 0;
     if (item.action == @selector(menuOpenFile:)) {
         MCGitRow *r = [self fileRow:item.tag];
+        if (r && _topLevel && _overSshHost) return r->model.letter != 'D';   // on the other machine
         return r && _topLevel &&
                [[NSFileManager defaultManager]
                    fileExistsAtPath:[_topLevel stringByAppendingPathComponent:r.path]];
     }
     if (item.action == @selector(menuDiscard:)) {
         const std::vector<GitUi::Row> rows = [self rowsActingWith:item.tag];
-        return !rows.empty() && GitUi::discardBatchPlan(rows).refusal.empty();
+        return !rows.empty() && [self discardBatchFor:rows].refusal.empty();
     }
     if (item.action == @selector(amendFromMenu:) || item.action == @selector(undoCommitFromMenu:))
         return _inRepository && !_initial;
@@ -1607,7 +1646,7 @@ static NSColor *LetterColor(unichar c, BOOL unmerged) {
     MCGitSnapshot *s = [MCGitSnapshot new];
     s.rows = @[];
     GitUi::Snapshot &m = s->model;
-    if (!MCGitExecutable()) {
+    if (!MCGitOnHost() && !MCGitExecutable()) {
         m.notice = "Git was not found. Install the command line tools "
                    "(xcode-select --install) or git from Homebrew.";
         return s;
@@ -1657,7 +1696,7 @@ static NSColor *LetterColor(unichar c, BOOL unmerged) {
     _rows = s.rows ?: @[];
     BOOL anyFile = NO;
     for (MCGitRow *r in _rows) anyFile = anyFile || !r.header;
-    _reviewButton.hidden = !anyFile;
+    _reviewButton.hidden = !anyFile || _overSshHost != nil;
     _branchLabel.stringValue = s.inRepository ? (s.branchText ?: @"") : @"Source Control";
     [self showMessageArea:s.inRepository];
     _notice.stringValue = s.notice ?: @"";
@@ -2053,7 +2092,7 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
 // would be (GitUi::discardBatchPlan), then each discarded in turn, each its
 // own Undo Discard.
 - (void)discardRows:(const std::vector<GitUi::Row> &)rows top:(NSString *)top {
-    const GitUi::DiscardBatch batch = GitUi::discardBatchPlan(rows);
+    const GitUi::DiscardBatch batch = [self discardBatchFor:rows];
     if (!batch.refusal.empty()) {
         [self say:NSFromBytes(batch.refusal) info:NO];
         NSBeep();
@@ -2074,7 +2113,12 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
     dispatch_async(_queue, ^{
         MCGitSnapshot *snap = [MCGitPanel snapshotAt:root];
         std::string rel;
-        if (snap.inRepository) {
+        if (snap.inRepository && MCGitOnHost()) {
+            // Over SSH: the path as the host spells the folder, which is
+            // resolved there, as git's top level is.
+            NSString *top = [snap.topLevel stringByAppendingString:@"/"];
+            if ([path hasPrefix:top]) rel = [path substringFromIndex:top.length].UTF8String ?: "";
+        } else if (snap.inRepository) {
             // git names the top level with links resolved (/private/tmp);
             // the file may be gone, so its folder is resolved instead.
             char dirBuf[PATH_MAX], topBuf[PATH_MAX];
@@ -2109,7 +2153,7 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
 }
 
 - (void)discardRow:(const GitUi::Row &)row top:(NSString *)top {
-    const GitUi::DiscardPlan plan = GitUi::discardPlan(row);
+    const GitUi::DiscardPlan plan = [self discardPlanFor:row];
     if (!plan.refusal.empty()) {
         [self say:NSFromBytes(plan.refusal) info:NO];
         NSBeep();
@@ -2142,12 +2186,23 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
         NSFileManager *fm = [NSFileManager defaultManager];
         NSMutableArray<MCGitDiscard *> *made = [NSMutableArray array];
         NSString *failure = nil;
+        std::vector<std::pair<std::string, std::string>> kept;   // over SSH: name, object
         for (size_t i = 0; i < ps.size() && i < paths.size() && !failure; i++) {
             const GitUi::DiscardPlan &p = ps[i];
             NSString *rel = NSFromBytes(paths[i]);
             NSString *path = [top stringByAppendingPathComponent:rel];
             NSURL *trashed = nil;
-            if (p.trashFirst) {
+            if (p.keepFirst) {
+                // Over SSH: the changed copy kept as a git object there.
+                MCGitResult *k = MCGitRunSync(top, NSArgs(GitUi::keepCopyArgs(paths[i])));
+                if (k.ok && k.output.length >= 40)
+                    kept.push_back({paths[i], Bytes(k.output)});
+                else
+                    failure = [NSString stringWithFormat:
+                        @"%@ could not be kept as a git object there (%@), so nothing was discarded.",
+                        rel.lastPathComponent, MCGitFailureText(k)];
+            }
+            if (!failure && p.trashFirst) {
                 NSError *error = nil;
                 NSURL *into = nil;
                 if ([fm trashItemAtURL:[NSURL fileURLWithPath:path] resultingItemURL:&into
@@ -2168,6 +2223,7 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
                 }
             }
             if (failure) break;
+            if (!trashed && p.keepFirst) continue;   // nothing Undo Discard could put back
             MCGitDiscard *d = [MCGitDiscard new];
             d.path = path;
             d.rel = rel;
@@ -2179,7 +2235,9 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
             [self->_discards addObjectsFromArray:made];
             while (self->_discards.count > 20) [self->_discards removeObjectAtIndex:0];
             if ([root isEqualToString:self.root]) {
-                [self say:failure ?: doneText info:failure == nil];
+                NSString *done = kept.empty() ? doneText
+                                              : NSFromBytes(GitUi::keptCopiesText(doneText.UTF8String ?: "", kept));
+                [self say:failure ?: done info:failure == nil];
                 [self runRefresh];
             }
             [self actionDone];
@@ -2255,7 +2313,7 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
         NSMenuItem *it = add([NSString stringWithFormat:@"Discard Changes (%zu Files)…",
                                                         rows.size()],
                              @selector(menuDiscard:));
-        const std::string why = GitUi::discardBatchPlan(rows).refusal;
+        const std::string why = [self discardBatchFor:rows].refusal;
         if (!why.empty()) it.toolTip = NSFromBytes(why);
         [menu addItem:[NSMenuItem separatorItem]];
         add(@"Open File", @selector(menuOpenFile:));
@@ -2268,9 +2326,9 @@ typedef GitUi::ActionPlan (^MCGitVerbPlan)(MCGitSnapshot *snap);
     add(@"Open as git Diff", @selector(menuOpenRawDiff:));
     add(r.staged ? @"Unstage Changes" : @"Stage Changes", @selector(menuToggleStage:));
     if (!r.staged) {
-        NSMenuItem *it = add(r.untracked ? @"Discard (Move to Trash)…" : @"Discard Changes…",
+        NSMenuItem *it = add(r.untracked && !_overSshHost ? @"Discard (Move to Trash)…" : @"Discard Changes…",
                              @selector(menuDiscard:));
-        const std::string why = GitUi::discardPlan(r->model).refusal;
+        const std::string why = [self discardPlanFor:r->model].refusal;
         if (!why.empty()) it.toolTip = NSFromBytes(why);
     }
     [menu addItem:[NSMenuItem separatorItem]];
@@ -2422,6 +2480,13 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
 - (void)runSync:(GitUi::SyncOp)op quietly:(BOOL)quiet {
     NSString *root = self.root;
     if (!root) return;
+    if (_overSshHost) {
+        // They would want credentials nobody can type on that machine.
+        if (quiet) return;
+        NSBeep();
+        [self say:NSFromBytes(Shared::gitRemoteOpText(_overSshHost.UTF8String ?: "")) info:NO];
+        return;
+    }
     // One asked for at a time; one asked for while a background fetch runs
     // waits behind it on the queue.
     if (quiet ? (_syncing || _autoFetching) : _syncing) {
@@ -2512,7 +2577,7 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
 // a time of their own). YES when a fetch was started.
 - (BOOL)autoFetchTickAt:(NSTimeInterval)now {
     const Settings &cfg = [AppSettings shared].settings;
-    if (!cfg.gitAutoFetch() || !self.root || _syncing || _autoFetching) return NO;
+    if (!cfg.gitAutoFetch() || !self.root || _syncing || _autoFetching || _overSshHost) return NO;
     BOOL active = self.isActive ? self.isActive() : self.window.isKeyWindow;
     if (!active) return NO;
     // By what is known so far: the repository's top level once a status
@@ -2607,6 +2672,7 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
     case GitUi::HunkOp::Stage: return @"Stage this hunk; the rest of the file stays as it is.";
     case GitUi::HunkOp::Unstage: return @"Take this hunk out of what is staged.";
     case GitUi::HunkOp::Discard:
+        if (_overSshHost) return @"Put this hunk back as git has it; asks first, and keeps the file as it was as a git object there.";
         return @"Put this hunk back as git has it; asks first, and Undo Discard brings it back.";
     }
     return @"";
@@ -2683,8 +2749,9 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
     MCGitShownDiff *d = _shownDiff;
     if (!d) { NSBeep(); [self actionDone]; return; }
     const GitUi::HunkOp op = (GitUi::HunkOp)opValue;
-    const GitUi::HunkPlan plan = GitUi::hunkPlan(Bytes(d.data), GitUi::diffSideOf(d->row), op,
-                                                 first, last, lines);
+    GitUi::HunkPlan plan = GitUi::hunkPlan(Bytes(d.data), GitUi::diffSideOf(d->row), op,
+                                           first, last, lines);
+    if (_overSshHost) plan = GitUi::hunkPlanOverSsh(plan);
     if (!plan.refusal.empty()) {
         [self say:NSFromBytes(plan.refusal) info:NO];
         NSBeep();
@@ -2710,7 +2777,20 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
         NSString *path = [d.top stringByAppendingPathComponent:rel];
         NSURL *trashed = nil;
         NSString *failure = nil;
-        if (discard) trashed = [MCGitPanel trashCopyOf:path failure:&failure];
+        std::vector<std::pair<std::string, std::string>> kept;   // over SSH: name, object
+        if (discard && MCGitOnHost()) {
+            // The other machine has no Trash: the file as it is kept there
+            // as a git object.
+            MCGitResult *k = MCGitRunSync(d.top, NSArgs(GitUi::keepCopyArgs(p.path)));
+            if (k.ok && k.output.length >= 40)
+                kept.push_back({p.path, Bytes(k.output)});
+            else
+                failure = [NSString stringWithFormat:
+                    @"%@ could not be kept as a git object there (%@), so nothing was discarded.",
+                    rel.lastPathComponent, MCGitFailureText(k)];
+        } else if (discard) {
+            trashed = [MCGitPanel trashCopyOf:path failure:&failure];
+        }
         if (!failure) {
             NSData *patch = [NSData dataWithBytes:p.patch.data() length:p.patch.size()];
             MCGitResult *r = MCGitRunSyncWithInput(d.top, NSArgs(p.args), patch);
@@ -2724,7 +2804,7 @@ static const char *MCSyncOpName(GitUi::SyncOp op) {
         dispatch_async(dispatch_get_main_queue(), ^{
             if (!failure && trashed) [self rememberDiscardAt:path rel:rel trashed:trashed];
             if ([root isEqualToString:self.root]) {
-                [self say:failure ?: NSFromBytes(p.doneText) info:failure == nil];
+                [self say:failure ?: NSFromBytes(GitUi::keptCopiesText(p.doneText, kept)) info:failure == nil];
                 [self runRefresh];
                 [self showDiffOf:d->row in:d.top];
             }

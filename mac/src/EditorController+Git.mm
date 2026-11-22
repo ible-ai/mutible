@@ -66,7 +66,30 @@
     };
     self.gitPanel.onRevealFile = ^(NSString *path) { [weakSelf revealGitPath:path]; };
     self.gitPanel.onChooseBranch = ^{ [weakSelf gitCheckout:nil]; };
+    [self useHostGit];   // a window over SSH: git on the other machine
     return self.gitPanel;
+}
+
+// A window over SSH (stage 9, docs/notes/git.md, "Over SSH"): the panel's
+// and the change bars' git runs on the other machine, through the host.
+// The review page and the commit page read the work tree and their
+// pictures from this Mac's disk, so over SSH a row opens its git diff and
+// a commit its git show, in the editor's diff tab.
+- (void)useHostGit {
+    MCGitRunner run = [self hostGitRunner];
+    MCGitPanel *panel = self.gitPanel;
+    if (!run || !panel || panel.overSshHost) return;
+    [panel useGitRunner:run overSsh:self.sessionRemoteLabel ?: @"the other machine"];
+    [_gitGutter useGitRunner:run];
+    panel.onReview = nil;
+    panel.onReviewCommit = nil;
+}
+
+- (void)gitChangedOnHost {
+    if (_closing) return;
+    [self treeGitChangedOnHost];
+    if (self.gitPanelVisible) [self.gitPanel refresh];
+    [_gitGutter refreshSoon];
 }
 
 // The review of every uncommitted change (ChangeReviewPage.h), one tab per
@@ -76,6 +99,9 @@
     [self showChangeReviewAt:rel staged:staged preview:NO];
 }
 - (void)showChangeReviewAt:(NSString *)rel staged:(BOOL)staged preview:(BOOL)preview {
+    // It reads the work tree from this Mac's disk: over SSH the panel's
+    // rows open their git diffs instead.
+    if ([self refuseOverSsh:@"Review Changes"]) return;
     NSString *key = [@"review:" stringByAppendingString:_root.path ?: @""];
     MCChangeReviewPage *page = nil;
     for (MCTab *t in [self tabs])

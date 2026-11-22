@@ -238,6 +238,16 @@ public:
     // as the tree's listings do.
     bool doesFileOps() const { return client_ && !lost() && client_->hostDoesFileOps(); }
     bool fileOp(Json request, Json *answer, int timeoutMs = 20000);
+    // One git command run by the host (Welcome flag 256, SessionGit.h:
+    // Client::requestGit), in `dir` on that machine, `input` its standard
+    // input: `done` once, on the main queue inside dispatch(), with the
+    // host's answer (`answered`) or without one (the host went, or the link
+    // was let go of). 0, calling nothing, when the host is gone or does not
+    // run git. Never waits: a window's git runs on its own queues, which
+    // wait for `done` (RemoteWorkspace.h's gitRunner).
+    bool runsGit() const { return client_ && !lost() && client_->hostRunsGit(); }
+    std::uint64_t git(const std::string &dir, const std::vector<std::string> &args, std::string input,
+                      double timeout, std::function<void(bool answered, Json &&answer, std::string &&out)> done);
 
     // Told once, on the main queue, when the host goes; the number takes it
     // off again.
@@ -316,6 +326,9 @@ private:
     std::map<std::uint64_t, std::function<void(std::vector<Json> &&, bool)>> streams_;
     int nextListener_ = 0;
     void pumpStreams();
+    // git()'s requests under way, by their req.
+    std::map<std::uint64_t, std::function<void(bool, Json &&, std::string &&)>> gits_;
+    void pumpGits();
     // fetchBytes's reads under way, by their own number.
     struct Fetch {
         std::string rel;

@@ -28,6 +28,7 @@
 
 #include "Json.h"
 #import "FileTree.h"
+#import "GitPanel.h"
 
 @class MCSessionLinkRef;
 
@@ -78,6 +79,19 @@
 - (NSString *)deletePath:(NSString *)path reason:(NSString **)reason;
 - (NSString *)makePath:(NSString *)path folder:(BOOL)folder reason:(NSString **)reason;
 
+// git for the window (stage 9, Welcome flag 256, SessionGit.h): a runner
+// for MCGitSetQueueRunner (GitPanel.h), which the Source Control panel, the
+// change bars and the tree's git colors put on their queues. Called on
+// such a queue, it asks the host on the main queue (Link::git) and waits
+// for the answer there, never on the main thread; with a host too old for
+// it, or the connection lost, its result is status -1 with the sentence
+// saying so (Shared::gitTooOldText, gitLostText), and fetch, pull and push
+// are not sent (gitRemoteOpText).
+@property(nonatomic, readonly) MCGitRunner gitRunner;
+// The host said Source Control may have changed (FsChanged's "git": a
+// write in the folder, or in .git's index, HEAD or refs).
+@property(nonatomic, copy) void (^onGitChanged)(void);
+
 // Files opened here that are not on the host yet: shown empty, made by
 // their first save.
 - (void)markNew:(NSString *)path;
@@ -86,4 +100,7 @@
 // For tests: folders listed through the host, its notices taken, Quick
 // Open lists and searches asked for.
 @property(nonatomic, readonly) NSUInteger listings, notices, fileLists, searches, fileOps, replaces;
+// git commands the host ran for the window, and its notices that git may
+// have changed.
+@property(nonatomic, readonly) NSUInteger gitRuns, gitNotices;
 @end

@@ -1721,4 +1721,94 @@ std::string commitTitle(const Git::Commit& c) {
     return Git::shortHash(c.hash) + " " + validUtf8(c.subject);
 }
 
+// ------------------------------------- a window over SSH (stage 9)
+namespace {
+const char* kNoTrashThere =
+    "The other machine has no Trash: the changed copy is kept there as a git object, named once it is "
+    "discarded (git cat-file -p shows it).";
+}  // namespace
+
+DiscardPlan discardPlanOverSsh(const Row& r) {
+    DiscardPlan p = discardPlan(r);
+    if (!p.refusal.empty()) return p;
+    const std::string name = fileName(r.path);
+    if (r.untracked) {
+        DiscardPlan no;
+        no.refusal = name + " is not tracked by git, so discarding it would delete it, and the other "
+                     "machine has no Trash: delete it from the file tree, which asks first.";
+        return no;
+    }
+    if (r.letter == 'D') {
+        p.detail = name + " was deleted. Discarding that brings it back as git has it (staged, or else "
+                   "in the last commit).";
+        return p;
+    }
+    p.trashFirst = false;
+    p.keepFirst = true;
+    p.detail = name + " goes back to the version git has for it (staged, or else in the last commit). " +
+               kNoTrashThere;
+    p.doneText = "Discarded the changes to " + name + ".";
+    return p;
+}
+
+DiscardBatch discardBatchPlanOverSsh(const std::vector<Row>& rows) {
+    DiscardBatch b;
+    for (const Row& r : rows) {
+        if (r.header) continue;
+        DiscardPlan p = discardPlanOverSsh(r);
+        if (!p.refusal.empty()) {
+            b = DiscardBatch();
+            b.refusal = rows.size() > 1 ? "Nothing was discarded: " + p.refusal : p.refusal;
+            return b;
+        }
+        b.plans.push_back(p);
+        b.paths.push_back(r.path);
+    }
+    if (b.plans.empty()) { b.refusal = "Choose a file to discard."; return b; }
+    if (b.plans.size() == 1) {
+        static_cast<ActionPlan&>(b) = b.plans[0];
+        return b;
+    }
+    const std::string n = std::to_string(b.plans.size());
+    b.question = "Discard the changes to " + n + " files?";
+    b.detail = std::string("Each goes back to the version git has for it (staged, or else in the last "
+                           "commit). The other machine has no Trash: the changed copies are kept there "
+                           "as git objects, named once they are discarded (git cat-file -p shows each).");
+    b.button = "Discard " + n + " Files";
+    b.doneText = "Discarded the changes to " + n + " files.";
+    return b;
+}
+
+HunkPlan hunkPlanOverSsh(HunkPlan p) {
+    if (!p.refusal.empty() || p.question.empty()) return p;   // Stage and Unstage ask nothing
+    const std::string name = fileName(p.path);
+    const bool lines = p.button == "Discard Lines";
+    p.detail = std::string(lines ? "They go" : "Its lines go") +
+               " back to the version git has (staged, or else in the last commit). The other machine "
+               "has no Trash: the file as it is now is kept there as a git object, named once it is "
+               "discarded (git cat-file -p shows it).";
+    p.doneText = "Discarded " + std::string(lines ? "the selected lines of " : "a hunk of ") + name + ".";
+    return p;
+}
+
+std::vector<std::string> keepCopyArgs(const std::string& path) {
+    return {"--literal-pathspecs", "hash-object", "-w", "--no-filters", "--", path};
+}
+
+std::string keptCopiesText(const std::string& done,
+                           const std::vector<std::pair<std::string, std::string>>& kept) {
+    if (kept.empty()) return done;
+    std::string out = done + (kept.size() == 1 ? " The changed copy is kept there as git object "
+                                               : " The changed copies are kept there as git objects ");
+    for (size_t i = 0; i < kept.size(); ++i) {
+        std::string object = kept[i].second;
+        while (!object.empty() && (object.back() == '\n' || object.back() == ' ')) object.pop_back();
+        if (object.size() > 12) object.resize(12);
+        if (i) out += i + 1 == kept.size() ? (kept.size() > 2 ? ", and " : " and ") : ", ";
+        out += object;
+        if (kept.size() > 1) out += " (" + fileName(kept[i].first) + ")";
+    }
+    return out + ": git cat-file -p shows " + (kept.size() == 1 ? "it." : "each.");
+}
+
 }  // namespace GitUi

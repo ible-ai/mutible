@@ -38,6 +38,8 @@
 #include <string>
 #include <vector>
 
+#include <atomic>
+
 #include "ChangeReviewRead.h"
 #include "Json.h"
 
@@ -48,10 +50,12 @@ namespace Web {
 // `git` on PATH, spawned with no shell, in a process group of its own, with
 // GIT_OPTIONAL_LOCKS=0 (a status never rewrites the index), no terminal
 // prompt and no editor; stopped (SIGTERM, then SIGKILL 2 s later) past
-// `timeoutMs` or past 256 MB of output. What a headless host runs; the Mac
-// gives its own runner (Options::git).
+// `timeoutMs` or past 256 MB of output (`timedOut` then), or as soon as
+// `cancel` goes up. What a headless host runs; the Mac gives its own runner
+// (Options::git). A window over SSH's git runs here too (SessionGit.h).
 ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::string>& args,
-                            const std::string& input, int timeoutMs = 30000);
+                            const std::string& input, int timeoutMs = 30000,
+                            const std::atomic<bool>* cancel = nullptr);
 
 // Holds a read to the session's folder (see above): `folder` resolved or
 // not, `hidden` the tree's Show Hidden Files.

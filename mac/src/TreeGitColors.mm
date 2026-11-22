@@ -20,6 +20,12 @@ std::string MCUtf8(NSString *s) { return s.UTF8String ?: ""; }
     NSUInteger _generation;
     BOOL _running, _again, _scheduled;
     NSUInteger _runs;
+    BOOL _overSsh;             // git runs on the other machine
+}
+
+- (void)useGitRunner:(MCGitRunner)runner {
+    MCGitSetQueueRunner(_queue, runner);
+    _overSsh = runner != nil;
 }
 
 - (instancetype)init {
@@ -46,7 +52,7 @@ std::string MCUtf8(NSString *s) { return s.UTF8String ?: ""; }
     _generation++;
     _root = [root copy];
     char real[PATH_MAX];
-    _realRoot = root && realpath(root.fileSystemRepresentation, real) ? @(real) : root;
+    _realRoot = root && !_overSsh && realpath(root.fileSystemRepresentation, real) ? @(real) : root;
     _topLevel = nil;
     _prefix = @"";
     _looked = NO;
@@ -97,6 +103,10 @@ static NSString *MCRelativeTo(NSString *path, NSString *top) {
         break;
     }
     if (wanted) [self schedule];
+}
+
+- (void)lookSoon {
+    if (_root) [self schedule];
 }
 
 // Half a second after the first change, so a burst of writes costs one

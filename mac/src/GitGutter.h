@@ -25,6 +25,7 @@
 // updateIndexArgs), after checking the index still holds what the bars were
 // made from.
 #import <Cocoa/Cocoa.h>
+#import "GitPanel.h"
 
 @class CodeTextView, MCLineGutter;
 
@@ -46,6 +47,13 @@
 
 @interface MCGitGutter : NSObject
 - (instancetype)initWithHost:(id<MCGitGutterHost>)host;
+// A window over SSH (GitPanel.h's MCGitRunner): git runs on the other
+// machine. The file's path in its repository comes from git there
+// (rev-parse --show-prefix) rather than this Mac's realpath, the index is
+// looked at each time (one ls-files, the blob read again only when its
+// object changed) rather than by its stat, and the repository folder is
+// not watched here: the window calls refreshSoon on the host's notices.
+- (void)useGitRunner:(MCGitRunner)runner;
 // Look again now (the window became key, the panel refreshed).
 - (void)refreshSoon;
 
