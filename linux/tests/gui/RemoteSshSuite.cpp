@@ -1444,6 +1444,23 @@ MC_GUI_SUITE(remote_ssh) {
         return runUntil("echo \"same-$MARK-$$-$PPID-done\"",
                         "same-kept-" + std::to_string(gShell) + "-" + std::to_string(gLasting) + "-done");
     });
+    // The marks stay believed: the attaching terminal found its nonce and
+    // shell by the link's key and the terminal's id (remoteMarks).
+    MCGuiWait("after the reconnect the prompt is still marked", 20, [] {
+        Terminal* t = remoteWindow().terminal;
+        return t && t->shellState().known && t->shellState().atPrompt && !t->shellState().busy;
+    });
+    MCGuiStep("(exit 3) typed at the re-attached terminal", [] {
+        Terminal* t = remoteWindow().terminal;
+        GCHECK(t != nullptr);
+        if (!t) return;
+        const std::string line = "(exit 3)\n";
+        vte_terminal_feed_child(VTE_TERMINAL(t->vteWidget()), line.c_str(), (gssize)line.size());
+    });
+    MCGuiWait("the exit status 3 is seen after the reconnect", 15, [] {
+        Terminal* t = remoteWindow().terminal;
+        return t && t->shellState().atPrompt && !t->shellState().busy && t->shellState().status == 3;
+    });
     MCGuiStep("Ctrl+S saves it through the new connection", [] {
         MCGuiSetKeyWindow(nullptr);
         gtk_widget_grab_focus(remoteWindow().editor->textView());
