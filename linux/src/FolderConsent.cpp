@@ -74,6 +74,9 @@ void store(const std::string& root, const std::string& value) {
 
 std::string keyFor(const std::string& root) {
     if (root.empty()) return "";
+    // A window over SSH's folder (its host's ssh:// machine and folder,
+    // LspSession::consentRoot): no path of this machine's resolves to it.
+    if (root.rfind("ssh://", 0) == 0) return root;
     char buf[PATH_MAX];
     return realpath(root.c_str(), buf) ? std::string(buf) : root;
 }

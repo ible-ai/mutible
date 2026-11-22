@@ -1454,11 +1454,17 @@ static void act_format_document(GSimpleAction*, GVariant*, gpointer userp) {
 
 // Ask Again About This Folder's Tools (PARITY.md 2.3): on only while the
 // folder has an answer to take back.
+// The folder the answers about its own tools are kept for: its path, or for a
+// window over SSH its host's ssh:// machine and folder (LspSession::consentRoot).
+static std::string consentRootOf(App* app) {
+    return app->lsp ? app->lsp->consentRoot() : app->rootDir;
+}
+
 static void updateFolderToolsAction(App* app) {
     if (app->dead) return;
     if (GAction* a = g_action_map_lookup_action(G_ACTION_MAP(app->window), "forgetfoldertools"))
         g_simple_action_set_enabled(G_SIMPLE_ACTION(a),
-                                    !FolderConsent::answer(app->rootDir).empty());
+                                    !FolderConsent::answer(consentRootOf(app)).empty());
 }
 
 // The answer the bar or Format Document stored goes: the servers stop using
@@ -1467,11 +1473,11 @@ static void updateFolderToolsAction(App* app) {
 // next format with a formatter from the folder.
 static void act_forget_folder_tools(GSimpleAction*, GVariant*, gpointer userp) {
     App* app = static_cast<App*>(userp);
-    if (FolderConsent::answer(app->rootDir).empty()) {
+    if (FolderConsent::answer(consentRootOf(app)).empty()) {
         gtk_widget_error_bell(app->window);
         return;
     }
-    FolderConsent::forget(app->rootDir);
+    FolderConsent::forget(consentRootOf(app));
     flashStatus(app, "mutible will ask before running this folder's own tools again");
 }
 
@@ -5686,6 +5692,7 @@ static void rehostApp(App* a, const std::shared_ptr<SessionLink::Link>& link) {
     if (a->reconnectButton) gtk_widget_set_visible(a->reconnectButton, FALSE);
     if (a->remoteWs) {
         a->remoteWs->attachLink(link);   // its watch said to the new host
+        if (a->lsp) a->lsp->remoteHostReconnected(link);   // its servers started there again
         if (a->remoteWs->onGit) a->remoteWs->onGit();   // git there may have moved meanwhile
     }
     reportTerminals(a);
@@ -6502,7 +6509,7 @@ static App* newWindow(const std::string& root, const std::string& file,
     // The folder's own tools (PARITY.md 2.3): the bar under the tabs asks
     // about them for the servers, and Format Document asks for its own.
     app->consentBar = new ConsentBar(ConsentBar::Host{
-        [app] { return app->rootDir; },
+        [app] { return consentRootOf(app); },
         [app] { return app->dead ? std::string() : app->lsp->folderEnvironmentAwaitingConsent(); },
         [app] { return app->dead ? std::string() : app->lsp->folderCodeAwaitingConsent(); },
         [app] { return app->dead ? std::string() : app->lsp->folderCodeQuestion(); },
@@ -6568,8 +6575,13 @@ static App* newWindow(const std::string& root, const std::string& file,
         m.byteLength = len;
         openMatch(app, m, EditorTabs::OpenFrom::CodeNavigation);
     };
-    // A file on another machine has no language server here (stage 9's).
-    if (!app->remote) app->editor->setObserver(app->lsp);   // onCloseRequest shuts it down
+    // A window over SSH's servers run on its host (stage 9's second slice,
+    // LspRemote.h): the host is given now, before the editor's observer
+    // makes the session hear of its first file (the Mac's #358 trap: a host
+    // given before the session existed was given to no one), and again to
+    // the new link by Reconnect (reconnectWindow).
+    if (app->remote && app->link) app->lsp->useRemoteHost(app->link, app->editor->sessionWindowId());
+    app->editor->setObserver(app->lsp);   // onCloseRequest shuts it down
     StartupLog::mark("window: language server session");
 
     // Actions. The menu bar and the accelerators are the application's

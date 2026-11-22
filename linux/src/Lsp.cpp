@@ -4,6 +4,7 @@
 // server processes are LspProcess.cpp. The macOS counterpart is mac/src/Lsp.mm,
 // and the behaviour follows it closely.
 #include "LspSessionPrivate.h"
+#include "LspRemote.h"
 
 #include "Palette.h"
 #include "SessionLink.h"
@@ -128,6 +129,10 @@ LspSession::~LspSession() {
     if (sig_->updateTimer) g_source_remove(sig_->updateTimer);
     sig_->updateTimer = 0;
     shutdown();
+    if (remote_) {   // the host lets its servers of this window go
+        remote_->detach();
+        remote_.reset();
+    }
     g_signal_handlers_disconnect_by_data(view_, this);
     useBuffer(nullptr);
     if (sync_->syncIdle) g_source_remove(sync_->syncIdle);

@@ -92,6 +92,7 @@ std::shared_ptr<Server> LspSession::runningServer(const std::string& key) const 
 }
 
 std::shared_ptr<Server> LspSession::launchServer(const std::string& key, std::string* note) {
+    if (remote_) return launchRemoteServer(key, note);   // the host runs it (LspSessionRemote.cpp)
     const std::vector<std::string> commands = commandsForKey(key);
     // The folder's own tools (LspSessionFolderTools.cpp): a Python server is
     // looked for beside the interpreter it gets, and one that would run the
@@ -133,6 +134,10 @@ std::string LspSession::missingServer() const {
 }
 
 void LspSession::lookAgainForMissingServer() {
+    if (remote_) {
+        remoteLookAgain();
+        return;
+    }
     if (path_.empty() || held_ || !settings_.lspEnabled() || currentKey_.empty()) return;
     // A key whose programs were all missing, with one there now. Only a
     // search of the folders: a server that still is not there is not
@@ -235,7 +240,15 @@ std::shared_ptr<Server> LspSession::serverForKey(const std::string& key) {
         }
         serverAppliesEdit(weakServer, params, reply);
     };
-    c.initialize(root_, (int)getpid());
+    if (server->remote()) {
+        // Initialized once the host says what it started (and the folder's
+        // verdict), with no parent process (LspSessionRemote.cpp).
+        server->onStarted = [alive, this](Server* s, const Shared::ServerStarted& started) {
+            if (!alive.expired()) remoteServerStarted(s, started);
+        };
+    } else {
+        c.initialize(root_, (int)getpid());
+    }
     servers_[key] = server;
     return server;
 }
@@ -279,7 +292,9 @@ void LspSession::serverExited(Server* s) {
     if (it != servers_.end() && it->second.get() == s) {
         keep = it->second;
         servers_.erase(it);
-        if (!s->stopping()) notes_[s->key()] = s->name() + " stopped";
+        // One the host refused or lost says why (LspSessionRemote.cpp).
+        const std::string refused = s->remote() ? remoteRefusalNote(s) : std::string();
+        if (!s->stopping()) notes_[s->key()] = refused.empty() ? s->name() + " stopped" : refused;
     }
     forgetServerDocuments(s);
     finishSymbolRequestsOf(s);

@@ -60,10 +60,12 @@
 
 #include "Editor.h"
 #include "LspClient.h"
+#include "SessionLsp.h"
 #include "Settings.h"
 
 namespace lspgtk {
 class Server;
+class RemoteHost;
 class Picker;
 struct PickerRow;
 class RenameBox;
@@ -82,6 +84,10 @@ struct LspProblem {
     std::string source, code;
     int errors = 0, warnings = 0, others = 0;   // a heading's counts
 };
+
+namespace SessionLink {
+class Link;
+}
 
 class LspSession : public EditorObserver {
 public:
@@ -147,6 +153,26 @@ public:
     // environment waits for your answer").
     std::string serverPythonInterpreter(std::string* source = nullptr) const;
     const std::string& root() const { return root_; }
+
+    // ---- a window over SSH (LspSessionRemote.cpp, LspRemote.h; the Mac's
+    // Lsp+Remote.mm): its servers are run by its host on the other machine.
+    // Given the window's link once the session exists (never before: a host
+    // given earlier is given to no one); the file on show, if any, starts
+    // its server through it. Local windows never call it.
+    void useRemoteHost(const std::shared_ptr<SessionLink::Link>& link, std::uint64_t window);
+    // Reconnect gave the window a new link: the servers the drop ended start
+    // again there, which opens the documents on them anew.
+    void remoteHostReconnected(const std::shared_ptr<SessionLink::Link>& link);
+    bool isRemote() const { return remote_ != nullptr; }
+    // The folder the answers about its own tools are kept for: its path, or
+    // for a window over SSH its host's ssh:// machine and folder.
+    std::string consentRoot() const;
+    // Test hooks for a window over SSH: the servers started through the
+    // host and the LspFiles batches heard (0 for a local window), and a
+    // running server's pid (the other machine's: never signalled).
+    std::size_t remoteStarted() const;
+    std::size_t remoteFileBatches() const;
+    int serverPid(const std::string& key) const;
 
     // ---- a missing server (LspSessionServers.cpp, PARITY.md 2.8), for the
     // install offer in the bar under the tabs (ConsentBar.h)
@@ -379,6 +405,21 @@ private:
     std::shared_ptr<lspgtk::Server> launchServer(const std::string& key, std::string* note);
     std::shared_ptr<lspgtk::Server> runningServer(const std::string& key) const;
     void serverExited(lspgtk::Server* s);
+    // ---- a window over SSH (LspSessionRemote.cpp)
+    std::shared_ptr<lspgtk::RemoteHost> remote_;
+    // The server the host is asked for, through the same callbacks (null,
+    // with the note why, when the host cannot be); its answer comes as
+    // remoteServerStarted, or its exit with a refusal (remoteServerEnded).
+    std::shared_ptr<lspgtk::Server> launchRemoteServer(const std::string& key, std::string* note);
+    void remoteServerStarted(lspgtk::Server* s, const Shared::ServerStarted& started);
+    // The note a server the host refused or lost leaves ("" when it ran and
+    // ended by itself: a crash, as for a local one).
+    std::string remoteRefusalNote(lspgtk::Server* s);
+    void remoteFilesChanged(const std::vector<Lsp::FileChange>& changes);
+    void remoteLookAgain();   // a server not found there is asked for again after 30 s
+    // Not installed there, said again unasked after this long (the Mac's
+    // kMissingAskedAgain), by key.
+    std::map<std::string, gint64> remoteMissing_;
     void initializeFailed(lspgtk::Server* s, const std::string& message);
     void stopAllServers();
     // These servers stopped and forgotten, so the next file of theirs

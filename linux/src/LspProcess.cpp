@@ -3,6 +3,8 @@
 #include "EnvLock.h"
 #include "LspProcess.h"
 
+#include "LspRemote.h"
+
 #include "Lsp.h"
 #include "StartupLog.h"
 
@@ -201,6 +203,61 @@ std::shared_ptr<Server> Server::start(const std::string& key,
     return s;
 }
 
+std::shared_ptr<Server> Server::startRemote(const std::string& key, const std::vector<std::string>& argv,
+                                            const std::shared_ptr<RemoteHost>& host,
+                                            const Shared::ServerRequest& request) {
+    std::shared_ptr<Server> s(new Server());
+    s->key_ = key;
+    char* base = g_path_get_basename(argv.empty() ? key.c_str() : argv[0].c_str());
+    s->name_ = base;
+    g_free(base);
+    {
+        EnvLock::EnvRead env;
+        if (const char* v = g_getenv("MUTIBLE_LSP_LOG"))
+            if (*v) s->logFd_ = open(v, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    }
+    s->remote_ = host;
+    s->isRemote_ = true;
+    Server* raw = s.get();
+    s->client_ = std::make_unique<Lsp::Client>([raw](const std::string& bytes) { raw->send(bytes); });
+    s->remoteId_ = host->start(s, Shared::serverRequestJson(request));
+    if (!s->remoteId_) return nullptr;
+    s->running_ = true;
+    return s;
+}
+
+void Server::remoteStarted(int pid, const Json& info) {
+    if (!running_ || remoteStarted_) return;
+    remoteStarted_ = true;
+    pid_ = pid;   // the other machine's
+    const Shared::ServerStarted started = Shared::serverStartedFrom(info);
+    if (!started.argv.empty()) {
+        char* base = g_path_get_basename(started.argv[0].c_str());
+        name_ = base;
+        g_free(base);
+    }
+    if (onStarted) {
+        std::shared_ptr<Server> keep = shared_from_this();
+        onStarted(this, started);
+    }
+}
+
+void Server::remoteWrote(const std::string& bytes) {
+    if (!running_ || bytes.empty()) return;
+    std::shared_ptr<Server> keep = shared_from_this();
+    log("<-- ", bytes.data(), bytes.size());
+    client_->receive(bytes.data(), bytes.size());
+}
+
+void Server::remoteExited(int, const std::string& why, const Json& info) {
+    if (!running_) return;
+    refusal_ = why;
+    refusalInfo_ = info;
+    errTail_ = info["stderr"].asString();
+    remote_.reset();   // nothing more to send there
+    ended();
+}
+
 Server::~Server() {
     if (readId_) g_source_remove(readId_);
     if (writeId_) g_source_remove(writeId_);
@@ -220,6 +277,10 @@ void Server::log(const char* prefix, const char* data, size_t n) {
 void Server::send(const std::string& bytes) {
     if (closeWanted_ || inputClosed_) return;
     log("--> ", bytes.data(), bytes.size());
+    if (isRemote_) {   // to the host, behind the window's edits and saves
+        if (remote_) remote_->send(remoteId_, bytes);
+        return;
+    }
     out_ += bytes;
     flushWrites();
 }
@@ -253,6 +314,11 @@ gboolean Server::onWritable(int, GIOCondition, gpointer selfp) {
 }
 
 void Server::closeInput() {
+    if (isRemote_) {   // the host closes its input, then signals it if it stays
+        if (!closeWanted_ && remote_) remote_->stop(remoteId_);
+        closeWanted_ = inputClosed_ = true;
+        return;
+    }
     closeWanted_ = true;
     if (out_.empty() && !inputClosed_) doClose();
 }
@@ -334,6 +400,7 @@ void Server::stop() {
         std::shared_ptr<Server> s = *static_cast<std::shared_ptr<Server>*>(d);
         if (!s->running_) return G_SOURCE_REMOVE;
         s->closeInput();
+        if (s->isRemote_ || !s->proc_) return G_SOURCE_REMOVE;   // the host signals its own
         g_subprocess_send_signal(s->proc_, SIGTERM);
         g_timeout_add_full(G_PRIORITY_DEFAULT, 1000, [](gpointer d2) -> gboolean {
             auto& s2 = *static_cast<std::shared_ptr<Server>*>(d2);
@@ -349,6 +416,10 @@ void Server::stopNow() {
     if (!running_) return;
     stopping_ = true;
     client_->exitNow();
+    if (isRemote_) {
+        closeInput();
+        return;
+    }
     closeWanted_ = true;
     // Written out before returning, since the main loop will not run again.
     const gint64 deadline = g_get_monotonic_time() + 200000;

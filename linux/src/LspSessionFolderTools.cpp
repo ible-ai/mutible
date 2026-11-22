@@ -53,7 +53,7 @@ PythonEnvs::Context pythonContext(const std::string& path, bool pythonFile,
 }  // namespace
 
 void LspSession::watchFolderTools() {
-    tools_->consentUsed = FolderConsent::answer(root_);
+    tools_->consentUsed = FolderConsent::answer(consentRoot());
     std::weak_ptr<int> alive = life_;
     tools_->listener = FolderConsent::listen([this, alive](const std::string& key) {
         if (!alive.expired()) folderToolsChanged(key);
@@ -66,6 +66,10 @@ void LspSession::unwatchFolderTools() {
 }
 
 std::string LspSession::serverPythonInterpreter(std::string* source) const {
+    if (remote_) {   // the server's own, there
+        if (source) *source = "the server's own, on the host";
+        return "";
+    }
     // python.interpreter, when it can run, is the user's own choice.
     const std::string setting = settings_.pythonInterpreter();
     std::string missing;
@@ -77,7 +81,7 @@ std::string LspSession::serverPythonInterpreter(std::string* source) const {
         }
         missing = "python.interpreter is missing";
     }
-    const std::string answer = FolderConsent::answer(root_);
+    const std::string answer = FolderConsent::answer(consentRoot());
     const bool allowed = answer == "allow";
     const PythonEnvs::Context ctx = pythonContext(path_, currentKey_ == "python", root_);
     const std::string automatic = PythonEnvs::automatic(ctx, allowed);
@@ -92,6 +96,7 @@ std::string LspSession::serverPythonInterpreter(std::string* source) const {
 }
 
 std::string LspSession::folderEnvironmentAwaitingConsent() const {
+    if (remote_) return "";   // the folder's environment is the host's server's to find
     if (currentKey_ != "python" || path_.empty() || !settings_.lspEnabled() ||
         settings_.lspOff("python"))
         return "";
@@ -99,7 +104,7 @@ std::string LspSession::folderEnvironmentAwaitingConsent() const {
     const std::string setting = settings_.pythonInterpreter();
     const bool chose = !setting.empty() && runnable(expandHome(setting));
     return FolderTools::environmentToAsk(pythonContext(path_, true, root_),
-                                         FolderConsent::answer(root_), chose);
+                                         FolderConsent::answer(consentRoot()), chose);
 }
 
 std::string LspSession::folderCodeAwaitingConsent() const {
@@ -110,7 +115,7 @@ std::string LspSession::folderCodeAwaitingConsent() const {
                       (it->second.verdict == Lsp::ProjectCode::Restricted &&
                        servers_.count(currentKey_));
     // Read last: the status, and so this, is asked on every change.
-    return asks && FolderConsent::answer(root_).empty() ? currentKey_ : "";
+    return asks && FolderConsent::answer(consentRoot()).empty() ? currentKey_ : "";
 }
 
 std::string LspSession::folderCodeQuestion() const {
@@ -167,14 +172,14 @@ Lsp::ProjectCodeCheck LspSession::checkProjectCodeFor(const std::string& key,
     if (key == "typescript")
         ownTs = Lsp::ownTypescript(lspui::realPath(program),
                                    lspui::realPath(lspgtk::findProgram("tsserver")), root, fs);
-    return Lsp::checkProjectCode(key, FolderConsent::answer(root_) == "allow", dir, root,
+    return Lsp::checkProjectCode(key, FolderConsent::answer(consentRoot()) == "allow", dir, root,
                                  lspui::realPath(g_get_home_dir()), ownTs, fs);
 }
 
 void LspSession::configureServer(Lsp::Client& c, const std::string& key,
                                   const std::vector<std::string>& argv,
                                   const Lsp::ProjectCodeCheck& pc) {
-    tools_->consentUsed = FolderConsent::answer(root_);
+    tools_->consentUsed = FolderConsent::answer(consentRoot());
     if (key == "python") {
         const std::string interp = serverPythonInterpreter();
         const Lsp::PythonServer kind = Lsp::pythonServerKind(argv);
@@ -192,8 +197,8 @@ void LspSession::configureServer(Lsp::Client& c, const std::string& key,
 // environmentConsentChanged: does. A question put off with × changes no
 // answer; the status (and so the bar) is told either way.
 void LspSession::folderToolsChanged(const std::string& key) {
-    if (key != FolderConsent::keyFor(root_)) return;
-    const std::string answer = FolderConsent::answer(root_);
+    if (key != FolderConsent::keyFor(consentRoot())) return;
+    const std::string answer = FolderConsent::answer(consentRoot());
     if (answer == tools_->consentUsed) {
         updateStatus();
         return;
