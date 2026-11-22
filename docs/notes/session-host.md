@@ -3687,7 +3687,8 @@ through its host, so this is mostly a transport.
   with its command named, `false` typed meanwhile waits for the prompt,
   then sleep ends with 0 and false with 1; a local terminal on the
   app's own host (the setting turned on for it) has a nonce of its own
-  under its own key, neither found under the other's key with the
+  under its own key (the in-process link's key is "": it has no folder;
+  #350's first CI run failed on a check that wanted it non-empty), neither found under the other's key with the
   other's id; after the drop and reconnect the marks are still believed
   and `sleep 600` counts as busy. Then a window on another folder whose
   lasting host starts with a bash login shell (the stand-in's shell file

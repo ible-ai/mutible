@@ -953,6 +953,8 @@ static void testSessionServer() {
             std::printf("  (no bash 4.4 or later, or no linux/resources/%s here; skipped)\n",
                         ShellIntegration::kBashScriptName);
         } else {
+            // Said, so a CI log shows it ran (Linux's /bin/bash; the Mac's is 3.2).
+            std::printf("  hostserver:integration-bash: %s, bash %d\n", bash.c_str(), Shared::bashVersion(bash));
             signal(SIGPIPE, SIG_IGN);
             const std::string proj = Shared::resolveFolder(scratchFolder());
             mkdir((proj + "/home").c_str(), 0700);

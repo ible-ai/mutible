@@ -1270,9 +1270,11 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiStep(@"each nonce its own, each under its own host's key", ^{
         NSString *localKey = LinkKey(gLocalTerm.sessionLink), *remoteKey = LinkKey([gC sessionRemoteLink]);
-        MCGuiNote(@"local %@ term %llu, remote %@ term %llu", localKey, gLocalTerm.sessionTerminal, remoteKey,
+        MCGuiNote(@"local [%@] term %llu, remote [%@] term %llu", localKey, gLocalTerm.sessionTerminal, remoteKey,
                   gTerm.sessionTerminal);
-        GCHECK(localKey.length && ![localKey isEqualToString:remoteKey]);
+        // The process's own host has the key "" (Link::key: no folder, it
+        // serves every window); a remote one's is its ssh:// and folder.
+        GCHECK(gLocalTerm.sessionLink.link != nullptr && remoteKey.length && ![localKey isEqualToString:remoteKey]);
         GCHECK(gLocalTerm.integrationNonce.length == 32 && ![gLocalTerm.integrationNonce isEqualToString:gRemoteNonce]);
         GCHECK_EQ_STR([TerminalView nonceForHost:localKey terminal:gLocalTerm.sessionTerminal],
                       gLocalTerm.integrationNonce);
