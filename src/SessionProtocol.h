@@ -93,7 +93,20 @@
 // {"saveAs": rel, "hidden"} from a guest names the document's file anew,
 // held inside the session's folder (SessionFiles.h's newFilePath); FsRead's
 // "replace" replaces on the rows a page's search showed (SessionSearch.h),
-// and is refused from a renderer that only reads. Pure C++17, no I/O.
+// and is refused from a renderer that only reads.
+//
+// The tree's file operations (stage 8, a host whose Welcome has flag 64): FsRead's
+// "rename", "move", "delete", "newFile" and "newFolder" (SessionFiles.h's
+// doFileOp), each answered by one FsData {"op", "path", "ok": true, "dir",
+// and "to" for a rename or move, "docs" [{doc, path}] the open documents
+// that followed it, "gone" [doc] those a delete left unsaved and gone} or
+// {"op", "path", "error", "reason"}, and nothing changed. A document under a
+// renamed or moved path takes the new one on the host, and every renderer
+// that hears DocDirty gets it as DocDirty flag 2 with json {"path", "from",
+// "moved": true} (no stamp, no encodingName: the file was not written); one
+// under a deleted path is marked gone as a file deleted on disk is (DocDisk
+// flag 2, DocDirty). A renderer that only reads is refused ("readonly").
+// Pure C++17, no I/O.
 #pragma once
 
 #include <cstdint>
@@ -169,7 +182,9 @@ enum class Kind {
                  // "cancel": SessionSearch.h); flag 16: it writes for a page (DocOpen
                  // flag 2, DocSave's "saveAs", FsRead's "replace"); flag 32: it runs a
                  // terminal in its own machine's login shell and environment
-                 // (TermSpec's hostShell), what a window over SSH needs (stage 8)
+                 // (TermSpec's hostShell), what a window over SSH needs (stage 8);
+                 // flag 64: it does a tree's file operations (FsRead's "rename",
+                 // "move", "delete", "newFile", "newFolder")
     DocOpened,   // doc, v (and text16 when it was open already: another renderer's)
     DocEdited,   // doc, v, by, seq, ops, ops16, flag (1 undo, 2 redo), select
     DocUndone,   // doc, req, outcome

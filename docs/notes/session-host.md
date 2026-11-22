@@ -4450,3 +4450,67 @@ checked by the host against rows it was not sent: left alone and said).
   (closed) is rewritten on disk, main.c's clean tab shows the new text unsaved
   with the disk as it was, fresh.c's tab with a typed change is left alone
   and named, and the question and the status are in the words above.
+
+#### The tree's file operations on the host (2026-11-21, Welcome flag 64)
+
+A window over SSH could not rename, move, delete or make files and folders
+in its tree (the local disk is not the host's). The host now does them: five
+more FsRead ops, `Client::requestFileOp(window, json)` to send one,
+`hostDoesFileOps()` (Welcome flag 64) to know the host has them; 0 from the
+request, nothing sent, for an older host, which a renderer shows as "this
+host is too old". Logic in `SessionFiles.{h,cpp}` (`doFileOp`, over real
+files, tested alone), the documents in `Host::onFileOp`.
+
+- **Requests** (paths `rel`, '/'-separated from the folder, never ""):
+  `{"op": "rename", "path", "name"}` (same folder), `{"op": "move", "path",
+  "to"}` (a folder, "" the session's), `{"op": "delete", "path",
+  "permanent": true}`, `{"op": "newFile" | "newFolder", "path"}` (the new
+  one's path; its folder must be there, no folders are made on the way).
+  Queued behind the renderer's edits; the answer is one FsData through
+  `readAnswer`: `{"op", "path", "ok": true, "dir", "to" (rename, move),
+  "docs": [{doc, path}] (documents that followed), "gone": [doc] (delete)}`
+  or `{"op", "path", "error": a sentence, "reason"}` and nothing changed.
+- **No Trash in the core.** Trashing is platform code (the Mac's
+  NSWorkspace, GTK's GIO), so a delete without `"permanent": true` is
+  refused (`notrash`, "This host has no Trash: delete x permanently, or
+  leave it."); a renderer asks its person first and sends it permanent.
+  A folder goes with everything in it (`remove_all`, no link followed).
+- **Refusals** (`reason`): `path` (absolute, "..", ".", empty name, NUL,
+  "" for the folder itself), `outside` (a folder of the path, or the
+  destination, that leads out by its real place: a link out), `missing`
+  (source, folder or destination not there), `exists` (target there:
+  nothing is replaced, a rename to the same name too), `name` (empty, ".",
+  "..", '/', NUL, over 255 bytes), `into-itself`, `notrash`, `readonly` (a
+  renderer that only reads), `failed` (the system's reason, "it is on
+  another disk" for a move across disks). A link as the last name is itself
+  renamed, moved or deleted, never what it points at. A file made
+  between the check and the rename is never replaced: the rename is the
+  system's no-replace one (Linux's renameat2 RENAME_NOREPLACE, the Mac's
+  renamex_np RENAME_EXCL; EEXIST then refuses as `exists`), falling back to
+  a plain rename only on a disk or kernel without it, and for a case-only
+  rename of the file itself.
+- **Documents follow.** Every host document whose path is the moved path or
+  below it takes the new path (text, history and dirty state as they were),
+  and every renderer that hears DocDirty (Hello flag 8) gets DocDirty flag 2
+  with json `{"path", "from", "moved": true}` (no stamp or encodingName: the
+  file was not written; a listener of `hearWrites` must tell it from a save
+  by "moved"). The requester gets both, and the answer's "docs". A document
+  under a deleted path is looked at again at once: an unedited or edited one
+  is kept, unsaved and gone (DocDisk 2, DocDirty), as a file deleted on disk
+  is; one an app's window has open is that app's to follow (it reads its own
+  file), so the host leaves it. A new file or folder touches no document.
+- **The tree hears** without waiting for the system's watcher: the host
+  hands `diskChanged` the changed folders (the parents, and the moved folder
+  below), so FsChanged with the open folders' listings goes out as for any
+  change (only when the host watches).
+- **For the renderers**: an untitled tab saved through the host still works
+  for New File; the Mac's and GTK's tree actions go through
+  `requestFileOp` when the window is over SSH and refuse otherwise as now;
+  a tab whose document moved retitles from DocDirty's "moved" (the
+  `path` is absolute, spelled under the folder).
+- **Checked** (`hostfiles:op`, `hostfiles:refuse`, `hostfiles:docs`,
+  tests/session_fileops_tests.inc): each op on a scratch folder, a reader
+  refused, the tree's listing heard, every refusal above with nothing
+  changed (links out, "..", names, existing targets, an old host's Welcome),
+  documents following a rename and a folder move for both renderers and
+  saving to the new path, delete marking them gone.

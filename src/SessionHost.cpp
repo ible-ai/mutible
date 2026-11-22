@@ -278,6 +278,7 @@ void Host::onRead(ClientId c, Message& m) {
         return;
     }
     if (op == "replace") return onReplace(c, m);
+    if (isFileOp(op)) return onFileOp(c, m);
     if (isWorkerRead(op)) {
         // Quick Open's list and Find in Folder, on a worker: answered as it
         // goes (takeReads). A cancel stops the renderer's own read and has
@@ -374,6 +375,9 @@ void Host::onHello(ClientId c, Message& m) {
     // And runs a terminal in this machine's own login shell and environment
     // (TermSpec's hostShell): a renderer on another machine (stage 8).
     w.flag |= 32;
+    // And does a tree's file operations (FsRead's "rename", "move", "delete",
+    // "newFile", "newFolder").
+    w.flag |= 64;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));
@@ -1613,6 +1617,91 @@ void Host::hostStep(DocId id, Doc& d, const std::u16string& next, const char* na
         trimLog(d);
         tellUndoState(id, d);
     }
+}
+
+void Host::onFileOp(ClientId c, Message& m) {
+    Message r;
+    r.kind = Kind::FsData;
+    r.req = m.req;
+    r.window = m.window;
+    const std::string op = m.json["op"].asString();
+    Json a = Json::object();
+    a.set("op", Json(op));
+    a.set("path", m.json["path"]);
+    auto fail = [&](const char* reason, const std::string& why) {
+        a.set("error", Json(why));
+        a.set("reason", Json(reason));
+        r.json = std::move(a);
+        send(c, std::move(r));
+    };
+    // It changes files: never from a renderer that only reads.
+    auto who = renderers_.find(c);
+    if (who == renderers_.end() || who->second.readOnly)
+        return fail("readonly", "A page that only reads cannot change files.");
+    const std::string root = readRoot(m.window);
+    const FileOp done = doFileOp(root, m.json);
+    if (!done.ok) return fail(done.reason.c_str(), done.why);
+    a.set("ok", Json(true));
+    a.set("dir", Json(done.dir));
+    if (!done.to.empty()) a.set("to", Json(done.toRel));
+    // The documents under the path that moved or went.
+    Json docs = Json::array();
+    const bool changes = !done.created;
+    const std::string under = done.from + "/";
+    std::vector<DocId> gone;
+    if (changes) {
+        for (auto& [id, d] : docs_) {
+            if (d.path.empty() || (d.path != done.from && d.path.compare(0, under.size(), under) != 0)) continue;
+            d.diskLooked = false;
+            d.realDir.clear();
+            if (done.removed) {
+                gone.push_back(id);
+                docs.push(Json((int64_t)id));
+                continue;
+            }
+            const std::string was = d.path;
+            d.path = done.to + was.substr(done.from.size());
+            Json o = Json::object();
+            o.set("doc", Json((int64_t)id));
+            o.set("path", Json(d.path));
+            docs.push(std::move(o));
+            for (const auto& [rc, rr] : renderers_) {
+                if (!rr.hearsDirty) continue;
+                Message t;
+                t.kind = Kind::DocDirty;
+                t.doc = id;
+                t.flag = (d.doc.dirty() ? 1 : 0) | 2;
+                t.v = d.v;
+                Json w = Json::object();
+                w.set("path", Json(d.path));
+                w.set("from", Json(was));
+                w.set("moved", Json(true));
+                t.json = std::move(w);
+                send(rc, std::move(t));
+            }
+        }
+        watchGen_++;
+    }
+    a.set(done.removed ? "gone" : "docs", docs);
+    r.json = std::move(a);
+    send(c, std::move(r));
+    // The deleted documents look at their files now (gone, unsaved: as a file
+    // deleted on disk), and the folders that changed are reported at once
+    // rather than when the system's watcher gets to them.
+    for (DocId id : gone) {
+        auto it = docs_.find(id);
+        if (it != docs_.end()) lookAtDisk(id, it->second);
+    }
+    auto parent = [](const std::string& p) { return p.substr(0, p.rfind('/')); };
+    std::vector<DiskWatch::Change> cs;
+    cs.push_back({parent(done.from), false});
+    if (done.dir) cs.push_back({done.from, true});
+    if (!done.to.empty()) {
+        cs.push_back({parent(done.to), false});
+        if (done.dir) cs.push_back({done.to, true});
+    }
+    diskChanged(cs);
+    backupsChanged();
 }
 
 void Host::onReplace(ClientId c, Message& m) {

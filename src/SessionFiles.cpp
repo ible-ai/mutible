@@ -8,11 +8,17 @@
 #include <algorithm>
 #include <cstdint>
 #include <dirent.h>
+#include <filesystem>
+#include <system_error>
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <vector>
+#include <cstdio>
+#if defined(__linux__)
+#include <sys/syscall.h>
+#endif
 
 #include "Document.h"
 #include "FileDetails.h"
@@ -350,6 +356,175 @@ NewPath newFilePath(const std::string& root, const std::string& rel, bool hidden
     }
     p.ok = true;
     return p;
+}
+
+// ---------------------------------------------------------------- file operations
+
+namespace {
+
+bool usableName(const std::string& n) {
+    return !n.empty() && n != "." && n != ".." && n.size() <= 255 && n.find('/') == std::string::npos &&
+           n.find('\0') == std::string::npos;
+}
+
+const char* const kBadName =
+    "That is not a usable name: a name is not empty, \".\" or \"..\", has no \"/\" and is at most 255 bytes.";
+
+bool refuseWith(FileOp* r, const char* reason, std::string why) {
+    r->reason = reason;
+    r->why = std::move(why);
+    return false;
+}
+
+// The folder `rel` ("" the session's folder): held inside, and a folder.
+bool folderAt(const std::string& root, const std::string& rel, std::string* abs, FileOp* r) {
+    std::vector<std::string> names;
+    std::string why;
+    if (!namesOf(rel, &names, &why))
+        return refuseWith(r, "path", "That path is " + why + ": name a folder in the session's folder.");
+    const std::string label = rel.empty() ? std::string("The session's folder") : rel;
+    if (!confinedPath(root, rel, abs, &why)) {
+        if (why.find("leads out") != std::string::npos)
+            return refuseWith(r, "outside", label + " leads outside the session's folder.");
+        return refuseWith(r, "missing", "There is no folder " + label + " in the session's folder.");
+    }
+    struct stat st;
+    if (::stat(abs->c_str(), &st) != 0 || !S_ISDIR(st.st_mode))
+        return refuseWith(r, "missing", "There is no folder " + label + " in the session's folder.");
+    return true;
+}
+
+struct Spot {
+    std::string dirRel, dirAbs, name, abs;
+};
+
+// `rel`: its folder confined and there, its last name checked.
+bool spotOf(const std::string& root, const std::string& rel, Spot* s, FileOp* r) {
+    std::vector<std::string> names;
+    std::string why;
+    if (rel.empty()) return refuseWith(r, "path", "The session's folder itself cannot be changed here.");
+    if (!namesOf(rel, &names, &why))
+        return refuseWith(r, "path", "That path is " + why + ": name a file or folder in the session's folder.");
+    for (const std::string& n : names)
+        if (n.size() > 255) return refuseWith(r, "name", kBadName);
+    s->name = names.back();
+    const std::size_t slash = rel.rfind('/');
+    s->dirRel = slash == std::string::npos ? std::string() : rel.substr(0, slash);
+    if (!folderAt(root, s->dirRel, &s->dirAbs, r)) return false;
+    s->abs = s->dirAbs + "/" + s->name;
+    return true;
+}
+
+bool sameFile(const std::string& a, const std::string& b) {
+    struct stat x, y;
+    return ::lstat(a.c_str(), &x) == 0 && ::lstat(b.c_str(), &y) == 0 && x.st_dev == y.st_dev && x.st_ino == y.st_ino;
+}
+
+}  // namespace
+
+bool isFileOp(const std::string& op) {
+    return op == "rename" || op == "move" || op == "delete" || op == "newFile" || op == "newFolder";
+}
+
+FileOp doFileOp(const std::string& root, const Json& q) {
+    FileOp r;
+    const std::string op = q["op"].asString();
+    if (root.empty()) {
+        refuseWith(&r, "path", "The session has no folder to work in.");
+        return r;
+    }
+    Spot src;
+    if (!spotOf(root, q["path"].asString(), &src, &r)) return r;
+    struct stat st;
+    const bool there = ::lstat(src.abs.c_str(), &st) == 0;
+    const bool isDir = there && S_ISDIR(st.st_mode);
+    auto refuse = [&](const char* reason, std::string why) {
+        refuseWith(&r, reason, std::move(why));
+        return r;
+    };
+    if (op == "newFile" || op == "newFolder") {
+        if (!usableName(src.name)) return refuse("name", kBadName);
+        if (there) return refuse("exists", src.name + " already exists.");
+        if (op == "newFolder") {
+            if (::mkdir(src.abs.c_str(), 0777) != 0)
+                return refuse(errno == EEXIST ? "exists" : "failed",
+                              errno == EEXIST ? src.name + " already exists."
+                                              : "Could not make " + src.name + ": " + std::strerror(errno) + ".");
+        } else {
+            const int fd = ::open(src.abs.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
+            if (fd < 0)
+                return refuse(errno == EEXIST ? "exists" : "failed",
+                              errno == EEXIST ? src.name + " already exists."
+                                              : "Could not make " + src.name + ": " + std::strerror(errno) + ".");
+            ::close(fd);
+        }
+        r.ok = true;
+        r.from = src.abs;
+        r.dir = op == "newFolder";
+        r.created = true;
+        return r;
+    }
+    if (op != "rename" && op != "move" && op != "delete")
+        return refuse("failed", "The host takes no file operation " + op + ".");
+    if (!there) return refuse("missing", src.name + " is not there.");
+    r.from = src.abs;
+    r.dir = isDir;
+    if (op == "delete") {
+        if (!q["permanent"].asBool())
+            return refuse("notrash", "This host has no Trash: delete " + src.name + " permanently, or leave it.");
+        std::error_code ec;
+        if (isDir) std::filesystem::remove_all(src.abs, ec);
+        else if (::unlink(src.abs.c_str()) != 0) ec = std::error_code(errno, std::generic_category());
+        if (ec) return refuse("failed", "Could not delete " + src.name + ": " + ec.message() + ".");
+        r.ok = true;
+        r.removed = true;
+        return r;
+    }
+    std::string targetDir = src.dirAbs, targetRel = src.dirRel, targetName = src.name;
+    if (op == "rename") {
+        targetName = q["name"].asString();
+        if (!usableName(targetName)) return refuse("name", kBadName);
+    } else {
+        targetRel = q["to"].asString();
+        if (!folderAt(root, targetRel, &targetDir, &r)) return r;
+        if (isDir) {
+            const std::string a = realPlace(src.abs), b = realPlace(targetDir);
+            if (!a.empty() && !b.empty() && inside(a, b)) return refuse("into-itself", src.name + " cannot be moved into itself.");
+        }
+    }
+    const std::string target = targetDir + "/" + targetName;
+    struct stat tst;
+    bool itselfOnly = false;   // a case-only rename on a case-insensitive disk: the file itself
+    if (::lstat(target.c_str(), &tst) == 0) {
+        itselfOnly = op == "rename" && targetName != src.name && sameFile(src.abs, target);
+        if (!itselfOnly) return refuse("exists", targetName + " already exists" + (op == "move" ? " there." : "."));
+    }
+    // Never over a file that came between the look above and the rename:
+    // the system's no-replace rename where it has one (a case-only rename
+    // of the file itself is a plain one), else the look above is all.
+    int moved = -1;
+    bool tried = false;
+#if defined(__linux__) && defined(SYS_renameat2)
+    if (!itselfOnly) {
+        moved = (int)::syscall(SYS_renameat2, AT_FDCWD, src.abs.c_str(), AT_FDCWD, target.c_str(), 1u /* RENAME_NOREPLACE */);
+        tried = !(moved != 0 && (errno == ENOSYS || errno == EINVAL));   // a disk or kernel without it
+    }
+#elif defined(__APPLE__)
+    if (!itselfOnly) {
+        moved = ::renamex_np(src.abs.c_str(), target.c_str(), RENAME_EXCL);
+        tried = !(moved != 0 && (errno == ENOTSUP || errno == EINVAL));
+    }
+#endif
+    if (!tried) moved = ::rename(src.abs.c_str(), target.c_str());
+    if (moved != 0 && errno == EEXIST && !itselfOnly)
+        return refuse("exists", targetName + " already exists" + (op == "move" ? " there." : "."));
+    if (moved != 0)
+        return refuse("failed", std::string("Could not ") + (op == "rename" ? "rename " : "move ") + src.name + ": " +
+                                    (errno == EXDEV ? "it is on another disk" : std::strerror(errno)) + ".");
+    r.ok = true;
+    r.to = target;
+    r.toRel = targetRel.empty() ? targetName : targetRel + "/" + targetName;
+    return r;
 }
 
 // ---------------------------------------------------------------- saving

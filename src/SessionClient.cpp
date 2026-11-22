@@ -960,6 +960,19 @@ std::uint64_t Client::requestRead(std::uint64_t window, Json request) {
     return req;
 }
 
+std::uint64_t Client::requestFileOp(std::uint64_t window, Json request) {
+    if (!hostDoesFileOps()) return 0;
+    Message m;
+    m.kind = Kind::FsRead;
+    m.window = window;
+    m.json = std::move(request);
+    m.req = ++nextReq_;
+    const std::uint64_t req = m.req;
+    queue(std::move(m));   // behind this renderer's edits
+    pump();
+    return req;
+}
+
 bool Client::readAnswer(std::uint64_t req, Json* out, std::string* bytes) {
     auto it = replies_.find(req);
     if (it == replies_.end() || it->second.kind != Kind::FsData) return false;
