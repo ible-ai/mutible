@@ -103,6 +103,7 @@
 #include "AgentNotes.h"
 #include "GitGraph.h"
 #include "GitGutter.h"
+#include "LineHistoryView.h"
 #include "TestGutter.h"
 #include "EditorConflicts.h"
 #include "MergeConflicts.h"
@@ -184,6 +185,7 @@ struct App {
     bool       procsShown = false;
     // The editor's change bars and the tree's git colors (PARITY.md 2.10).
     GitGutter*     gitGutter = nullptr;
+    LineHistoryView* lineHistory = nullptr;   // Show Line History (LineHistoryView.h)
     TreeGitColors* treeColors = nullptr;
     StatusBranchItem* branchItem = nullptr;   // the status bar's left end
     // The ▶ beside each test in a test file (TestGutter.h).
@@ -3644,6 +3646,20 @@ static void makeGitPanel(App* app) {
             if (!app->dead && app->git) app->git->refresh();
         };
         app->gitGutter->installActions(G_ACTION_MAP(app->window));
+        // Who last changed each line (LineHistoryView.h): a box from the
+        // gutter, or words beside every line (View > Show Line History).
+        app->lineHistory = new LineHistoryView(app->editor);
+        if (hostGit) app->lineHistory->setHost(hostGit);
+        app->lineHistory->agentModel = [app]() -> AgentModel* {
+            return app->dead || app->remote || !app->agents ? nullptr : &app->agents->model();
+        };
+        app->lineHistory->folder = [app] { return app->rootDir; };
+        app->lineHistory->onShowCommit = [app](const std::string& hash, const std::string& subject) {
+            if (!app->dead) showCommitReview(app, hash, subject, false);
+        };
+        app->lineHistory->onNote = [app](const std::string& text) {
+            if (!app->dead) flashStatus(app, text);
+        };
     }
     if (hostGit && app->remoteWs) {
         // The host saw git's state move: the panel, the bars and the tree's
@@ -3652,6 +3668,7 @@ static void makeGitPanel(App* app) {
             if (app->dead) return;
             if (app->git) app->git->refresh();
             if (app->gitGutter) app->gitGutter->refreshSoon();
+            if (app->lineHistory) app->lineHistory->refreshSoon();
             if (app->treeColors) app->treeColors->lookSoon();
         };
     }
@@ -3691,6 +3708,7 @@ static void makeGitPanel(App* app) {
     app->git->onRefreshed = [app] {
         sessionGitChanged(app);
         if (!app->dead && app->gitGutter) app->gitGutter->refreshSoon();
+        if (!app->dead && app->lineHistory) app->lineHistory->refreshSoon();   // a commit
     };
 }
 
@@ -3803,6 +3821,7 @@ static void ensureAgents(App* app) {
         if (!app->dead && app->tree) app->tree->redecorate();
     };
     app->agents->onModelChange = [app] {
+        if (!app->dead && app->lineHistory) app->lineHistory->refreshSoon();   // a session's edit
         if (!app->dead && app->worktrees) app->worktrees->refreshSoon();
     };
     app->worktrees->refresh();
@@ -4980,6 +4999,7 @@ static void applyStylesheet() {
 // The settings file changed on disk: every window follows.
 static GSimpleAction* gIdeLinkAction = nullptr;
 static GSimpleAction* gFormatOnSaveAction = nullptr;
+static GSimpleAction* gLineHistoryAction = nullptr;
 
 static void onSettingsChanged(void*) {
     if (gIdeLinkAction)
@@ -5130,7 +5150,8 @@ static void onIsActive(GObject* w, GParamSpec*, gpointer userp) {
         app->editor->checkExternalChange();
         if (app->lsp) app->lsp->lookAgainForMissingServer();   // installed elsewhere
         if (app->git) app->git->refresh();   // commits made elsewhere
-        if (app->gitGutter) app->gitGutter->refreshSoon();     // the index, staged elsewhere
+        if (app->gitGutter) app->gitGutter->refreshSoon();
+        if (app->lineHistory) app->lineHistory->refreshSoon();
         if (app->treeColors) app->treeColors->lookSoon();      // files the tree has not listed
     } else if (!app->dead && app->persist) {
         app->persist->windowActive(false);   // focus-change auto-save
@@ -5251,6 +5272,24 @@ static void initShared() {
                      nullptr);
     g_action_map_add_action(G_ACTION_MAP(g.gapp), G_ACTION(gFormatOnSaveAction));
     g_object_unref(gFormatOnSaveAction);
+
+    // View > Show Line History: the words beside every line, in every window
+    // (LineHistoryView.h), checked while on.
+    gLineHistoryAction = g_simple_action_new_stateful("togglelinehistory", nullptr,
+                                                      g_variant_new_boolean(LineHistoryView::inlineOn()));
+    g_signal_connect(gLineHistoryAction, "change-state",
+                     G_CALLBACK(+[](GSimpleAction* a, GVariant* value, gpointer) {
+                         const bool on = g_variant_get_boolean(value);
+                         g_simple_action_set_state(a, value);
+                         LineHistoryView::setInline(on);
+                         if (!g.windows.empty())
+                             flashStatus(g.windows.back(),
+                                         on ? "Line history shows beside every line"
+                                            : "Line history shows when you rest the pointer on a line number");
+                     }),
+                     nullptr);
+    g_action_map_add_action(G_ACTION_MAP(g.gapp), G_ACTION(gLineHistoryAction));
+    g_object_unref(gLineHistoryAction);
 
     Zoom::applySettings(g.settings->settings());   // the zoom from last time, before any view
     Keys::setTerminalMacStyle(g.settings->settings().terminalMacStyleKeys());
@@ -6016,6 +6055,8 @@ static void onWindowRemoved(GtkApplication*, GtkWindow* window, gpointer) {
         app->git->onRefreshed = nullptr;
         app->git->onSynced = nullptr;
     }
+    delete app->lineHistory;   // the same
+    app->lineHistory = nullptr;
     delete app->gitGutter;   // before the editor whose view and buffers it watches
     app->gitGutter = nullptr;
     delete app->testGutter;  // the same

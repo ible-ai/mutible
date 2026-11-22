@@ -251,6 +251,68 @@ static void testLineHistory() {
         fsys::remove_all(root);
     }
 
+    GROUP("linehistory:assemble");
+    {
+        CHECK((blameArgs("a.py") == std::vector<std::string>{"blame", "--porcelain", "--contents", "-", "--", "a.py"}));
+        const std::string text = "one\ntwo\nthree\n";
+        auto okRun = [&](const std::string &out) {
+            GitOutcome g;
+            g.ok = true;
+            g.out = out;
+            return g;
+        };
+        const std::string out = h1 + " 1 1 2\nauthor Ann Lee\nauthor-mail <a@x>\nauthor-time 1700000000\n"
+                                "summary First\nfilename a.py\n\tone\n" + h1 + " 2 2\n\ttwo\n" +
+                                z + " 3 3 1\nauthor Not Committed Yet\nauthor-time 1700000500\n"
+                                "summary Version of a.py\nfilename a.py\n\tthree\n";
+        Answer a = assemble(text, okRun(out), {});
+        CHECK(a.hasBlame && a.lines.size() == 3 && a.trouble.empty());
+        const long long now = 1700000000 + 3 * 86400;
+        CHECK(a.label(0, now) == "aaaaaaa Ann Lee, 3 days ago \xC2\xB7 First");
+        CHECK(a.label(2, now) == "Not committed" && a.label(3, now).empty());
+        CHECK(a.detail(1, now, nullptr).find("Click to open the commit.") != std::string::npos);
+        // A session's uncommitted line is the session's.
+        SessionInput si;
+        si.info = SessionInfo{"Third line", "/t.jsonl"};
+        si.changes = {edit("tree\n", "three\n", (double)(now - 7200))};
+        std::vector<SessionInput> ss;
+        ss.push_back(si);
+        a = assemble(text, okRun(out), ss);
+        CHECK(a.lines.size() == 3 && a.lines[2].kind == Kind::Session && a.lines[0].kind == Kind::Commit);
+        CHECK(a.label(2, now) == "Claude Code: Third line, 2 hours ago");
+        // A file git does not track: everything uncommitted, no trouble.
+        GitOutcome none;
+        none.status = 128;
+        none.err = "fatal: no such path 'a.py' in HEAD\n";
+        a = assemble(text, none, {});
+        CHECK(!a.hasBlame && a.trouble.empty() && a.lines.size() == 3 && a.lines[1].kind == Kind::NotCommitted);
+        none.err = "fatal: not a git repository (or any of the parent directories): .git\n";
+        a = assemble(text, none, {});
+        CHECK(a.trouble.empty() && a.lines[0].kind == Kind::NotCommitted);
+        // git that failed otherwise, timed out or answered oddly: Unknown, with the reason,
+        // and a session's line still its own.
+        GitOutcome bad;
+        bad.status = 1;
+        bad.err = "fatal: something broke";
+        a = assemble(text, bad, ss);
+        CHECK(a.trouble == "fatal: something broke" && a.lines.size() == 3);
+        CHECK(a.lines[0].kind == Kind::Unknown && a.lines[2].kind == Kind::Session);
+        CHECK(a.detail(0, now, nullptr) == "Line history is not available: fatal: something broke");
+        CHECK(a.label(0, now).empty());
+        GitOutcome slow;
+        slow.timedOut = true;
+        slow.status = -1;
+        slow.err = "git did not answer within 30 seconds: git blame";
+        a = assemble(text, slow, {});
+        CHECK(a.lines[0].kind == Kind::Unknown && !a.trouble.empty());
+        a = assemble(text, okRun("garbage\n"), {});
+        CHECK(!a.hasBlame && a.trouble.find("does not read") != std::string::npos &&
+              a.lines[1].kind == Kind::Unknown);
+        // A blame of another text (the file changed under git) says nothing.
+        a = assemble("one\n", okRun(out), {});
+        CHECK(a.lines.size() == 1 && a.lines[0].kind == Kind::Unknown);
+    }
+
     GROUP("linehistory:bounded");
     {
         // A large file and a session of many edits: one pass stays quick.

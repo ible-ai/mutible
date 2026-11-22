@@ -98,6 +98,7 @@ const std::vector<Action>& actions() {
         {"mutible.page.zoomOut", "win.zoomout", false},
         {"mutible.page.fitWidth", "win.zoomfit", false},
         {"editor.action.toggleWordWrap", "win.togglewordwrap", false},
+        {"git.blame.toggleEditorDecoration", "app.togglelinehistory", false},
         // View > Folding (Folds.h adds the actions).
         {"editor.fold", "win.fold", true},
         {"editor.unfold", "win.unfold", false},

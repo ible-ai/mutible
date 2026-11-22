@@ -38,6 +38,7 @@ static MCGuiAppWindow appWindowParts(App* a) {
     w.formatOffer = a->formatOffer;
     w.problems = a->problems;
     w.changeBars = a->gitGutter;
+    w.lineHistory = a->lineHistory;
     w.tests = a->testGutter;
     w.treeColors = a->treeColors;
     w.branchItem = a->branchItem;

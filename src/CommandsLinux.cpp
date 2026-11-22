@@ -200,6 +200,8 @@ const std::vector<LinuxRow>& linuxRows() {
         // VS Code's Linux key. An editor command, so in the terminal Alt+Z
         // is the program's (Meta), as Option+Z is on the Mac.
         {"editor.action.toggleWordWrap", "alt+z", 0, nullptr, nullptr},
+        // Who last changed each line (LineHistoryView.h); no key, as on the Mac.
+        {"git.blame.toggleEditorDecoration", "", 0, nullptr, nullptr},
         // Folding (PARITY.md 1.10). Fold and Unfold are VS Code's Linux
         // Ctrl+Shift+[ and ], which GTK matches as the braces Shift makes
         // (linuxAccelerators); the rest are Ctrl+K chords in VS Code, so

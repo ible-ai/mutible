@@ -97,7 +97,10 @@
 #include "Lsp.h"
 #include "ConnectWindow.h"
 #include "GitChecks.h"
+#include "CodeView.h"
 #include "GitGutter.h"
+#include "Gutter.h"
+#include "LineHistoryView.h"
 #include "GitPanel.h"
 #include "TreeGitColors.h"
 #include "ControlPaths.h"
@@ -455,6 +458,38 @@ void gitOverSsh() {
         GitGutter* bars = RepoWindow().changeBars;
         return bars && bars->barCount() == 1 && bars->barDescriptions()[0].rfind("modified ", 0) == 0;
     });
+    // Line history over SSH: the box for a line is blame run by the host's
+    // git (the run counter moves), and the changed line is not committed;
+    // the sessions are this machine's transcripts and are not looked at.
+    MCGuiWait("a.txt's rows are laid out", 15, [] {
+        Gutter* g = RepoWindow().editor->codeView()->gutter();
+        return g->rectOfLine(2).size.height > 0 && MCGuiOnScreen(g->widget());
+    });
+    MCGuiStep("resting on the first line's number", [] {
+        gGitRunsBefore = gitWs()->gitRuns;
+        GCHECK(RepoWindow().lineHistory != nullptr);
+        Gutter* g = RepoWindow().editor->codeView()->gutter();
+        const graphene_rect_t r = g->rectOfLine(0);
+        g->pointerAt(g->numbersRight() - 4, r.origin.y + r.size.height / 2);
+    });
+    MCGuiWait("the box names the commit, and the host ran the blame", 20, [] {
+        LineHistoryView* h = RepoWindow().lineHistory;
+        return h && h->popupVisible() && h->popupText().find("\nfirst\n") != std::string::npos &&
+               gitWs()->gitRuns > gGitRunsBefore;
+    });
+    MCGuiStep("the changed line is not committed", [] {
+        Gutter* g = RepoWindow().editor->codeView()->gutter();
+        const graphene_rect_t r = g->rectOfLine(1);
+        g->pointerAt(g->numbersRight() - 4, r.origin.y + r.size.height / 2);
+    });
+    MCGuiWait("so the box says", 15, [] {
+        LineHistoryView* h = RepoWindow().lineHistory;
+        return h && h->popupLine() == 1 && h->popupText().rfind("Not committed\n", 0) == 0;
+    });
+    MCGuiStep("the pointer leaves the gutter", [] {
+        RepoWindow().editor->codeView()->gutter()->pointerAt(-1, -1);
+    });
+    MCGuiWait("the box closes", 5, [] { return !RepoWindow().lineHistory->popupVisible(); });
     MCGuiStep("a row opens the review page, read from the host", [] {
         gGitRunsBefore = gitWs()->gitRuns;
         gitPanel()->reviewRow(gitRow("W M a.txt"), true);

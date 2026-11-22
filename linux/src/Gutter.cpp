@@ -98,8 +98,12 @@ Gutter::Gutter(GtkTextView* view) : view_(view) {
         self->hovering_ = true;
         if (self->lines() && self->lines()->folds()) self->queueDraw();
     }), this);
+    g_signal_connect_swapped(motion, "motion", G_CALLBACK(+[](Gutter* self, double x, double y) {
+        self->pointerAt(x, y);
+    }), this);
     g_signal_connect_swapped(motion, "leave", G_CALLBACK(+[](Gutter* self) {
         self->hovering_ = false;
+        self->pointerAt(-1, -1);
         if (self->lines() && self->lines()->folds()) self->queueDraw();
     }), this);
     gtk_widget_add_controller(widget_, motion);
@@ -423,6 +427,25 @@ bool Gutter::linesYRange(size_t first, size_t last, double* y, double* height) c
     *y = toGutterY(ay);
     *height = by + bh - ay;
     return true;
+}
+
+void Gutter::pointerAt(double x, double y) {
+    size_t line = kNoLine;
+    if (x >= testWidth() && x < numbersRight() + 0.5 && y >= 0 && lines() && lines()->lineCount() > 0) {
+        const size_t at = lineAtY(y);
+        // Below the last line is no line.
+        graphene_rect_t r = rectOfLine(at);
+        if (r.size.height > 0 && y < r.origin.y + r.size.height + 0.5) line = at;
+    }
+    if (line == hoverLine_) return;
+    hoverLine_ = line;
+    if (onHoverLine) onHoverLine(line);
+}
+
+graphene_rect_t Gutter::rectOfLine(size_t line) const {
+    double y = 0, h = 0;
+    if (!linesYRange(line, line, &y, &h)) return GRAPHENE_RECT_INIT(0, 0, 0, 0);
+    return GRAPHENE_RECT_INIT(0, (float)y, (float)gtk_widget_get_width(widget_), (float)h);
 }
 
 // ---------------------------------------------------------------- dots
