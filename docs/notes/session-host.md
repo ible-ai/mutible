@@ -4682,6 +4682,71 @@ checked by the host against rows it was not sent: left alone and said).
   with the disk as it was, fresh.c's tab with a typed change is left alone
   and named, and the question and the status are in the words above.
 
+#### The GTK window over SSH, the connecting window (2026-11-21, seventh slice)
+
+The Mac's #342 on GTK: `mutible ssh://host/path` shows a small window while
+ssh connects and mutible starts there (Reconnect does not: see below).
+The connecting itself was already off the main thread on GTK (the Welcome
+polled every 20 ms, 30 s at most); what was missing was saying so and a way
+to stop it.
+
+- **The words are the Mac's** (`Shared::ConnectProgress::line`, the core's):
+  "Connecting to host…", "Starting mutible on host…" (once `mutible host
+  --stdio` said `kStdioStartedLine` on ssh's standard error; an older host
+  skips it), "Opening <the Welcome's folder> on host…", then the window
+  closes as the editor window opens; "Stopped connecting to host." after
+  Cancel. The title is "host:path — mutible" (`sshLabel`, the Mac's with
+  its em dash), a second line holds the address, and a spinner and Cancel
+  complete it.
+- **Where.** `ConnectWindow` (linux/src/ConnectWindow.{h,cpp}, a GtkWindow,
+  not modal, presented once; a child of none: only the
+  command line's first connect uses it). `SessionLink::connectRemote`/`reconnectRemote`
+  now return the link while it connects (`Link::connecting()`, `progress()`,
+  `target()`, `commandPid()`, `onProgress()`, `cancelConnecting()`; null
+  when the address is bad or ssh cannot run, the live link, not connecting,
+  when another window's try got there first, so no window shows for it). The
+  poll already running looks at the command's stderr
+  (`HostLink::stderrText`) each turn before it looks for the Welcome, so a
+  Starting too short to be seen has still passed (`progress().passed`).
+  `onProgress` is one listener the window sets; it is called on the main
+  loop when the stage changes.
+- **Cancel** (the button, Esc, the close button): `Link::cancelConnecting`
+  kills ssh's process group by its pid (`HostLink::terminate`, the core's),
+  lets go of the transport, and the poll lets go of the try without calling
+  `done` (so the caller has nothing to say: no alert, no window, the
+  registry entry gone). The command line's `g_application_hold` is released
+  by the window's `cancelled` callback, since `done` would have.
+- **Reconnect and the tries by themselves show no window**, as on the Mac
+  (`tryAutoReconnect` says what it does in the status bar and the title; a
+  window per try would pop up every half minute for four minutes). A press
+  of Reconnect over SSH says "Reconnecting to <label>…" in the status bar
+  and shows **Stop** beside it (`App::stopButton`, Reconnect hidden meanwhile);
+  Stop and Esc in the window (a capture-phase key controller that takes Esc
+  only while `App::connectingLink` is set) call `stopReconnect`:
+  `cancelConnecting`, Reconnect shown again, "Stopped connecting to <label>…
+  Your text is kept here; Reconnect tries again". The Mac has no Stop for a
+  Reconnect; this is GTK's own addition. A failed try shows Reconnect again
+  with "Could not reconnect to <label>: why"; no alert.
+- **A failure** closes the window first and then shows today's alert
+  ("Could not open <address>", the core's words); the Mac's alert is a sheet
+  on its connecting window, which GTK has no equivalent of.
+- **Traps.** `Link::cancelConnecting` can only run while `connecting()`; a
+  window whose Cancel comes after the Welcome (the same turn) does nothing,
+  and the editor window opens. The window object outlives its GtkWindow (the
+  checks keep the shared_ptr to read its lines): `window()` is null once it
+  is over, so look it up in `ConnectWindow::pending()` while it shows.
+- **Checked** (`remote_ssh`; the stand-in sleeps while a flag file exists,
+  after writing its pid): a first connect shows the window ("Connecting to
+  standin…", its title, no editor window), Cancel leaves no window, no
+  alert, no link, nothing said, ssh's pid and group gone; the same address
+  again, slow, then let through: the lines were Connecting, Starting
+  mutible, Opening <folder>, in that order, and the window closed when the
+  editor window opened; the automatic tries after a drop (many) showed no
+  window; Reconnect by the user showed none (shownCount unchanged) but the status
+  text and Stop, Stop and then Esc each left the window disconnected with
+  Reconnect shown and ssh's pid and group gone, and the third press
+  connected.
+
 #### The tree's file operations on the host (2026-11-21, Welcome flag 64)
 
 A window over SSH could not rename, move, delete or make files and folders

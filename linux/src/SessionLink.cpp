@@ -942,20 +942,20 @@ std::string newResumeToken() {
 
 // `lost`: the link this connects again for (reconnectRemote), whose token it
 // keeps and whose registration stays until this one has its Welcome.
-void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
-                      std::function<void(std::shared_ptr<Link>, std::string)> done) {
+std::shared_ptr<Link> connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& lost,
+                                       std::function<void(std::shared_ptr<Link>, std::string)> done) {
     Shared::SshTarget t;
     std::string error;
     if (!Shared::parseSshUrl(address, &t, &error)) {
         answerLater(std::move(done), nullptr, error);
-        return;
+        return nullptr;
     }
     const std::string key = Shared::sshMachineKey(t) + "\n" + t.path;
     auto& reg = remoteRegistry();
     std::shared_ptr<Link> before = reg[key].lock();
     if (before && before != lost && !before->lost() && before->client().idBase()) {
         answerLater(std::move(done), before, "");   // another window's try got there first
-        return;
+        return before;
     }
     std::shared_ptr<Link> link(new Link());
     link->resume_ = lost ? lost->resume_ : before && before->lost() ? before->resume_ : newResumeToken();
@@ -967,8 +967,9 @@ void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& l
     if (!link->startRemote(&error)) {
         g_printerr("mutible: no window over ssh for %s: %s\n", address.c_str(), error.c_str());
         answerLater(std::move(done), nullptr, error);
-        return;
+        return nullptr;
     }
+    link->connecting_ = true;
     if (!lost) reg[key] = link;   // a try again registers when it has its Welcome
     struct Wait {
         std::shared_ptr<Link> link;
@@ -983,6 +984,16 @@ void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& l
         Wait* w = static_cast<Wait*>(p);
         Link& l = *w->link;
         std::string why;
+        if (l.cancelled_) {   // cancelConnecting: ssh killed, nothing to tell
+            if (remoteRegistry()[w->key].lock() == w->link) remoteRegistry().erase(w->key);
+            delete w;
+            return G_SOURCE_REMOVE;
+        }
+        if (l.socket_) {
+            const Shared::ConnectProgress::Stage before = l.progress_.stage();
+            l.progress_.heard(l.socket_->stderrText());
+            if (l.progress_.stage() != before && l.progressListener_) l.progressListener_();
+        }
         if (l.client_->idBase() && !l.client_->lost()) {
             if (l.client_->hostSavesForApps() && l.client_->hostRunsOwnShell() && !l.client_->hostFolder().empty()) {
                 l.folder_ = l.client_->hostFolder();
@@ -995,6 +1006,9 @@ void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& l
                     folder.path = slash == std::string::npos ? "~" : slash == 0 ? "/" : folder.path.substr(0, slash);
                 }
                 l.label_ = Shared::sshLabel(folder);
+                l.connecting_ = false;
+                l.progress_.welcomed(l.folder_);
+                if (l.progressListener_) l.progressListener_();
                 remoteRegistry()[w->key] = w->link;
                 RemoteDone f = std::move(w->done);
                 std::shared_ptr<Link> link = std::move(w->link);
@@ -1013,24 +1027,44 @@ void connectRemoteFor(const std::string& address, const std::shared_ptr<Link>& l
             why = Shared::explainSshFailure(l.target_, l.socket_ ? l.socket_->exitStatus() : -1,
                                             l.socket_ ? l.socket_->stderrText() : std::string());
         l.detached_ = true;   // nothing to tell: the caller says why
+        l.connecting_ = false;
+        l.progress_.failed();
+        if (l.progressListener_) l.progressListener_();
         if (remoteRegistry()[w->key].lock() == w->link) remoteRegistry().erase(w->key);
         RemoteDone f = std::move(w->done);
         delete w;
         f(nullptr, why);
         return G_SOURCE_REMOVE;
     }, w);
+    return link;
 }
 
-void connectRemote(const std::string& address, std::function<void(std::shared_ptr<Link>, std::string)> done) {
-    connectRemoteFor(address, nullptr, std::move(done));
+void Link::cancelConnecting() {
+    if (!connecting_ || cancelled_) return;
+    cancelled_ = true;
+    connecting_ = false;
+    progress_.cancel();
+    detached_ = true;
+    if (socket_) {
+        socket_->terminate();   // ssh's group, by its pid, now
+        socket_->close();
+    }
+    if (progressListener_) progressListener_();
+    // The poll sees cancelled_ on its next turn and lets go of the try.
 }
 
-void reconnectRemote(const std::shared_ptr<Link>& lost, std::function<void(std::shared_ptr<Link>, std::string)> done) {
+std::shared_ptr<Link> connectRemote(const std::string& address,
+                                    std::function<void(std::shared_ptr<Link>, std::string)> done) {
+    return connectRemoteFor(address, nullptr, std::move(done));
+}
+
+std::shared_ptr<Link> reconnectRemote(const std::shared_ptr<Link>& lost,
+                                      std::function<void(std::shared_ptr<Link>, std::string)> done) {
     if (!lost || lost->kind() != Link::Kind::Remote) {
         answerLater(std::move(done), nullptr, "not a window over SSH");
-        return;
+        return nullptr;
     }
-    connectRemoteFor(lost->address(), lost, std::move(done));
+    return connectRemoteFor(lost->address(), lost, std::move(done));
 }
 
 bool Link::resumeWindowFrom(const Link& old, std::uint64_t window) {

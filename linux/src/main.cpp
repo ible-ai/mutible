@@ -62,6 +62,7 @@
 #include "Editor.h"
 #include "SessionBrowser.h"
 #include "SessionLink.h"
+#include "ConnectWindow.h"
 #include "RemoteWorkspace.h"
 #include "SessionWeb.h"   // the session browser's report of the panes
 #include "SessionWebGit.h"   // the report of its worktree pages
@@ -251,6 +252,11 @@ struct App {
     Shared::TermDock heldDock;
     std::set<uint64_t> dropOnClose;
     GtkWidget* reconnectButton = nullptr;
+    // A Reconnect the user pressed over SSH, while it connects: its link
+    // (Link::cancelConnecting stops it) and the status bar's Stop beside the
+    // text (the Mac's flash says only "Reconnecting to ..."; no window).
+    std::shared_ptr<SessionLink::Link> connectingLink;
+    GtkWidget* stopButton = nullptr;
     // A window on another machine (stage 8, `mutible ssh://host/path`): its
     // folder, files and shells are there, through its host over ssh; the
     // folder's path names nothing of this machine's disk.
@@ -613,6 +619,7 @@ static void showHeldActive(App* app);
 
 static void rehostApp(App* a, const std::shared_ptr<SessionLink::Link>& link);
 static void scheduleAutoReconnect(App* app);
+static void stopReconnect(App* app);
 
 // The window is still there (a timer or an answer may come after it).
 static bool windowAlive(App* app) {
@@ -4696,6 +4703,19 @@ static GtkWidget* buildHintsPanel(App* app) {
     g_signal_connect(keys, "key-pressed", G_CALLBACK(onHintsKey), app);
     gtk_widget_add_controller(app->window, keys);
 
+    // Esc while a Reconnect connects stops it (and only then is Esc taken).
+    GtkEventController* stopKeys = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(stopKeys, GTK_PHASE_CAPTURE);
+    g_signal_connect(stopKeys, "key-pressed", G_CALLBACK(+[](GtkEventControllerKey*, guint keyval, guint,
+                                                              GdkModifierType state, gpointer p) -> gboolean {
+        App* a = static_cast<App*>(p);
+        if (keyval != GDK_KEY_Escape || (state & gtk_accelerator_get_default_mod_mask()) || !a->connectingLink)
+            return FALSE;
+        stopReconnect(a);
+        return TRUE;
+    }), app);
+    gtk_widget_add_controller(app->window, stopKeys);
+
     GtkEventController* closeKeys = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(closeKeys, GTK_PHASE_CAPTURE);
     g_signal_connect(closeKeys, "key-pressed", G_CALLBACK(closeKeyPressed), app);
@@ -5659,6 +5679,21 @@ static void rehostWindows(const std::shared_ptr<SessionLink::Link>& link) {
             rehostApp(a, link);
 }
 
+// Stop (or Esc) while the user's Reconnect over SSH connects: ssh ended, the
+// try never answers, the window stays disconnected with Reconnect shown.
+static void stopReconnect(App* app) {
+    if (app->dead || !app->connectingLink) return;
+    std::shared_ptr<SessionLink::Link> link = std::move(app->connectingLink);
+    app->connectingLink.reset();
+    if (!link->connecting()) return;   // the Welcome came the same turn
+    link->cancelConnecting();
+    app->reconnecting = false;
+    if (app->stopButton) gtk_widget_set_visible(app->stopButton, FALSE);
+    if (app->reconnectButton) gtk_widget_set_visible(app->reconnectButton, TRUE);
+    flashStatus(app, "Stopped connecting to " + app->link->label() +
+                         "… Your text is kept here; Reconnect tries again");
+}
+
 // The status bar's Reconnect: the folder's host found or started again.
 static void reconnectHost(App* app) {
     if (app->dead || !app->link || !app->link->lost()) return;
@@ -5672,19 +5707,30 @@ static void reconnectHost(App* app) {
         app->autoReconnect = false;   // the tries by themselves are over; this is one of the user's
         app->reconnectRound++;
         flashStatus(app, "Reconnecting to " + label + "…");
-        SessionLink::reconnectRemote(app->link, [app, label](std::shared_ptr<SessionLink::Link> link, std::string why) {
+        std::shared_ptr<SessionLink::Link> connecting = SessionLink::reconnectRemote(
+            app->link, [app, label](std::shared_ptr<SessionLink::Link> link, std::string why) {
             // The window may be gone by now (the pointer is then only compared).
             bool alive = false;
             for (App* a : g.windows)
                 if (a == app && !a->dead) alive = true;
             if (!alive) return;
             app->reconnecting = false;
+            app->connectingLink.reset();
+            if (app->stopButton) gtk_widget_set_visible(app->stopButton, FALSE);
             if (!link) {
                 flashStatus(app, "Could not reconnect to " + label + ": " + why);
+                if (app->reconnectButton) gtk_widget_set_visible(app->reconnectButton, TRUE);
                 return;
             }
             rehostWindows(link);   // every window on the lost link, this one too
         });
+        // The Mac's way: the status bar says so, with no window (the tries by
+        // themselves say the same); Stop beside it and Esc end the try.
+        if (connecting && connecting->connecting()) {
+            app->connectingLink = connecting;
+            if (app->stopButton) gtk_widget_set_visible(app->stopButton, TRUE);
+            if (app->reconnectButton) gtk_widget_set_visible(app->reconnectButton, FALSE);
+        }
         return;
     }
     useSessionLink(app, app->link->folder());   // moves every window on the old link
@@ -6333,6 +6379,14 @@ static App* newWindow(const std::string& root, const std::string& file,
         reconnectHost(static_cast<App*>(p));
     }), app);
     gtk_box_append(GTK_BOX(statusBar), app->reconnectButton);
+    app->stopButton = gtk_button_new_with_label("Stop");
+    gtk_widget_add_css_class(app->stopButton, "flat");
+    gtk_widget_set_tooltip_text(app->stopButton, "Stop connecting: ssh is ended (Esc does the same)");
+    gtk_widget_set_visible(app->stopButton, FALSE);
+    g_signal_connect(app->stopButton, "clicked", G_CALLBACK(+[](GtkButton*, gpointer p) {
+        stopReconnect(static_cast<App*>(p));
+    }), app);
+    gtk_box_append(GTK_BOX(statusBar), app->stopButton);
     app->lspLabel = gtk_label_new("");
     gtk_label_set_ellipsize(GTK_LABEL(app->lspLabel), PANGO_ELLIPSIZE_START);
     gtk_box_append(GTK_BOX(statusBar), app->editor->largeFileNote());   // LargeFileView.h
@@ -7109,8 +7163,13 @@ static void openRemoteAddress(const std::string& address, bool hold,
     // A window already on this link is brought forward; else a new one on
     // the folder the host named (a file's folder for a file, the file open).
     if (hold) g_application_hold(G_APPLICATION(g.gapp));
-    SessionLink::connectRemote(address, [address, hold, printerr](std::shared_ptr<SessionLink::Link> link,
-                                                                  std::string why) {
+    // The connecting window (ConnectWindow.h) shows while it connects; it closes
+    // when the try ends. Cancel ends the try without an answer, so it lets go
+    // of the hold itself.
+    auto shown = std::make_shared<std::shared_ptr<ConnectWindow>>();
+    std::shared_ptr<SessionLink::Link> connecting = SessionLink::connectRemote(
+        address, [address, hold, printerr, shown](std::shared_ptr<SessionLink::Link> link, std::string why) {
+        if (*shown) (*shown)->end();
         if (!link) {
             printerr("mutible: " + address + ": " + why);
             alertCouldNotOpen(address, why);
@@ -7129,6 +7188,10 @@ static void openRemoteAddress(const std::string& address, bool hold,
         }
         if (hold) g_application_release(G_APPLICATION(g.gapp));
     });
+    if (connecting && connecting->connecting())
+        *shown = ConnectWindow::show(connecting, nullptr, [hold]() {
+            if (hold) g_application_release(G_APPLICATION(g.gapp));
+        });
 }
 
 static void handleCommandLine(char** args, int n, const char* cwd,
