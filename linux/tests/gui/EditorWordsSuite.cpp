@@ -48,6 +48,12 @@ MC_GUI_SUITE(editor_words) {
     MCGuiWait("laid out", 5, [] { return gtk_widget_get_height(view()) > 100; });
 
     // ------------------------------------------------ double-clicks
+    // The editor's view (and its click count) outlives the suite before:
+    // bookmark_save ends with a click on the same spot (the same text, laid
+    // out the same), and a press within the double-click time of it is the
+    // second click of a pair, so the first double-click here came as a
+    // triple click (0>13, seed 1761923150). Time is the condition.
+    MCGuiPause(0.6);
     MCGuiStep("a double-click on arr", [] { doubleClickOn(5); });
     waitCarets("selects arr, not arr.size", "4>7");
     // GTK, and the carets' own click counting, take a press within the

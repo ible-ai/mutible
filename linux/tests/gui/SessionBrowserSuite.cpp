@@ -554,7 +554,10 @@ MC_GUI_SUITE(session_browser) {
         GCHECK(gWs1.latest("state", &st));
         std::set<std::string> page;
         for (const Json& d : st["docs"].elements()) page.insert(d["path"].asString());
-        GCHECK(page.size() == Ed()->documents().size());
+        // Counted, not by path: tabs earlier suites left (several untitled
+        // ones, all with the empty path) are the window's and the page's
+        // alike (soak seed 1761923150: 9 tabs, 6 paths in a set).
+        GCHECK(st["docs"].elements().size() == Ed()->documents().size());
         GCHECK(page.count(gFile2) == 0);
         GCHECK(page.count(gFileA) == 1);
         GCHECK(W(1).editor->documentFor(gFile2) != nullptr);   // really open, in the other window

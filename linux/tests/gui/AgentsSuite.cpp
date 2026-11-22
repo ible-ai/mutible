@@ -235,6 +235,17 @@ std::string gitText(const std::string& dir, const std::string& args) {
 }  // namespace
 
 MC_GUI_SUITE(agents) {
+    // A panel an earlier suite made and hid (plan_usage's Ctrl+Shift+A, twice)
+    // outlives it, and its model reads the Claude folders as they were when
+    // it was made: this suite's fixtures would never reach it (soak seed
+    // 3661827657: the panel was there before the key, no rows after).
+    // Dropped as the window's teardown drops it (the worktrees before the
+    // model they read), so the key makes one over these folders.
+    MCGuiStep("no Agents panel left by an earlier suite", [] {
+        if (MCGuiApp().agentsShown) MCGuiKey("ctrl+shift+a");
+    });
+    MCGuiWait("the panel is hidden", 5, [] { return !MCGuiApp().agentsShown; });
+    MCGuiStep("a hidden panel is dropped", [] { MCGuiDropAgents(); });
     MCGuiStep("fixtures copied into a scratch Claude world, paths moved to the project", [] {
         gProj = MCGuiProject();
         char buf[4096];
