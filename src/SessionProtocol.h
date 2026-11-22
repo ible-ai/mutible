@@ -113,6 +113,14 @@
 // (SessionGit.h), answered by one FsData {"op": "git", "ok", "status",
 // "err", "timedOut"} with its standard output as the bytes, or {"op":
 // "git", "error", "reason"} when it was not run. Only from an app's window.
+//
+// A window's formatter (stage 9, a host whose Welcome has flag 1024):
+// FsRead's "format" {"path", "setting", "consent", "first", "last",
+// "projectOnly", "timeout"} with the document's text as the bytes plans and
+// runs its formatter on the host, on a worker (SessionFormat.h), answered by
+// one FsData {"op": "format", "kind", "ok", "message", "tool", "style", ...}
+// with the formatted text as the bytes, or {"op": "format", "error",
+// "reason"} when it was not run. Only from an app's window.
 // Pure C++17, no I/O.
 #pragma once
 
@@ -195,7 +203,10 @@ enum class Kind {
                  // its machine's shell integration scripts and sets them up
                  // itself for a hostShell terminal (TermSpec's integration);
                  // flag 256: it runs git for an app's window (FsRead's "git",
-                 // SessionGit.h: a window over SSH's Source Control)
+                 // SessionGit.h: a window over SSH's Source Control);
+                 // flag 512: it runs language servers for one (LspStart,
+                 // SessionLsp.h); flag 1024: it runs formatters for one
+                 // (FsRead's "format", SessionFormat.h)
     DocOpened,   // doc, v (and text16 when it was open already: another renderer's)
     DocEdited,   // doc, v, by, seq, ops, ops16, flag (1 undo, 2 redo), select
     DocUndone,   // doc, req, outcome

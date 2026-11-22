@@ -487,7 +487,8 @@ namespace {
 // ------------------------------------------------------------------ git
 
 ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::string>& args,
-                            const std::string& input, int timeoutMs, const std::atomic<bool>* cancel) {
+                            const std::string& input, int timeoutMs, const std::atomic<bool>* cancel,
+                            const GitSpawn* spawn) {
     ChangeReview::GitOut r;
     // stdin: the input in an unlinked scratch file (no pipe to fill, and no
     // SIGPIPE when git exits before reading it), else /dev/null.
@@ -537,23 +538,37 @@ ChangeReview::GitOut runGit(const std::string& dir, const std::vector<std::strin
     sigaddset(&def, SIGPIPE);
     posix_spawnattr_setsigmask(&at, &none);
     posix_spawnattr_setsigdefault(&at, &def);
-    posix_spawnattr_setpgroup(&at, 0);
-    posix_spawnattr_setflags(&at, POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
+    short spawnFlags = POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF;
+#ifdef POSIX_SPAWN_SETSID
+    if (spawn && spawn->newSession) {
+        spawnFlags |= POSIX_SPAWN_SETSID;   // a group of its own too, led by git
+    } else
+#endif
+    {
+        posix_spawnattr_setpgroup(&at, 0);
+        spawnFlags |= POSIX_SPAWN_SETPGROUP;
+    }
+    posix_spawnattr_setflags(&at, spawnFlags);
     // The caller's environment, less what would point git elsewhere or
     // make it wait for a person, plus ours.
+    std::vector<std::string> base;
+    if (spawn && spawn->env) base = *spawn->env;
+    else
+        for (char** e = environ; e && *e; e++) base.push_back(*e);
+    std::vector<std::string> ours = {"GIT_OPTIONAL_LOCKS=0", "GIT_TERMINAL_PROMPT=0", "GIT_EDITOR=true",
+                                     "GIT_PAGER=cat"};
+    if (spawn) ours.insert(ours.end(), spawn->set.begin(), spawn->set.end());
+    auto nameOf = [](const std::string& kv) { return kv.substr(0, kv.find('=')); };
     std::vector<std::string> env;
-    for (char** e = environ; e && *e; e++) {
-        const std::string kv = *e;
-        const std::string k = kv.substr(0, kv.find('='));
-        if (k == "GIT_DIR" || k == "GIT_WORK_TREE" || k == "GIT_INDEX_FILE" || k == "GIT_OPTIONAL_LOCKS" ||
-            k == "GIT_TERMINAL_PROMPT" || k == "GIT_EDITOR" || k == "GIT_PAGER")
-            continue;
-        env.push_back(kv);
+    for (const std::string& kv : base) {
+        const std::string k = nameOf(kv);
+        if (k == "GIT_DIR" || k == "GIT_WORK_TREE" || k == "GIT_INDEX_FILE") continue;
+        bool replaced = false;
+        for (const std::string& o : ours)
+            if (nameOf(o) == k) replaced = true;
+        if (!replaced) env.push_back(kv);
     }
-    env.push_back("GIT_OPTIONAL_LOCKS=0");
-    env.push_back("GIT_TERMINAL_PROMPT=0");
-    env.push_back("GIT_EDITOR=true");
-    env.push_back("GIT_PAGER=cat");
+    env.insert(env.end(), ours.begin(), ours.end());
     std::vector<char*> envp;
     for (std::string& kv : env) envp.push_back(&kv[0]);
     envp.push_back(nullptr);

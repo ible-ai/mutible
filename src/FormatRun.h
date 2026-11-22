@@ -55,6 +55,10 @@ struct Decision {
     std::string message;
     // What to install, best first ("pyink", "yapf"), when none was found.
     std::vector<std::string> installPrograms;
+    // Failed because no copy of any of the plan's formatters is installed
+    // (nothing of the folder's held back either): a window over SSH names
+    // its host for it (SessionFormat.h).
+    bool missing = false;
     std::string tool;    // the program's name ("pyink"), "" when none was chosen
     // Which style it applies: "Google style", "the project's .clang-format",
     // "format.python in the settings".

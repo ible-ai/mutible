@@ -100,6 +100,64 @@ found through that list.
   marker; its `done` comes once, after the edit, nothing, a failure, or 3 s
   (askCodeActions' limit; 5 at most). Never on auto-save (nil sender).
 
+## Over SSH (stage 9's third slice, the Mac; 2026-11-22)
+
+A window over SSH (`mutible ssh://host/path`) formats on the other machine:
+its host plans and runs the formatter there (core `src/SessionFormat.{h,cpp}`,
+FsRead "format", Welcome flag 1024; the protocol and the host's side are in
+docs/notes/session-host.md, "Formatters over SSH").
+
+- **The seam** (`formatSourceQuietly:projectOnly:then:`): with a
+  `remoteWorkspace` the request goes to `MCRemoteWorkspace
+  formatText:path:setting:consent:...` instead of `MCFormatText`, and comes
+  back as the same `MCFormatResult`, so everything after it (the consent
+  sheet, the server fallback, the note, `replaceSourceWithText:`, format on
+  save's `finishFormatSave`) is unchanged. The window sends the tab's text,
+  its remote path, format.<lang> as the settings say it, the lines of a
+  selection, `projectOnly`, the 10 s limit, and the folder's answer from
+  `MCFolderToolsConsent([self folderToolsKey])`.
+- **On the host**: `FormatRun::decide` (the GTK port's decisions, the same
+  words as `MCFormatText`) with `hostFormatEnv`: that machine's disk for the
+  project's files, `serverSearchDirs` and `findServerProgram` (SessionLsp.h)
+  for the program, its own $VIRTUAL_ENV and home. Run by `runProgram`
+  (`ServerProcess`: posix_spawn, a session of its own, no shell, no other
+  descriptor) with the text on stdin, in the file's folder (inside the
+  session's folder, else the folder), PATH the program's folder first,
+  `PYTHONUTF8=1`, `PWD` set; `FormatRun::outcome` says what its exit means.
+- **The formatter table is the allow list**: a format.<lang> command runs
+  only when its program, or what a package runner launches, is one of
+  `Formatter::knownPrograms()` (`formatSettingRefusal`, reason "setting":
+  "format.shell runs tr, which the other machine does not run for a
+  window: ..."). The file must be inside the session's folder (links
+  resolved); a reader and a guest are refused.
+- **Consent per host and folder**: `folderToolsKey` is the link's key
+  (ssh://machine and folder, as `LspSession consentRoot`), for the request
+  and for the sheet's answer (`askToRunFolderFormatter:`), so it never
+  applies to a folder of this Mac's with the same path; the host's
+  NeedsConsent answer carries the tool, `consentFolder` and
+  `consentConfig` as the Mac's own would.
+- **What differs**: a missing formatter (`FormatRun::Decision::missing`)
+  says so with the machine named (`Shared::formatMissingText`) and no
+  `installPrograms` (no install view: this Mac's commands would not put it
+  there); a host too old says `formatTooOldText`, a lost one
+  `formatLostText`; the window stops waiting 30 s past the limit. Format on
+  Save's offer (`offerFormatOnSaveAfterSaving`) is not made in a remote
+  window (it would read this Mac's disk). The server fallback needs nothing
+  new: the window's servers are the host's already.
+- **For GTK** (not done): `linux/src/FormatRunner.cpp` runs
+  `FormatRun::decide` and the process on this computer. A GTK window over
+  SSH needs the same seam: send `formatRequestJson` through
+  `Client::requestFormat` on its link, read `formatReplyFrom`, key consent
+  by the link's key, and drop the install commands for a missing one.
+- **Checks**: `hostformat:request`, `:setting`, `:run` (a scripted shfmt:
+  the text uppercased, run in the file's folder with Google's arguments; a
+  setting run as written, one outside the table refused with nothing run,
+  one not installed "missing"; a complaint, a cancel and a timeout; a text
+  file `unavailable`; a .venv black waiting for consent, then run; outside
+  the folder and through a link out refused; a new file), `:wire` (through
+  the encoding, a guest and a reader refused, an older host sent nothing).
+  GUI: remote_ssh's formatter block (RemoteSshSuite.mm's header).
+
 ## Install hints (Mac)
 
 - One table, `Install::server` / `Install::formatter` (Python's first way is
@@ -119,4 +177,8 @@ found through that list.
 
 ## Traps
 
-None recorded under a "Trap" label; read the sections above.
+- Over SSH: **the stand-in's folder is this Mac's**, so a formatter run
+  here on the window's path (MCFormatText) would pass remote_ssh with the
+  routing broken; the check counts the formats asked of the host
+  (`MCRemoteWorkspace formats`) and has the formatter print the stand-in's
+  variable, which only the host's environment has.

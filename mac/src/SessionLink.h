@@ -257,6 +257,14 @@ public:
     bool runsGit() const { return client_ && !lost() && client_->hostRunsGit(); }
     std::uint64_t git(const std::string &dir, const std::vector<std::string> &args, std::string input,
                       double timeout, std::function<void(bool answered, Json &&answer, std::string &&out)> done);
+    // A document's formatter planned and run by the host (Welcome flag
+    // 1024, SessionFormat.h: Client::requestFormat), `request` its
+    // formatRequestJson, `text` the document's text: `done` once, on the
+    // main queue inside dispatch(), as git()'s. 0, calling nothing, when
+    // the host is gone or does not format.
+    bool runsFormatters() const { return client_ && !lost() && client_->hostFormats(); }
+    std::uint64_t format(Json request, std::string text,
+                         std::function<void(bool answered, Json &&answer, std::string &&out)> done);
 
     // Told once, on the main queue, when the host goes; the number takes it
     // off again.
@@ -336,7 +344,7 @@ private:
     std::map<std::uint64_t, std::function<void(std::vector<Json> &&, bool)>> streams_;
     int nextListener_ = 0;
     void pumpStreams();
-    // git()'s requests under way, by their req.
+    // git()'s and format()'s requests under way, by their req.
     std::map<std::uint64_t, std::function<void(bool, Json &&, std::string &&)>> gits_;
     void pumpGits();
     // fetchBytes's reads under way, by their own number.

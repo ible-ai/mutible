@@ -4667,9 +4667,9 @@ side is in docs/notes/git.md, "Over SSH".
   `worktree list`, `remote` names only; no `--output`, `--exec`,
   `--upload-pack`, `--ext-diff`, `--unsafe-paths` anywhere before "--";
   `diff --no-index` only between /dev/null and relative paths without
-  "..". Fetch, pull, push, ls-remote, clone and submodule are refused
-  (`remote`) with "Fetch, pull and push do not work in a window over SSH
-  yet ...". Folder (`gitDirAllowed`): `dir` resolved on the host must be
+  "..". ls-remote, clone and submodule are refused (`remote`). Fetch, pull
+  and push run since the third slice (below, "Fetch, pull and push over
+  SSH"). Folder (`gitDirAllowed`): `dir` resolved on the host must be
   the session's folder, inside it, or the top level of the repository the
   folder is in (asked of git in the folder only when `dir` is outside it),
   so a link out of the folder leads nowhere. Not a wall against the
@@ -4682,7 +4682,7 @@ side is in docs/notes/git.md, "Over SSH".
 - **For GTK**: done, see "The GTK window over SSH, git" below; the texts
   (`gitTooOldText`, `gitLostText`, `gitRemoteOpText`) are shared.
 - **Checks.** `hostgit:args` (every argument vector the apps build passes,
-  each refusal above refused, fetch, pull and push in words), `:dir`,
+  each refusal above refused), `:dir`,
   `:words` (the Discard plans and texts over SSH), `:run` (a real
   repository: status, a relative dir and "", stdin and stdout, a failure's
   status and words, every refusal reason, a link out, a folder below the
@@ -4691,6 +4691,85 @@ side is in docs/notes/git.md, "Over SSH".
   commit, git log there, a refusal, a guest and a reader refused, an older
   host's Welcome sending nothing). GUI: remote_ssh's git block (docs/notes/
   git.md). Not run here: CI runs it.
+
+#### Fetch, pull and push over SSH (2026-11-22, stage 9's third slice)
+
+No new kind or flag: the same FsRead "git" (flag 256), with the host's
+allow-list grown. A host from before this answers them with its old
+refusal ("do not work in a window over SSH yet"), which the panel shows.
+
+- **Held to syncPlan** (`remoteOpRefusal`): `fetch <remote>`, `pull`,
+  `push`, `push --set-upstream <remote> <branch>` and harmless options
+  (`--ff-only`, `--rebase`, `--tags`, `-q`, ...); the repository operand a
+  configured remote's name (letters, digits, `._-/`, no leading `.` or
+  `/`, no `..`), never a URL, path or transport (`ext::`, `file://`);
+  never `--force`, `--force-with-lease`, `--delete`, `--mirror`, `--all`,
+  `--prune` on a push, a `+` or `:` refspec, `--upload-pack`,
+  `--receive-pack`, `--exec`, `-o`. ls-remote, clone and submodule stay
+  refused.
+- **Never a prompt** (`runGitRequest` with `Web::GitSpawn`): a session of
+  its own (`POSIX_SPAWN_SETSID`: no controlling terminal for ssh to ask
+  on), `remoteGitSettings`: GIT_TERMINAL_PROMPT=0, `GIT_ASKPASS=` (empty:
+  git asks no askpass, core.askPass included), `SSH_ASKPASS=`,
+  SSH_ASKPASS_REQUIRE=never, GCM_INTERACTIVE=never, and
+  `GIT_SSH_COMMAND=ssh -o BatchMode=yes` unless the environment has
+  GIT_SSH_COMMAND or GIT_SSH or `git config --get core.sshCommand` there
+  says one (the user's way to run ssh is used as it is). The base
+  environment is the host's own (`ownEnv_`, its login shell's: the user's
+  ssh agent and variables), else the process's.
+- **Time**: `Git::timeoutFor` (fetch 120 s, pull 300, push 600), at most
+  `kMaxGitSeconds`; on a worker, so the host's thread never waits, and on
+  the panel's queue in the window.
+- **Words**: `gitCredentialsText(host, remote, out, err)` when
+  `GitUi::needsCredentials`: "origin needs credentials set up on host:
+  ..." and the line that says why (`GitUi::credentialsLine`, else git's
+  last line). `gitRemoteOpText` stays for GTK's runner, which still refuses
+  them itself.
+- **Checks.** `hostgit:args` (syncPlan's steps pass; forced, deleting,
+  URL, path and transport forms refused; `remoteGitSettings` with and
+  without the user's GIT_SSH_COMMAND, GIT_SSH and core.sshCommand; the
+  credentials words), `hostgit:sync` (a bare origin on the same disk:
+  publish, push, fetch, pull; an ssh stand-in on the host's PATH run with
+  `-o BatchMode=yes` and no terminal, failing at once; the user's
+  GIT_SSH_COMMAND and core.sshCommand used as they are). GUI: remote_ssh's
+  git block (docs/notes/git.md).
+
+#### Formatters over SSH (2026-11-22, stage 9's third slice, Welcome flag 1024)
+
+A window over SSH ran Format Document's formatter on the Mac against a
+path only the other machine has. Now its host plans and runs it there.
+Core: `src/SessionFormat.{h,cpp}`; the Mac's side is in
+docs/notes/formatting.md, "Over SSH".
+
+- **One request** (FsRead "format"): `{"op": "format", "path", "setting",
+  "consent", "first", "last", "projectOnly", "timeout"}` with the
+  document's text as the bytes, answered by one FsData `{"op": "format",
+  "kind": "run" | "unavailable" | "consent" | "failed", "ok", "message",
+  "tool", "style", "ranged", "serverMayFormat", "missing",
+  "consentFolder", "consentConfig"}` with the formatted text as the bytes,
+  or `{"op": "format", "error", "reason"}` when not run (`args`,
+  `outside`, `setting`, `readonly`, `busy`). `Client::requestFormat`
+  queues it behind the renderer's edits and saves and sends nothing to a
+  host without flag 1024 (`hostFormats`). Only from an app's window.
+- **On a worker** (`Host::onFormat`, `ReadWorkers::startTask`, at most
+  `kMaxGitJobs` with git and the reads): `runFormatRequest` holds the
+  file's folder (resolved) inside the session's folder, refuses a
+  format.<lang> naming a program outside the formatter table
+  (`formatSettingRefusal`, `Formatter::knownPrograms`), decides with
+  `FormatRun::decide` on `hostFormatEnv` (the host's disk, PATH and the
+  usual folders through SessionLsp's `serverSearchDirs`, its
+  $VIRTUAL_ENV and home; the environment is `ownEnv_`, else the
+  process's), and runs the program with `runProgram` (`ServerProcess`, a
+  session of its own, the text on stdin, stdout and the first 64 KB of
+  stderr kept, SIGTERM then SIGKILL at the limit or on cancel; SIGPIPE
+  blocked on the worker on Linux) in the file's folder.
+  `FormatRun::outcome` makes the answer.
+- `mutible host` now links Formatter, FormatRun and InstallHints
+  (Makefile's SESSION_HOST_SRC).
+- **For GTK** (not done): docs/notes/formatting.md, "Over SSH".
+- **Checks.** `hostformat:request`, `:setting`, `:run`, `:wire`
+  (docs/notes/formatting.md lists what each holds). GUI: remote_ssh's
+  formatter block. Not run here: CI runs it.
 
 #### Language servers over SSH (2026-11-22, stage 9's second slice, Welcome flag 512)
 
@@ -4782,7 +4861,7 @@ docs/notes/lsp.md, "Over SSH".
   app, or a window closed while disconnected, left on the lasting host
   (closing a connected window closes what it had there, but those leave it
   until the idle time, or for good while it is unsaved or running); the first connection and Reconnect off the main
-  thread too (only the automatic tries are); then the rest of stage 9 (git and language servers are in: "Git over SSH" and "Language servers over SSH" above; formatters, agents, LaTeX)
+  thread too (only the automatic tries are); then the rest of stage 9 (git with fetch, pull and push, language servers and formatters are in: "Git over SSH", "Fetch, pull and push over SSH", "Formatters over SSH" and "Language servers over SSH" above; agents, LaTeX)
   and the parts left out above (ports for the browser pane, Finder drags,
   Quick Look).
 - **Stage 7, after the watching, the Mac's and GTK's saves, Quick Open and

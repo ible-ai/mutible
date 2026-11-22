@@ -485,9 +485,25 @@ coincide, the wrong repository).
   itself). A host without Welcome flag 256 gets nothing sent: the result
   is status -1 with `Shared::gitTooOldText` ("Source Control needs a newer
   mutible on host:path ..."), which the panel shows as its error line, as
-  the lost connection's `gitLostText`. Fetch, pull, push (and autofetch)
-  are refused before anything is sent (`gitRemoteOpText`), and the panel's
-  `runSync:` says so itself.
+  the lost connection's `gitLostText`.
+- **Fetch, pull, push, Sync and autofetch** (stage 9's third slice,
+  2026-11-22) go the same way: `runSync:` and `autoFetchTickAt:` no longer
+  stop over SSH, and the runner sends them like any other command. The
+  host allows them as `syncPlan` runs them (SessionGit.h's
+  `remoteOpRefusal`: a configured remote's name, never a URL or path, never
+  forced, nothing deleted there) and runs them with that machine's
+  credentials and never a prompt (`remoteGitSettings`: a session of its
+  own, GIT_TERMINAL_PROMPT=0, no askpass, `GIT_SSH_COMMAND=ssh -o
+  BatchMode=yes` unless the host's environment has GIT_SSH_COMMAND or
+  GIT_SSH, or the repository sets core.sshCommand; the host's own login
+  environment is the base, where the user's agent and variables are).
+  Their time limits are `Git::timeoutFor`'s (fetch 2 min, pull 5, push
+  10), on the panel's queue, so the window never waits. A failure that
+  wanted a credential (`GitUi::needsCredentials`) is said by
+  `Shared::gitCredentialsText` in `finishSync:`: the remote (the plan's
+  new `remote`) needs credentials set up on host:path, what to set up
+  there, and the line that says why (`GitUi::credentialsLine`, else git's
+  last line).
 - **The window** (EditorController+Git.mm `useHostGit`, +Remote.mm,
   +Tree.mm `watchGitOnHost:`): the panel and the gutter get the runner as
   they are made (`ensureGitPanel`), the tree colors from
@@ -511,9 +527,12 @@ coincide, the wrong repository).
   changed) instead of the index file's stat, and watches no folder here.
   The tree colors take the folder as the host spells it (no realpath).
 - **Not done.** The review page and the commit page over SSH (their reads
-  would need the work tree through the host), fetch, pull and push
-  (credentials there), line history (EditorLineHistory), and the agents'
-  worktree pages; GTK's window over SSH is done (below).
+  would need the work tree through the host), line history
+  (EditorLineHistory), and the agents' worktree pages; GTK's window over
+  SSH is done (below), except fetch, pull and push, which its runner still
+  refuses itself (`GitRun.cpp`, `GitVerbs.cpp`: `gitRemoteOpText`); taking
+  those checks out and saying `gitCredentialsText` on a credentials
+  failure is all it needs, since the host runs them now.
 - **Checks.** Core: `hostgit:args`, `:dir`, `:words`, `:run`, `:wire`
   (tests/session_git_tests.inc). GUI: remote_ssh's git block (a window on
   a repository of its own through the stand-in; the panel lists the
@@ -522,7 +541,13 @@ coincide, the wrong repository).
   on the changed line, a row's diff, stage and commit checked with git on
   the stand-in's disk, a change there listed by the host's notice, an
   untracked discard refused, a discard keeping its copy as an object that
-  `git cat-file -p` shows, Fetch refused with nothing sent).
+  `git cat-file -p` shows; then a bare repository on the stand-in's disk as
+  origin: Push publishes main there, another clone's commit comes by Fetch
+  and Pull, all run by the host, and an origin whose core.sshCommand
+  refuses the key fails at once with the credentials sentence).
+  Core: `hostgit:sync` (push, fetch and pull with a bare origin; an ssh
+  stand-in on the host's PATH run with BatchMode and no terminal; the
+  user's GIT_SSH_COMMAND and core.sshCommand used as they are).
 
 ## Traps
 

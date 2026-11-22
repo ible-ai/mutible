@@ -30,9 +30,15 @@
 // GTK's Source Control, change bars, tree colors and review use, each with
 // the options that would write outside the repository, run another program
 // or lose work refused; no global option but --literal-pathspecs and
-// `-c` with the two keys the apps set; fetch, pull, push and ls-remote not
-// at all (they would want credentials nobody can type there: "not over SSH
-// yet"). Run only in the session's folder, a folder inside it, or the top
+// `-c` with the two keys the apps set; ls-remote, clone and submodule not
+// at all. Fetch, pull and push (since stage 9's third slice) as the apps'
+// syncPlan runs them: a configured remote's name (never a URL or a path),
+// never forced, nothing deleted there; run with that machine's own
+// credentials (its ssh agent and keys, its credential helper) and never a
+// prompt (remoteGitSettings: a session of its own, no askpass, ssh in batch
+// mode unless the user's GIT_SSH_COMMAND, GIT_SSH or core.sshCommand says
+// otherwise), so a missing credential fails at once and is said plainly
+// (gitCredentialsText). Run only in the session's folder, a folder inside it, or the top
 // level of the repository the folder is in (gitDirAllowed: links resolved,
 // so a link out of the folder leads nowhere). Refused from a renderer that
 // only reads and from a guest (a browser's page has its own reads,
@@ -74,13 +80,23 @@ bool gitDirAllowed(const std::string& folder, const std::string& dir, const std:
 // bytes). Runs git (runGit) in `dir` resolved on this machine, after
 // gitArgsRefusal and gitDirAllowed, the repository's top level asked of git
 // in the folder only when `dir` is outside it. `cancel` stops it (the
-// renderer went).
+// renderer went). Fetch, pull and push start from `hostEnv` (the host's
+// own environment; null: this process's) with remoteGitSettings put in.
 struct GitAnswer {
     Json json;
     std::string out;
 };
 GitAnswer runGitRequest(const std::string& folder, const Json& request, const std::string& input,
-                        const std::atomic<bool>* cancel = nullptr);
+                        const std::atomic<bool>* cancel = nullptr,
+                        const std::vector<std::string>* hostEnv = nullptr);
+
+// What fetch, pull and push run with on the host, given its environment
+// `env` and the repository's core.sshCommand ("" when unset): no terminal
+// prompt, no askpass (git's, ssh's or Git Credential Manager's windows),
+// and GIT_SSH_COMMAND="ssh -o BatchMode=yes" unless `env` has
+// GIT_SSH_COMMAND or GIT_SSH or the repository sets core.sshCommand (the
+// user's own way to run ssh is left as it is). "NAME=value" each.
+std::vector<std::string> remoteGitSettings(const std::vector<std::string>& env, const std::string& sshCommand);
 // The refusal's answer: {"op": "git", "error", "reason"}.
 GitAnswer gitRefused(const std::string& why, const std::string& reason);
 
@@ -97,9 +113,15 @@ GitReply gitReplyFrom(const Json& answer, std::string&& out);
 
 // What a window over SSH says when its host cannot run git for it: the
 // host is too old (no flag 256), the connection is lost, or the command
-// talks to a remote. `host` is the window's "host:path" or machine name.
+// talks to a remote (GTK's window, which does not send them yet). `host`
+// is the window's "host:path" or machine name.
 std::string gitTooOldText(const std::string& host);
 std::string gitLostText(const std::string& host);
 std::string gitRemoteOpText(const std::string& host);
+// A fetch, pull or push over SSH that wanted a credential the other
+// machine has not set up for `remote` (GitUi::needsCredentials): what to
+// set up there, and git's last line (stderr's, else stdout's).
+std::string gitCredentialsText(const std::string& host, const std::string& remote, const std::string& out,
+                               const std::string& err);
 
 }  // namespace Shared

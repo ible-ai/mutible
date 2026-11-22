@@ -312,6 +312,15 @@ public:
     // saves. 0, sending nothing, when the host does not (hostRunsGit).
     // Answered by readAnswer(req, &json, &bytes): gitReplyFrom reads it.
     std::uint64_t requestGit(std::uint64_t window, Json request, std::string input);
+    // Whether the host runs formatters for an app's window (its Welcome's
+    // flag 1024, SessionFormat.h): a window over SSH's Format Document.
+    bool hostFormats() const { return (hostFlags_ & 1024) != 0; }
+    // A document's formatter planned and run on the host (SessionFormat.h's
+    // formatRequestJson as `request`, `text` its standard input), queued
+    // behind this renderer's edits and saves. 0, sending nothing, when the
+    // host does not (hostFormats). Answered by readAnswer(req, &json,
+    // &bytes): formatReplyFrom reads it.
+    std::uint64_t requestFormat(std::uint64_t window, Json request, std::string text);
     // A guest's Save As: the document written to `rel` ('/'-separated from
     // `window`'s folder, which it must be held inside: SessionFiles.h's
     // newFilePath, with dotfiles only when `hidden`), after every edit this

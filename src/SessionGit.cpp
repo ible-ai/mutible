@@ -9,6 +9,8 @@
 #include "GitStatus.h"
 #include "SessionWebGit.h"
 
+extern char** environ;
+
 namespace Shared {
 
 namespace {
@@ -52,6 +54,62 @@ bool insideOperand(const std::string& a) {
     return true;
 }
 
+// A remote as the apps name one: a configured remote's name ("origin"),
+// never a URL, a path or a transport (ext::, file://, ../repo), which would
+// reach whatever the request said rather than what the repository has set
+// up.
+bool remoteName(const std::string& a) {
+    if (a.empty() || a[0] == '-' || a[0] == '.' || a[0] == '/' || a.find("..") != std::string::npos) return false;
+    for (char c : a)
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+              c == '-' || c == '/'))
+            return false;
+    return true;
+}
+
+// fetch, pull and push (args[at] the command), as the apps run them
+// (GitModel.h's syncPlan: `fetch <remote>`, `pull`, `push`, `push
+// --set-upstream <remote> <branch>`): a configured remote's name, never
+// forced, nothing deleted there, no program of the request's own.
+std::string remoteOpRefusal(const std::vector<std::string>& args, std::size_t at) {
+    const std::string& cmd = args[at];
+    bool afterDashes = false, sawRemote = false;
+    for (std::size_t j = at + 1; j < args.size(); j++) {
+        const std::string& a = args[j];
+        if (!afterDashes && a == "--") {
+            afterDashes = true;
+            continue;
+        }
+        if (!afterDashes && !a.empty() && a[0] == '-') {
+            const std::string opt = a.substr(0, a.find('='));
+            if (opt == "--upload-pack" || opt == "--receive-pack" || opt == "--exec" || opt == "--output" ||
+                opt == "--server-option" || opt == "-o" || opt == "--push-option" || opt == "--rebase-merges")
+                return "The other machine's git takes no " + opt + " from a window.";
+            if (cmd == "push" && (opt == "-f" || opt == "--force" || opt == "--force-with-lease" ||
+                                  opt == "--force-if-includes" || opt == "-d" || opt == "--delete" ||
+                                  opt == "--mirror" || opt == "--prune" || opt == "--all" || opt == "--branches"))
+                return "The other machine's git does not force, delete or mirror a push for a window.";
+            if (opt == "-u" || opt == "--set-upstream" || opt == "--tags" || opt == "--no-tags" || opt == "-q" ||
+                opt == "--quiet" || opt == "--progress" || opt == "--no-progress" || opt == "--rebase" ||
+                opt == "--no-rebase" || opt == "--ff-only" || opt == "--ff" || opt == "--no-ff" ||
+                opt == "--prune" || opt == "-p" || opt == "--no-edit" || opt == "--porcelain" || opt == "-v" ||
+                opt == "--verbose")
+                continue;
+            return "The other machine's git takes no " + opt + " for git " + cmd + " from a window.";
+        }
+        if (!sawRemote) {
+            sawRemote = true;
+            if (!remoteName(a))
+                return "git " + cmd + " from a window names one of the repository's remotes, not " + a + ".";
+            continue;
+        }
+        // A refspec: never a forced one (+) or a deletion (:branch) there.
+        if (a.empty() || a[0] == '+' || a[0] == ':' || a[0] == '-')
+            return "The other machine's git does not force or delete a ref for a window.";
+    }
+    return "";
+}
+
 }  // namespace
 
 std::string gitArgsRefusal(const std::vector<std::string>& args) {
@@ -77,10 +135,10 @@ std::string gitArgsRefusal(const std::vector<std::string>& args) {
     }
     if (i >= args.size()) return "No git command was given.";
     const std::string cmd = args[i];
-    if (cmd == "fetch" || cmd == "pull" || cmd == "push" || cmd == "ls-remote" || cmd == "clone" ||
-        cmd == "submodule")
-        return "Fetch, pull and push do not work in a window over SSH yet: run them in its terminal, "
-               "which runs on that machine.";
+    if (cmd == "ls-remote" || cmd == "clone" || cmd == "submodule")
+        return "The other machine does not run git " + cmd +
+               " for a window: run it in its terminal, which runs on that machine.";
+    if (cmd == "fetch" || cmd == "pull" || cmd == "push") return remoteOpRefusal(args, i);
     static const std::set<std::string> allowed = {
         // reads
         "status", "diff", "diff-tree", "log", "show", "rev-parse", "rev-list", "for-each-ref", "ls-files",
@@ -155,8 +213,30 @@ GitAnswer gitRefused(const std::string& why, const std::string& reason) {
     return a;
 }
 
+std::vector<std::string> remoteGitSettings(const std::vector<std::string>& env, const std::string& sshCommand) {
+    std::vector<std::string> set = {
+        "GIT_TERMINAL_PROMPT=0",        // no username or password asked on a terminal
+        "GIT_ASKPASS=",                 // empty: git asks no askpass program (core.askPass either)
+        "SSH_ASKPASS=",                 // nor ssh one
+        "SSH_ASKPASS_REQUIRE=never",
+        "GCM_INTERACTIVE=never",        // Git Credential Manager's own windows
+    };
+    auto has = [&](const char* name) {
+        const std::string prefix = std::string(name) + "=";
+        for (const std::string& e : env)
+            if (e.compare(0, prefix.size(), prefix) == 0 && e.size() > prefix.size()) return true;
+        return false;
+    };
+    // The user's own way to run ssh stands as it is (GIT_SSH_COMMAND passes
+    // through untouched); otherwise ssh in batch mode, which fails at once
+    // where it would ask for a passphrase, a password or a new host key.
+    if (!has("GIT_SSH_COMMAND") && !has("GIT_SSH") && sshCommand.empty())
+        set.push_back("GIT_SSH_COMMAND=ssh -o BatchMode=yes");
+    return set;
+}
+
 GitAnswer runGitRequest(const std::string& folder, const Json& request, const std::string& input,
-                        const std::atomic<bool>* cancel) {
+                        const std::atomic<bool>* cancel, const std::vector<std::string>* hostEnv) {
     const Json& list = request["args"];
     if (!list.isArray() || list.size() == 0 || list.size() > 4096)
         return gitRefused("A git request names its arguments.", "args");
@@ -194,7 +274,25 @@ GitAnswer runGitRequest(const std::string& folder, const Json& request, const st
     if (!(seconds > 0)) seconds = Git::timeoutFor(args);
     if (seconds > kMaxGitSeconds) seconds = kMaxGitSeconds;
     if (seconds < 1) seconds = 1;
-    ChangeReview::GitOut o = Web::runGit(dir, args, input, (int)(seconds * 1000), cancel);
+    // Fetch, pull and push talk to the remote with this machine's own
+    // credentials (its ssh agent and keys, its credential helper), and
+    // never wait for a person: a session of its own (no terminal for ssh
+    // to ask on), no askpass, ssh in batch mode unless the user's own
+    // GIT_SSH_COMMAND, GIT_SSH or core.sshCommand says how to run it.
+    Web::GitSpawn spawn;
+    const bool remote = Git::talksToRemote(args);
+    if (remote) {
+        spawn.env = hostEnv;
+        spawn.newSession = true;
+        const ChangeReview::GitOut c =
+            Web::runGit(dir, {"config", "--get", "core.sshCommand"}, "", 10000, cancel, &spawn);
+        std::vector<std::string> env;
+        if (hostEnv) env = *hostEnv;
+        else
+            for (char** e = environ; e && *e; e++) env.push_back(*e);
+        spawn.set = remoteGitSettings(env, c.ok ? trimmed(c.out) : std::string());
+    }
+    ChangeReview::GitOut o = Web::runGit(dir, args, input, (int)(seconds * 1000), cancel, remote ? &spawn : nullptr);
     GitAnswer a;
     a.json = Json::object();
     a.json.set("op", Json("git"));
@@ -233,6 +331,36 @@ std::string gitLostText(const std::string& host) {
 std::string gitRemoteOpText(const std::string& host) {
     return "Fetch, pull and push do not work in a window over SSH yet: run them in the terminal, which runs on " +
            host + ".";
+}
+
+std::string gitCredentialsText(const std::string& host, const std::string& remote, const std::string& out,
+                               const std::string& err) {
+    // What failed, in git's (or ssh's) words: the line that names the
+    // missing credential, else git's last line that says something.
+    std::string last = GitUi::credentialsLine(out, err);
+    for (const std::string* s : {&err, &out}) {
+        if (!last.empty()) break;
+        std::size_t end = s->size();
+        while (end > 0) {
+            std::size_t start = s->rfind('\n', end - 1);
+            start = start == std::string::npos ? 0 : start + 1;
+            std::string line = trimmed(s->substr(start, end - start));
+            while (!line.empty() && (line[0] == ' ' || line[0] == '\t')) line.erase(0, 1);
+            if (!line.empty()) {
+                last = line;
+                break;
+            }
+            if (start == 0) break;
+            end = start - 1;
+        }
+    }
+    const std::string which = remote.empty() ? std::string("this repository's remote") : remote;
+    std::string t = which + " needs credentials set up on " + host +
+                    ": a window over SSH never asks for a password or an ssh passphrase. On " + host +
+                    ", give its ssh agent the key (or use a key without a passphrase), or set up a credential "
+                    "helper for that remote repository, then try again.";
+    if (!last.empty()) t += "\ngit: " + GitUi::validUtf8(last);
+    return t;
 }
 
 }  // namespace Shared
