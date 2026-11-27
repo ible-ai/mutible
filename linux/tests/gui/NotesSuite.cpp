@@ -148,6 +148,10 @@ MC_GUI_SUITE(notes) {
     // short, and a note must still sit above its first line at a width it can
     // have (the box was once given less than its minimum and flipped between
     // two places every frame).
+    // Not on a page: idelink leaves its Claude Code review page as the
+    // active tab, and the text view behind it has no height (soak
+    // 46000381562).
+    MCGuiStep("a text tab, not a page, in the editor", [] { ed()->closeAllTabs(); });
     MCGuiStep("the terminal dock shows", [] {
         gDockWasShown = MCGuiApp().layout->terminalShown();
         if (!gDockWasShown) MCGuiApp().layout->toggleTerminal();
