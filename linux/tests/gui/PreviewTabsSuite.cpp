@@ -227,6 +227,12 @@ MC_GUI_SUITE(preview_tabs) {
     });
     MCGuiStep("Keep Open", [] { MCGuiClick(MCGuiFindLabel(strip()->menu(), "Keep Open")); });
     MCGuiWait("kept", 10, [] { return row() == "p-b.txt p-e.txt p-c.txt p-d.txt" && italicsAgree(); });
+    // The menu's popover is still closing while the tab is already kept, and
+    // while it is mapped it takes the keyboard: a Ctrl+W then goes nowhere
+    // (soak 46000381562, "gone" never came).
+    MCGuiWait("the menu closed", 10, [] {
+        return !strip()->menu() || !gtk_widget_get_mapped(strip()->menu());
+    });
     MCGuiStep("closed", [] { MCGuiKey("ctrl+w"); });
     MCGuiWait("gone", 10, [] { return row() == "p-b.txt p-c.txt p-d.txt"; });
     MCGuiPause(0.5);   // the double-click interval

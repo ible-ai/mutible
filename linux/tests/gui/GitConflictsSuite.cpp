@@ -26,6 +26,7 @@
 #include "DocumentView.h"
 #include "EditorConflicts.h"
 #include "GitGutter.h"
+#include "LineHistoryView.h"
 
 #include <cmath>
 
@@ -305,6 +306,17 @@ MC_GUI_SUITE(git_conflicts) {
         gtk_text_view_scroll_to_mark(TV(), gtk_text_buffer_get_insert(Buf()), 0, TRUE, 0, 0);
     });
     MCGuiWait("Keep Current on screen", 10, [] { return X()->buttonRect(0, 0).size.width > 0; });
+    // The pointer is where an earlier suite or step left it, and a gutter
+    // under it shows Line History's box beside the line after half a second:
+    // the box then covers the buttons and the click opens the commit instead
+    // (soak 46000381562). Out of the gutter first, the box gone.
+    MCGuiStep("the pointer leaves the gutter", [] {
+        GtkWidget* v = Ed()->textView();
+        MCGuiMoveTo(v, gtk_widget_get_width(v) - 40, gtk_widget_get_height(v) / 2.0);
+    });
+    MCGuiWait("no Line History box", 5, [] {
+        return !RepoWindow().lineHistory || !RepoWindow().lineHistory->popupVisible();
+    });
     MCGuiStep("a click on Keep Current", [] {
         const graphene_rect_t r = X()->buttonRect(0, 0);
         MCGuiClick(Ed()->textView(), r.origin.x + r.size.width / 2, r.origin.y + r.size.height / 2);
