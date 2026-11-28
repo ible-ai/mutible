@@ -105,6 +105,9 @@ NSMenu *TerminalMenu() {
     return nil;
 }
 
+// Its Tabs and Panes submenu: next and previous, moving and resizing.
+NSMenu *TerminalPanesMenu() { return [TerminalMenu() itemWithTitle:@"Tabs and Panes"].submenu; }
+
 DragBar *Bar(MCTerminalPanel *panel, BOOL vertical, NSUInteger nth) {
     NSUInteger seen = 0;
     for (DragBar *bar in [panel splitBars])
@@ -291,7 +294,8 @@ MC_GUI_SUITE(terminal_splits) {
     MCGuiStep(@"with the keyboard in the editor the resize items are off", ^{
         [s.c focusEditor:nil];
         GCHECK(![s.panel hasFocus]);
-        NSMenu *term = TerminalMenu();
+        NSMenu *term = TerminalPanesMenu();
+        GCHECK(term != nil);
         [term update];
         NSInteger i = [term indexOfItemWithTarget:nil andAction:@selector(resizeTerminalPane:)];
         GCHECK(i >= 0 && ![term itemAtIndex:i].enabled);
@@ -509,7 +513,7 @@ MC_GUI_SUITE(terminal_splits) {
     });
     MCGuiStep(@"Move Terminal Right and Left from the menu", ^{
         [s.panel selectTab:(NSUInteger)s.tab];
-        NSMenu *term = TerminalMenu();
+        NSMenu *term = TerminalPanesMenu();
         [term update];
         NSMenuItem *right = [term itemWithTitle:@"Move Terminal Right"];
         GCHECK(right.enabled);

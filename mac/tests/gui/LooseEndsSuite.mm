@@ -293,10 +293,11 @@ MC_GUI_SUITE(terminal_keys) {
         CGEventSetFlags(cg, (CGEventFlags)(kCGEventFlagMaskControl | kCGEventFlagMaskShift));
         e = [NSEvent eventWithCGEvent:cg];
         CFRelease(cg);
-        NSMenuItem *forward = nil;
-        for (NSMenuItem *top in NSApp.mainMenu.itemArray)
-            for (NSMenuItem *i in top.submenu.itemArray)
-                if (i.action == NSSelectorFromString(@"navigateForward:")) forward = i;
+        // In Navigate > Cursor since 2026-11-28, so the whole bar is looked
+        // through.
+        NSMenuItem *forward = MCGuiMenuItemWhere(^BOOL(NSMenuItem *i) {
+            return i.action == NSSelectorFromString(@"navigateForward:");
+        });
         GCHECK(forward != nil);
         [forward.menu update];
         s.sent.length = 0;
@@ -311,12 +312,10 @@ MC_GUI_SUITE(terminal_keys) {
         CGEventSetFlags(cg, (CGEventFlags)(kCGEventFlagMaskControl | kCGEventFlagMaskShift));
         e = [NSEvent eventWithCGEvent:cg];
         CFRelease(cg);
-        NSMenuItem *previous = nil;
-        for (NSMenuItem *top in NSApp.mainMenu.itemArray)
-            for (NSMenuItem *i in top.submenu.itemArray)
-                if ([i.keyEquivalent isEqualToString:@"\t"] &&
-                    (i.keyEquivalentModifierMask & NSEventModifierFlagShift))
-                    previous = i;
+        NSMenuItem *previous = MCGuiMenuItemWhere(^BOOL(NSMenuItem *i) {
+            return [i.keyEquivalent isEqualToString:@"\t"] &&
+                   (i.keyEquivalentModifierMask & NSEventModifierFlagShift);
+        });
         [previous.menu update];
         s.sent.length = 0;
         const BOOL tabTook = [s.c.window performKeyEquivalent:e];
