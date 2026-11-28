@@ -425,6 +425,10 @@ private:
         // For a document an app's window holds (lookAtAppDoc): its file was
         // there, and the app was told it went.
         bool appHadFile = false, appToldGone = false;
+        // And the file's version the app's window last had (its read, its
+        // write), so a file changed in place is told once (DocDisk 1).
+        FolderSearch::FileStamp appStamp;
+        bool appStampKnown = false;
         // Its file's folder by its real place, for a path spelled otherwise
         // than the watched root (/tmp and /private/tmp); "" until needed.
         std::string realDir;
@@ -488,6 +492,7 @@ private:
     void dropEmptyPageDocs();
     void setDisk(DocId id, Doc& d, int disk);
     void lookAtAppDoc(DocId id, Doc& d);
+    void tellApp(DocId id, Doc& d, int flag);
 
     struct Term {
         // Renderers showing it: the pty is read while every one of them has

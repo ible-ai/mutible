@@ -414,6 +414,46 @@ static void testSessionDisk() {
         net.host.diskChanged({{root, false}});
         app2.client->dispatch();
         CHECK(app2.disks.size() == told + 2);
+        // A file changed in place (flag 1): told once for each version of
+        // it, not for a touch, not for the window's own save, and not to a
+        // client without the document.
+        Net::Link& app4 = net.add(Unit::Utf16, "app4", 4 | 16 | 32);
+        app4.client->dispatch();
+        const std::string cpath = root + "/inplace.txt";
+        fsWrite(cpath, "orig\n");
+        TestMirror cm;
+        cm.client = app4.client.get();
+        cm.doc = 9;
+        cm.text = u"orig\n";
+        app4.client->open(9, cpath, "orig\n", &cm);
+        app4.client->settle();
+        const std::size_t c0 = app4.disks.size();
+        auto changes = [&](std::size_t n, int flag) {
+            net.host.diskChanged({{root, false}});
+            app4.client->dispatch();
+            return app4.disks.size() == c0 + n && (n == 0 || (app4.disks.back().first == 9 && app4.disks.back().second == flag));
+        };
+        CHECK(changes(0, 0));
+        fsWrite(cpath, "changed once\n");
+        CHECK(changes(1, 1));
+        CHECK(changes(1, 1));   // the same version: not again
+        fsWrite(cpath, "changed again!\n");
+        CHECK(changes(2, 1));
+        // Back to the text the window has saved (a checkout back): nothing.
+        fsWrite(cpath, "orig\n");
+        CHECK(changes(2, 1));
+        cm.type(u"typed\n");
+        CHECK(app4.client->settle());
+        const std::uint64_t sv = app4.client->requestSave(9, 0, true, "utf8");
+        Shared::Client::SaveAnswer sa;
+        CHECK(sv != 0);
+        for (int i = 0; i < 200 && !app4.client->saveAnswer(sv, &sa); i++) app4.client->dispatch();
+        CHECK(sa.ok);
+        CHECK(changes(2, 1));   // the window's own write is no change
+        fs::last_write_time(cpath, fs::last_write_time(cpath) + std::chrono::seconds(5));
+        CHECK(changes(2, 1));   // a touch: the file is what the window saved
+        CHECK(app3.disks.empty() || app3.disks.back().first != 9);   // no document, nothing
+        app4.client->detach(9);
         app2.client->detach(7);
         app2.client->detach(8);
         app2.client->dispatch();

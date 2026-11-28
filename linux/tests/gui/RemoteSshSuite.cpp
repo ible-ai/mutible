@@ -1848,6 +1848,88 @@ MC_GUI_SUITE(remote_ssh) {
         }
     });
 
+    // ---- a file changed in place on the host (git checkout, a build, sed -i)
+    const auto inplace = [](const char* n) { return gFolder + "/src/" + n; };
+    const auto questionUp = [] {
+        GtkWindow* top = MCGuiTopWindow();
+        return top && top != MCGuiApp().window && MCGuiFindButton(GTK_WIDGET(top), "Keep Mine") != nullptr;
+    };
+    MCGuiStep("three files made and opened; typed in two", [=] {
+        g_file_set_contents(inplace("ch_c.txt").c_str(), "outer c\n", -1, nullptr);
+        g_file_set_contents(inplace("ch_d.txt").c_str(), "outer d\n", -1, nullptr);
+        g_file_set_contents(inplace("ch_e.txt").c_str(), "outer e\n", -1, nullptr);
+        remoteWindow().editor->openFile(inplace("ch_c.txt"));
+        remoteWindow().editor->openFile(inplace("ch_d.txt"));
+        remoteWindow().editor->openFile(inplace("ch_e.txt"));
+    });
+    MCGuiWait("all read", 20, [=] {
+        return textOf(tabOf(inplace("ch_c.txt"))) == "outer c\n" && textOf(tabOf(inplace("ch_d.txt"))) == "outer d\n" &&
+               textOf(tabOf(inplace("ch_e.txt"))) == "outer e\n";
+    });
+    for (const char* n : {"ch_d.txt", "ch_e.txt"}) {
+        MCGuiStep(std::string("typed in ") + n, [=] {
+            remoteWindow().editor->openFile(inplace(n));
+            MCGuiSetKeyWindow(nullptr);
+            gtk_widget_grab_focus(remoteWindow().editor->textView());
+            MCGuiKey("ctrl+end");
+            MCGuiType("typed\n");
+        });
+        MCGuiWait(std::string(n) + " unsaved", 10, [=] {
+            Document* d = tabOf(inplace(n));
+            return d && d->dirty();
+        });
+    }
+    MCGuiStep("all three rewritten on the host's disk, in place", [=] {
+        g_file_set_contents(inplace("ch_c.txt").c_str(), "c changed in place\n", -1, nullptr);
+        g_file_set_contents(inplace("ch_d.txt").c_str(), "d changed in place\n", -1, nullptr);
+        g_file_set_contents(inplace("ch_e.txt").c_str(), "e changed in place\n", -1, nullptr);
+    });
+    MCGuiWait("the clean tab follows, still clean; the typed ones ask for the tab on show (e)", 20, [=] {
+        Document* c = tabOf(inplace("ch_c.txt"));
+        return c && !c->dirty() && !c->gone() && textOf(c) == "c changed in place\n" && questionUp();
+    });
+    MCGuiStep("e: Keep Mine", [=] {
+        MCGuiClick(MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Keep Mine"));
+    });
+    MCGuiWait("the question gone, e's text kept and unsaved", 10, [=] {
+        Document* e = tabOf(inplace("ch_e.txt"));
+        return !questionUp() && e && e->dirty() && textOf(e) == "outer e\ntyped\n";
+    });
+    MCGuiStep("d on show: it asks as well", [=] { remoteWindow().editor->openFile(inplace("ch_d.txt")); });
+    MCGuiWait("asked", 20, [=] { return questionUp(); });
+    MCGuiStep("d: Reload", [=] {
+        MCGuiClick(MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Reload"));
+    });
+    MCGuiWait("d is the host's text, clean", 20, [=] {
+        Document* d = tabOf(inplace("ch_d.txt"));
+        return !questionUp() && d && !d->dirty() && textOf(d) == "d changed in place\n";
+    });
+    MCGuiStep("e: saved from the window", [=] {
+        remoteWindow().editor->openFile(inplace("ch_e.txt"));
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("written by the host, the tab clean", 20, [=] {
+        Document* e = tabOf(inplace("ch_e.txt"));
+        return e && !e->dirty() && readFile(inplace("ch_e.txt")) == "outer e\ntyped\n";
+    });
+    MCGuiPause(1.5);   // a negative check: the save's own write must bring no question and no reload
+    MCGuiStep("no question; e's text and file as saved", [=] {
+        GCHECK(!questionUp());
+        Document* e = tabOf(inplace("ch_e.txt"));
+        GCHECK(e && !e->dirty());
+        if (e) GCHECK_EQ_STR(textOf(e), "outer e\ntyped\n");
+        remoteWindow().editor->openFile(inplace("ch_c.txt"));
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+z");
+    });
+    MCGuiWait("c: one undo step takes the host's change back", 10, [=] {
+        Document* c = tabOf(inplace("ch_c.txt"));
+        return c && textOf(c) == "outer c\n";
+    });
+
     // ---- New File
     selectRow("/src/madeby");
     MCGuiStep("New File in madeby", [] {

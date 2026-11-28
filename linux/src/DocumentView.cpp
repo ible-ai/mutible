@@ -1184,6 +1184,13 @@ void Document::takeHostDisk() {
         markGone();
         return;
     }
+    if (hostDiskState_ == 1) {
+        // Changed in place on the host's disk: read through the host and
+        // settle as a local change is (checkExternalChange).
+        hostChanged_ = true;
+        checkExternalChange();
+        return;
+    }
     if (hostDiskState_ != 0 || !gone_) return;
     // Back. A buffer as it was read follows the file's text through the host
     // (one undoable step); one with edits counts against it, unsaved still.
@@ -1327,7 +1334,13 @@ void Document::onFileChanged(GFileMonitor*, GFile*, GFile*, GFileMonitorEvent ev
 }
 
 void Document::checkExternalChange() {
-    if (kind_ != Kind::Text || path_.empty() || !diskKnown_ || remote()) return;
+    if (kind_ != Kind::Text || path_.empty() || !diskKnown_) return;
+    // Over SSH the host says when the file changed (takeHostDisk); only then
+    // is it read, through the host.
+    if (remote() && (!hostChanged_ || loading() || unread_)) {
+        if (loading() || unread_) hostChanged_ = false;   // read afresh when it loads
+        return;
+    }
     // Gone: the tab stays, marked deleted and unsaved (tabWentMissing:). A
     // file deleted and made again is read below, and the mark goes with the
     // read (tabCameBack:). Unreadable, replaced by a pipe, grown past what
@@ -1335,7 +1348,16 @@ void Document::checkExternalChange() {
     // the Mac.
     std::string content;
     FileEncoding encoding;
-    if (readText(path_, content, &encoding) != Read::Ok) {
+    bool asked = false;
+    if (remote()) {
+        const SessionLink::Link::RemoteText r = link_->readText(path_);
+        hostChanged_ = false;   // read now; set again by the host's next notice, or below when the question waits
+        if (!r.ok) return;   // gone or not text now: the host says so (DocDisk 2)
+        content = r.text;
+        encoding.encoding = r.encoding;
+        encoding.bom = r.bom;
+        asked = true;
+    } else if (readText(path_, content, &encoding) != Read::Ok) {
         struct stat st;
         if (!gone_ && stat(path_.c_str(), &st) != 0 && (errno == ENOENT || errno == ENOTDIR))
             markGone();
@@ -1363,7 +1385,11 @@ void Document::checkExternalChange() {
     }
     // Edits here and a change there: the user decides. Once asked, this
     // version on disk is not asked about again, whatever the answer.
-    if (host_->documentChangedOnDisk(this)) {
+    if (!host_->documentChangedOnDisk(this)) {
+        if (asked) hostChanged_ = true;   // asked again when the tab is on show
+        return;
+    }
+    {
         rememberDisk(content);
         checkDirty();   // the change may be the very edits made here
         // The host counts the buffer against the file as it is now too
@@ -1373,10 +1399,18 @@ void Document::checkExternalChange() {
 }
 
 bool Document::reloadFromDisk() {
-    if (kind_ != Kind::Text || path_.empty() || remote()) return false;
+    if (kind_ != Kind::Text || path_.empty()) return false;
     std::string content;
     FileEncoding encoding;
-    if (readText(path_, content, &encoding) != Read::Ok) return false;
+    if (remote()) {
+        const SessionLink::Link::RemoteText r = link_->readText(path_);
+        if (!r.ok) return false;
+        content = r.text;
+        encoding.encoding = r.encoding;
+        encoding.bom = r.bom;
+    } else if (readText(path_, content, &encoding) != Read::Ok) {
+        return false;
+    }
     applyDiskText(content, encoding);
     return true;
 }

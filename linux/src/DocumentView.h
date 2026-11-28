@@ -258,7 +258,9 @@ public:
     // the file (rememberDisk), or by the file coming back (checkExternalChange).
     bool gone() const { return gone_; }
     void markGone();
-    // The host's disk lost this file (2) or has it again (0): marked gone, or the mark
+    // The host's disk lost this file (2), has it again (0) or changed it in
+    // place (1: a clean buffer follows it as one undoable step, one with edits
+    // asks, as checkExternalChange does): marked gone, or the mark
     // cleared with a clean buffer following the file's text and a dirty one
     // counted against it. Deferred a turn (hostDisk).
     void takeHostDisk();
@@ -699,6 +701,7 @@ private:
     guint     dirtyIdle_ = 0;
     guint     diskIdle_ = 0;      // hostDisk: its state taken at the top of the next turn
     int       hostDiskState_ = 0;
+    bool      hostChanged_ = false;   // the host said the file changed; read when it can be settled
     Kind          kind_ = Kind::Text;
     std::string   path_, ext_;
     std::string   viewerPath_;   // the copy a viewer opens over SSH (setViewerPath)

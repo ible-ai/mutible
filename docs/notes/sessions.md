@@ -193,7 +193,9 @@ found through that list.
   auto-save, and goes with a save, a read of the file (`rememberDisk`) or the
   file coming back (the clean text then follows the disk). Over SSH the
   host's disk is watched too (HANDOFF 176, `DocDisk` 2 and 0, Welcome flag
-  4096): a file deleted there by anything marks its tabs. GTK does not
+  4096): a file deleted there by anything marks its tabs, and one changed there in
+  place (`DocDisk` 1, the same flag) is followed by a clean tab and asked about by a
+  tab with edits, as `checkExternalChange` does locally. GTK does not
   follow a rename by inode (the Mac's `renamedFileFor:`), and its Ctrl+S does
   not ask first on a gone file. **A clean tab follows the disk**: from FSEvents
   (`followCleanTabInBackground:`) the file is read and diffed off the main
