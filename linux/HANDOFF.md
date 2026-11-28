@@ -24,31 +24,11 @@ Read these first:
 
 ## Unreleased on main (for the next release)
 
-The last release is v1.6.24 (14d5273, 2026-11-22). The Mac, where
-`scripts/release.sh` runs, is away from 2026-11-22 for about a week, so
-nothing is released meanwhile; the next Mac session releases what is
-listed here (and clears this list). Each PR merged on green CI with no
-FLAKY line.
+The last release is v1.6.25 (22d444b, 2026-11-28), which carried #359 to #370.
+Each Linux PR merged since adds its line here; the next Mac session releases
+what is listed and clears it.
 
-- #359 GTK over SSH: the review pages and revision comparisons run on the
-  host; core hook `ChangeReview::ImageReading::readWork` (item 166).
-- #360 GTK over SSH: language servers run by the host (item 167).
-- #361 (the Mac session's) formatters over SSH (FsRead "format", Welcome
-  flag 1024) and fetch, pull and push through the host's git.
-- #362 this list.
-- #363 GTK over SSH: language servers' edits reach files no tab holds, and
-  URIs are the host's paths, never this machine's realpath (item 168).
-- #364 GTK over SSH: fetch, pull, push, Sync and autofetch run on the host,
-  and Format Document and format on save run its formatter (item 169);
-  the core's unused `Shared::gitRemoteOpText` is deleted.
-- #365 GTK over SSH: Preserve Case and Replace This Match through the host (Welcome
-  flag 2048, item 170). The Mac client still refuses both until it checks
-  `hostReplacesOne()`.
-- #366 GTK Line History: the gutter's hover box and View > Show Line History,
-  commits through the host's git over SSH (item 171).
-- #367 ROADMAP's terminal line (docs only).
-- GTK over SSH: Discard of a block or lines and the conflict choices on the
-  review page, written by git on the host (item 172; `src/ChangeReviewRead`).
+(none yet)
 
 ## Where it stands
 
