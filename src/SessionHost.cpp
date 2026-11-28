@@ -489,6 +489,10 @@ void Host::onOpen(ClientId c, Message& m) {
         // Whether its file is there, so a later absence is a deletion and a
         // file not made yet is not (lookAtAppDoc).
         d.appHadFile = !d.path.empty() && d.path[0] == '/' && FolderSearch::stampOf(d.path).exists;
+        if (d.appHadFile) {
+            d.appStamp = FolderSearch::stampOf(d.path);
+            d.appStampKnown = true;
+        }
         it = docs_.find(m.doc);
         watchGen_++;   // its folder is watched
     } else {
@@ -592,6 +596,10 @@ void Host::onPath(ClientId c, Message& m) {
     // An app names its tab's file after opening it (DocPath): seen there or not.
     it->second.appHadFile = !m.name.empty() && m.name[0] == '/' && FolderSearch::stampOf(m.name).exists;
     it->second.appToldGone = false;
+    // The file's version as the app named it (it read it just before); a
+    // file not there has none, and the next look takes it.
+    it->second.appStamp = it->second.appHadFile ? FolderSearch::stampOf(m.name) : FolderSearch::FileStamp();
+    it->second.appStampKnown = it->second.appHadFile;
     it->second.diskLooked = false;
     it->second.realDir.clear();
     watchGen_++;
@@ -918,6 +926,8 @@ void Host::onSaveAs(ClientId c, Message& m) {
                 d.doc.setGone(false);
                 d.diskSeen = done.written;
                 d.diskLooked = true;
+                d.appStamp = done.written;   // its own write is no change (lookAtAppDoc)
+                d.appStampKnown = done.written.exists;
                 setDisk(m.doc, d, 0);
                 r.outcome = Outcome::Done;
                 r.v = d.v;
@@ -1009,6 +1019,8 @@ void Host::onSave(ClientId c, Message& m) {
                 r.outcome = Outcome::Done;
                 r.v = d.v;
                 d.diskSeen = done.written;
+                d.appStamp = done.written;   // its own write is no change (lookAtAppDoc)
+                d.appStampKnown = done.written.exists;
                 d.diskLooked = true;
                 setDisk(m.doc, d, 0);
             }
@@ -1593,26 +1605,53 @@ void Host::setDisk(DocId id, Doc& d, int disk) {
 }
 
 // A document an app's window holds: the app follows its own tab's text, so
-// the host only says when the file went and when it is back (DocDisk 2 and
-// 0, to the app windows with a seat that hear the disk), once each, and
-// keeps its own copy and state as they are.
-void Host::lookAtAppDoc(DocId id, Doc& d) {
-    if (d.path.empty() || d.path[0] != '/') return;
-    const bool exists = FolderSearch::stampOf(d.path).exists;
-    if (exists) d.appHadFile = true;
-    const bool gone = !exists && d.appHadFile;
-    if (gone == d.appToldGone) return;
-    d.appToldGone = gone;
+// the host only says (to the app windows with a seat that hear the disk) when
+// the file went (DocDisk 2), when it is back (0), and when what is there
+// differs from what the window last read or wrote (1, a file changed in
+// place), once for each version of the file. The host keeps its own copy and
+// state as they are. The version is the file's stamp; a stamp that moved
+// with the saved text still there (a touch, the window's own write, which the
+// host's saves also record in appStamp) is no change.
+void Host::tellApp(DocId id, Doc& d, int flag) {
     for (const auto& [c, seat] : d.seats) {
         auto r = renderers_.find(c);
         if (seat.viewer || r == renderers_.end() || !r->second.keepsBackups || !r->second.hearsDisk) continue;
         Message m;
         m.kind = Kind::DocDisk;
         m.doc = id;
-        m.flag = gone ? 2 : 0;
+        m.flag = flag;
         m.v = d.v;
         send(c, std::move(m));
     }
+}
+
+void Host::lookAtAppDoc(DocId id, Doc& d) {
+    if (d.path.empty() || d.path[0] != '/') return;
+    const FolderSearch::FileStamp now = FolderSearch::stampOf(d.path);
+    if (now.exists) d.appHadFile = true;
+    const bool gone = !now.exists && d.appHadFile;
+    if (gone != d.appToldGone) {
+        d.appToldGone = gone;
+        if (now.exists) {
+            // Back: the window reads the file itself, whatever it holds now.
+            d.appStamp = now;
+            d.appStampKnown = true;
+        }
+        tellApp(id, d, gone ? 2 : 0);
+        return;
+    }
+    if (!now.exists) return;
+    if (!d.appStampKnown) {
+        d.appStamp = now;
+        d.appStampKnown = true;
+        return;
+    }
+    if (now == d.appStamp) return;
+    d.appStamp = now;
+    // Moved: changed when the text there is not what the window has saved.
+    const DiskText t = readDiskText(d.path);
+    if (t.exists && t.text && d.doc.savedIs(t.body)) return;
+    tellApp(id, d, 1);
 }
 
 void Host::lookAtDisk(DocId id, Doc& d) {

@@ -87,7 +87,10 @@
 // went, or is in step again. A document an app's window holds is left to
 // the app (it follows its own tab's text), but a host whose Welcome has
 // flag 4096 (kHostTellsDocsGone) still sends that window DocDisk 2 when the
-// file goes and DocDisk 0 when it is back (nothing else for it). A clean document no app's window has open
+// file goes, DocDisk 0 when it is back, and DocDisk 1 when the file was
+// changed in place: what is there is not the text the window last read or
+// wrote (for an app's window, 1 does not say there are unsaved changes: the
+// window knows its own), once for each version of the file. A clean document no app's window has open
 // follows its file (an edit of the host's, one step). DocReload asks the
 // host to put the file's text in place of a document's.
 //
@@ -323,7 +326,7 @@ enum class Outcome { Done = 0, Nothing = 1, Refused = 2 };
 using TermId = std::uint64_t;
 
 // The Welcome's flag 4096: the host tells an app's window that a file it holds
-// went or came back (DocDisk 2, then 0).
+// went (DocDisk 2), came back (0) or was changed in place (1).
 constexpr int kHostTellsDocsGone = 4096;
 
 // The ids a renderer makes for what it opens on the host (documents,

@@ -5560,10 +5560,23 @@ window's tabs as a local file deleted on disk does (HANDOFF 176).
   exists again, each to the renderers that have a (non-viewer) seat, keep
   their own backups (an app) and heard the disk (Hello flag 32): a page or a
   renderer without the document gets nothing. The host's own copy, its
-  `disk` state and `diskState()` are not touched. `DocDisk` 1 (changed under
-  unsaved changes) is still never sent for an app's document: **a changed
-  text of an open file is a separate gap** (the app reads the file itself,
-  locally; a remote window does not hear of it).
+  `disk` state and `diskState()` are not touched.
+- **Changed in place** (same flag, 2026-11-28): flag 1 to the same
+  renderers, once for each version of the file. For a document no app holds,
+  1 means "changed on disk under unsaved changes, kept"; for an app's window
+  the host does not know its unsaved state, so 1 means only "the file is no
+  longer what you last read or wrote": the window decides (a clean tab
+  follows, one with edits asks). `lookAtAppDoc` keeps `appStamp`, the file's
+  stamp as the window last had it: taken at open and at DocPath, set by the
+  host's own saves (DocSave and Save As, so a write from the window through
+  the host never echoes), and moved by each look. A stamp that moved is
+  read once, and 1 is sent unless the text is the window's saved text (a
+  touch, a change back, an own write by a window that saves itself and
+  tells DocSaved: its saved text is what it wrote, so no echo, though a
+  window that saves itself may hear one between its write and its DocSaved
+  and must compare, as GTK's `checkExternalChange` does). A file that
+  comes back takes its stamp without 1 (0 already says to read it). The
+  first look at a document with no stamp (one a page opened) only takes it.
 - **How the host notices.** The existing disk watch: `diskChanged` already
   calls `lookAtDisk` for every document whose folder had an event (the
   document's folder is watched at open, whatever the ignore files say);
@@ -5584,11 +5597,21 @@ window's tabs as a local file deleted on disk does (HANDOFF 176).
   `Editor::followHostFile`), one with edits is counted against the new
   text (`rememberDisk` and `checkDirty`, the host told, `tellHostSaved`) and
   stays unsaved, without asking. A picture, PDF or player tab of a remote
-  file holds no host document, so it is not marked.
+  file holds no host document, so it is not marked. 1 sets `hostChanged_` and
+  calls `checkExternalChange`, whose remote branch reads the file through the
+  host (`Link::readText`) and then runs the local code: equal to what it
+  last read, nothing; a clean tab follows it as one undoable step
+  (`applyDiskText`, caret and scroll kept); a tab with edits asks
+  `documentChangedOnDisk` (Keep Mine or Reload, only for the tab on show;
+  not on show, `hostChanged_` stays set and the next show asks, as the
+  local path asks again); Reload reads through the host too
+  (`reloadFromDisk`).
 - **The Mac needs** (not wired): in `mac/src/SessionLink.mm`'s `hearDisk`,
   replace the empty document callback with one that tells the
   `MCRemoteWorkspace` (`+Remote.mm`) which host document id and state came,
-  mapped to the tab; state 2 does what `remoteDeletePath:` does for one tab
+  mapped to the tab; state 1 is a changed file (a clean tab reads it through
+  the host and follows it as one undoable step, one with edits asks Keep Mine
+  or Reload as the local `checkExternalChange` does); state 2 does what `remoteDeletePath:` does for one tab
   (`t.gone`, `tabWentMissing:`), state 0 clears `gone` as `tabCameBack:`
   does and has a clean tab read the file through the host (as the local
   path reads it) or a tab with edits count against it. Only when

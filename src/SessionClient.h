@@ -320,10 +320,11 @@ public:
     // SessionSearch.h's kHostReplacesOne). An older host would ignore both
     // and replace wrongly, so a client sends neither without it.
     bool hostReplacesOne() const { return (hostFlags_ & 2048) != 0; }
-    // Whether the host tells an app's window that a file it holds went or
-    // came back, through hearDisk's document callback (DocDisk 2, then 0;
-    // flag 4096, kHostTellsDocsGone). Without it the app finds out only by
-    // looking at the file itself.
+    // Whether the host tells an app's window that a file it holds went (2),
+    // came back (0) or was changed in place (1: what is there is not the text
+    // the window last read or wrote), through hearDisk's document callback
+    // (flag 4096, kHostTellsDocsGone). Without it the app finds out only by
+    // looking at the file itself, which a window over SSH cannot do.
     bool hostTellsDocsGone() const { return (hostFlags_ & kHostTellsDocsGone) != 0; }
     // A document's formatter planned and run on the host (SessionFormat.h's
     // formatRequestJson as `request`, `text` its standard input), queued
