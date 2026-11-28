@@ -426,6 +426,9 @@ void Host::onHello(ClientId c, Message& m) {
     // And replaces in Folder with Preserve Case, and one match of a row
     // (SessionSearch.h's ReplaceRow::only).
     w.flag |= kHostReplacesOne;
+    // And tells an app's window that a file it holds went or came back
+    // (DocDisk 2 and 0 for a document the host leaves to the app).
+    w.flag |= kHostTellsDocsGone;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));
@@ -483,6 +486,9 @@ void Host::onOpen(ClientId c, Message& m) {
         d.doc = Model::Document(Model::Text::fromUtf8(m.text8));
         std::string().swap(m.text8);
         d.seats[c].base = 0;
+        // Whether its file is there, so a later absence is a deletion and a
+        // file not made yet is not (lookAtAppDoc).
+        d.appHadFile = !d.path.empty() && d.path[0] == '/' && FolderSearch::stampOf(d.path).exists;
         it = docs_.find(m.doc);
         watchGen_++;   // its folder is watched
     } else {
@@ -583,6 +589,9 @@ void Host::onPath(ClientId c, Message& m) {
         return;
     }
     it->second.path = m.name;
+    // An app names its tab's file after opening it (DocPath): seen there or not.
+    it->second.appHadFile = !m.name.empty() && m.name[0] == '/' && FolderSearch::stampOf(m.name).exists;
+    it->second.appToldGone = false;
     it->second.diskLooked = false;
     it->second.realDir.clear();
     watchGen_++;
@@ -1583,10 +1592,33 @@ void Host::setDisk(DocId id, Doc& d, int disk) {
     }
 }
 
+// A document an app's window holds: the app follows its own tab's text, so
+// the host only says when the file went and when it is back (DocDisk 2 and
+// 0, to the app windows with a seat that hear the disk), once each, and
+// keeps its own copy and state as they are.
+void Host::lookAtAppDoc(DocId id, Doc& d) {
+    if (d.path.empty() || d.path[0] != '/') return;
+    const bool exists = FolderSearch::stampOf(d.path).exists;
+    if (exists) d.appHadFile = true;
+    const bool gone = !exists && d.appHadFile;
+    if (gone == d.appToldGone) return;
+    d.appToldGone = gone;
+    for (const auto& [c, seat] : d.seats) {
+        auto r = renderers_.find(c);
+        if (seat.viewer || r == renderers_.end() || !r->second.keepsBackups || !r->second.hearsDisk) continue;
+        Message m;
+        m.kind = Kind::DocDisk;
+        m.doc = id;
+        m.flag = gone ? 2 : 0;
+        m.v = d.v;
+        send(c, std::move(m));
+    }
+}
+
 void Host::lookAtDisk(DocId id, Doc& d) {
     // An app's window follows its own tab (it reads the file, and tells the
     // host what it holds), so the host leaves it alone.
-    if (shownByApp(d)) return;
+    if (shownByApp(d)) return lookAtAppDoc(id, d);
     const FolderSearch::FileStamp now = FolderSearch::stampOf(d.path);
     // The host's own write or read, or nothing new since the last look.
     if (d.disk == 0 && d.doc.stamp().exists && now == d.doc.stamp()) {

@@ -256,6 +256,10 @@ public:
     public:
         virtual void hostDirty(bool dirty) = 0;
         virtual void hostWrote(std::uint64_t version, const Json& json) = 0;
+        // The document's file went on the host's disk (2) or is there again
+        // (0), by anything but this window (a remote terminal, git). Only a
+        // host with Client::hostTellsDocsGone sends it.
+        virtual void hostDisk(int disk) = 0;
 
     protected:
         ~DocNotices() = default;

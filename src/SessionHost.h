@@ -422,6 +422,9 @@ private:
         int disk = 0, toldDisk = 0;
         FolderSearch::FileStamp diskSeen;
         bool diskLooked = false;
+        // For a document an app's window holds (lookAtAppDoc): its file was
+        // there, and the app was told it went.
+        bool appHadFile = false, appToldGone = false;
         // Its file's folder by its real place, for a path spelled otherwise
         // than the watched root (/tmp and /private/tmp); "" until needed.
         std::string realDir;
@@ -484,6 +487,7 @@ private:
     // A page's new documents nobody has and nobody typed into, let go.
     void dropEmptyPageDocs();
     void setDisk(DocId id, Doc& d, int disk);
+    void lookAtAppDoc(DocId id, Doc& d);
 
     struct Term {
         // Renderers showing it: the pty is read while every one of them has

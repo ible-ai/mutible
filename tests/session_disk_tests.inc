@@ -373,6 +373,51 @@ static void testSessionDisk() {
         ed.client->dispatch();
         CHECK(em.text == u"the app's to follow\n");
 
+        // An app's window that hears the disk (Hello flags 4 and 32) is told
+        // its file went and came back, once each; the host keeps its copy.
+        Net::Link& app2 = net.add(Unit::Utf16, "app2", 4 | 32);
+        Net::Link& app3 = net.add(Unit::Utf16, "app3", 4 | 32);
+        for (Net::Link* l : {&app2, &app3}) l->client->dispatch();
+        CHECK(app2.client->hostTellsDocsGone() && old.client->hostTellsDocsGone());
+        const std::string apath = root + "/held.txt";
+        fsWrite(apath, "held\n");
+        TestMirror hm;
+        hm.client = app2.client.get();
+        hm.doc = 7;
+        hm.text = u"held\n";
+        app2.client->open(7, apath, "held\n", &hm);
+        app2.client->settle();
+        const std::size_t told = app2.disks.size();
+        net.host.diskChanged({{root, false}});
+        app2.client->dispatch();
+        CHECK(app2.disks.size() == told);   // there: nothing
+        fs::remove(apath);
+        net.host.diskChanged({{root, false}});
+        app2.client->dispatch();
+        app3.client->dispatch();
+        CHECK(app2.disks.size() == told + 1 && app2.disks.back().first == 7 && app2.disks.back().second == 2);
+        CHECK(net.host.diskState(7) == 0 && net.host.text(7) == u"held\n");   // the host's copy untouched
+        net.host.diskChanged({{root, false}});
+        app2.client->dispatch();
+        CHECK(app2.disks.size() == told + 1);   // told once
+        CHECK(app3.disks.empty() || app3.disks.back().first != 7);   // no seat, nothing
+        fsWrite(apath, "back\n");
+        net.host.diskChanged({{root, false}});
+        app2.client->dispatch();
+        CHECK(app2.disks.size() == told + 2 && app2.disks.back().first == 7 && app2.disks.back().second == 0);
+        // A file never made is not a deletion.
+        TestMirror nm;
+        nm.client = app2.client.get();
+        nm.doc = 8;
+        app2.client->open(8, root + "/notyet.txt", "", &nm);
+        app2.client->settle();
+        net.host.diskChanged({{root, false}});
+        app2.client->dispatch();
+        CHECK(app2.disks.size() == told + 2);
+        app2.client->detach(7);
+        app2.client->detach(8);
+        app2.client->dispatch();
+
         // A document's folder is watched whatever the ignore files say.
         TestMirror bm;
         bm.client = ed.client.get();
