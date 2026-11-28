@@ -42,6 +42,7 @@ static os_log_t SessionLog(void) {
 @interface MCSessionDoc ()
 - (void)hostDirty:(BOOL)dirty;
 - (void)hostWrote:(uint64_t)version json:(const Json &)json;
+- (void)hostDisk:(int)disk;
 @end
 
 // ---------------------------------------------------------------- documents by id
@@ -651,8 +652,12 @@ bool Link::attachClient(std::unique_ptr<Shared::HostLink> link, std::weak_ptr<Li
     // it had when it comes back after a drop (Host::setDrop).
     if (kind_ == Kind::Remote && !resume_.empty()) owned_->setResume(resume_);
     // A window over SSH hears the remote disk (Hello flag 32): its tree's
-    // folders listed again as they change there (FsChanged).
-    if (kind_ == Kind::Remote)
+    // folders listed again as they change there (FsChanged), and, from a
+    // host with Welcome flag 4096, each open file that went (DocDisk 2),
+    // came back (0) or changed in place (1), told to its tab (+Remote's
+    // tab:diskFromHost:). An older host sends an app's window no DocDisk.
+    if (kind_ == Kind::Remote) {
+        Shared::Client *c = owned_.get();
         owned_->hearDisk(
             [weak](std::uint64_t, const Json &changed) {
                 std::shared_ptr<Link> l = weak.lock();
@@ -661,7 +666,10 @@ bool Link::attachClient(std::unique_ptr<Shared::HostLink> link, std::weak_ptr<Li
                 for (const auto &[token, f] : listeners)
                     if (l->diskListeners_.count(token)) f(changed);
             },
-            [](Shared::DocId, int) {});
+            [c](Shared::DocId doc, int disk) {
+                if (c->hostTellsDocsGone()) [[DocRegistry() objectForKey:DocKey(c, doc)] hostDisk:disk];
+            });
+    }
     // And its language servers' files changed there (LspFiles).
     if (kind_ == Kind::Remote)
         owned_->hearFiles([weak](std::uint64_t window, const Json &files) {
@@ -1615,6 +1623,20 @@ static MCSessionLinkRef *LinkForTab(MCTab *tab) {
         MCTab *t = weakTab;
         id owner = t.owner;
         if (t && [owner respondsToSelector:@selector(tab:writtenByHost:)]) [owner tab:t writtenByHost:w];
+    });
+}
+
+// The host's word that the tab's file went, came back or changed in place
+// (a window over SSH, Welcome flag 4096): taken at the top of a turn, not
+// inside the dispatch, as hostWrote: is.
+- (void)hostDisk:(int)disk {
+    MCTab *tab = _tab;
+    if (!tab || !self.open) return;
+    __weak MCTab *weakTab = tab;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        MCTab *t = weakTab;
+        id owner = t.owner;
+        if (t && [owner respondsToSelector:@selector(tab:diskFromHost:)]) [owner tab:t diskFromHost:disk];
     });
 }
 

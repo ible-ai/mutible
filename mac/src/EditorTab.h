@@ -27,6 +27,9 @@
 // when that flips and the tab's text was the host's then (stage 7).
 - (void)tab:(MCTab *)t writtenByHost:(id)write;
 - (void)tab:(MCTab *)t dirtyFromHost:(BOOL)dirty;
+// A window over SSH's host said the tab's file went (2), came back (0) or
+// changed in place (1): DocDisk, on a host with Welcome flag 4096.
+- (void)tab:(MCTab *)t diskFromHost:(int)disk;
 // Whether the tab's text goes on a host whatever editor.session-host says:
 // a window over SSH (stage 8), whose files are the remote host's.
 - (BOOL)tabNeedsSession:(MCTab *)t;
@@ -168,6 +171,11 @@ NSString *MCEncodingStatusLabel(MCTextEncoding encoding, BOOL bom);
 // be followed): the tab says "(deleted)", counts as unsaved, and Cmd+S asks
 // before writing it again.
 @property(nonatomic, assign) BOOL gone;
+// A window over SSH: its host said the file changed there (DocDisk 1,
+// Welcome flag 4096) while the tab had unsaved changes. Keep Mine or
+// Reload is asked when the tab is on show in the key window, and Cmd+S
+// asks before writing over it (EditorController+Remote.mm).
+@property(nonatomic, assign) BOOL hostChanged;
 // Saved sorted (keep-sorted-on-save) while in the background: the sort is
 // put into the buffer as an undoable edit when the tab is next shown, so its
 // undo history still matches the text.

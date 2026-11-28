@@ -312,9 +312,7 @@ static char kRemoteWorkspaceKey;
     for (MCTab *t in [self tabs]) {
         if (!t.currentPath || t.untitled || t.gone) continue;
         if (![t.currentPath isEqualToString:path] && ![t.currentPath hasPrefix:prefix]) continue;
-        t.gone = YES;
-        // Only text has anything to save.
-        if (!t.isImage && !t.isPDF && !t.isMedia && !t.isDiff && !t.showingMessage && t.loaded) t.dirty = YES;
+        [self markRemoteTabGone:t];
         any = YES;
     }
     if (any) {
@@ -322,6 +320,15 @@ static char kRemoteWorkspaceKey;
         [self updateTitle];
     }
     [self refreshTree:nil];
+}
+
+// Its file is no longer on the host: "(deleted)" in its title, and, being
+// text, unsaved, so Cmd+S writes it there again.
+- (void)markRemoteTabGone:(MCTab *)t {
+    t.gone = YES;
+    t.hostChanged = NO;
+    // Only text has anything to save.
+    if (!t.isImage && !t.isPDF && !t.isMedia && !t.isDiff && !t.showingMessage && t.loaded) t.dirty = YES;
 }
 
 - (void)remoteMakePath:(NSString *)path folder:(BOOL)folder {
@@ -344,6 +351,130 @@ static char kRemoteWorkspaceKey;
 - (void)remoteTab:(MCTab *)t movedTo:(NSString *)path {
     if (![self remoteWorkspace] || !t.currentPath || !path.length || [t.currentPath isEqualToString:path]) return;
     [self pathMovedFrom:t.currentPath to:path];
+}
+
+// ------------------------------------------------------------ the host's disk
+// docs/notes/session-host.md, "A file gone on the host's disk": a host with
+// Welcome flag 4096 tells the window's tab (DocDisk, through MCSessionDoc's
+// hostDisk:) when its file went, came back or was changed in place by
+// anything there (rm in its terminal, git checkout, a build), which this
+// Mac's FSEvents never sees. The tab then does what a local tab does for
+// its own disk checks (+Persistence), reading the file through the host. A
+// save through the host is no change (the host keeps the stamp it wrote),
+// and a 1 for text equal to the tab's saved text is nothing.
+
+NSUInteger MCDiskFromHostNotices = 0;
+
+static BOOL RemoteTabHasText(MCTab *t) {
+    return t.loaded && !t.isImage && !t.isPDF && !t.isMedia && !t.isDiff && !t.showingMessage;
+}
+
+- (void)tab:(MCTab *)t diskFromHost:(int)disk {
+    if (_closing || ![self sessionIsRemote] || ![self holdsTab:t] || !t.currentPath || t.untitled) return;
+    MCDiskFromHostNotices++;
+    if (disk == 2) {   // gone: marked, its text kept (as remoteDeletePath:)
+        if (t.gone) return;
+        [self markRemoteTabGone:t];
+        [self reloadTabStrip];
+        [self updateTitle];
+        return;
+    }
+    if (disk == 0) {   // back (made again, or a branch that has it)
+        if (!t.gone) return;    // the window's own save made it again
+        [self tabCameBack:t];   // the mark off; unsaved only for its edits
+        if (RemoteTabHasText(t)) {
+            MCDiskText *d = [self sessionRemoteTextOf:t];
+            if (d.text && !t.dirty) {
+                // As it last read it: the file's text now, one undo step.
+                [self takeDiskRead:d intoCleanTab:t diff:nullptr];
+            } else if (d.text) {
+                // Edits: counted against the file as it is now, unasked (a
+                // file deleted and made again has no old text to keep).
+                t.savedText = d.text;
+                t.bom = d.bom;
+                t.encoding = d.encoding;
+                [self sessionTab:t savedAs:d.text];
+                t.dirty = ![d.text isEqualToString:t.currentText ?: @""];
+            }
+        }
+        [self reloadTabStrip];
+        [self updateTitle];
+        return;
+    }
+    if (disk != 1 || t.gone || !RemoteTabHasText(t)) return;
+    // Changed in place: a clean tab follows it at once, wherever it is (one
+    // "Reload from Disk" step, as checkTabsOnDisk's); one with edits is
+    // asked about on show in the key window, else when it is next shown or
+    // the window comes forward (checkExternalChange).
+    if (!t.dirty) {
+        MCDiskText *d = [self sessionRemoteTextOf:t];
+        if (d.text) [self takeDiskRead:d intoCleanTab:t diff:nullptr];
+        return;
+    }
+    t.hostChanged = YES;
+    if (t == _activeTab && self.window.isKeyWindow)
+        // On a turn of the run loop of its own, not inside this dispatch.
+        [self performSelector:@selector(askAboutActiveHostChange) withObject:nil afterDelay:0];
+}
+
+- (void)askAboutActiveHostChange {
+    if (!_closing) [self askAboutHostChangeOf:_activeTab];
+}
+
+- (void)askAboutHostChangeOf:(MCTab *)t {
+    if (!t.hostChanged || t != _activeTab || _closing || ![self sessionIsRemote]) return;
+    t.hostChanged = NO;
+    if (t.gone || !RemoteTabHasText(t)) return;
+    MCDiskText *fresh = [self sessionRemoteTextOf:t];
+    if (!fresh.text) return;   // gone meanwhile, or not text: its own notice says
+    // The window's own write, or a change back: nothing to ask.
+    if ([fresh.text isEqualToString:t.savedText ?: @""]) return;
+    if (!t.dirty) {   // its edits undone meanwhile: followed, as a clean tab is
+        [self takeDiskRead:fresh intoCleanTab:t diff:nullptr];
+        return;
+    }
+    NSAlert *a = [[NSAlert alloc] init];   // the local question (checkExternalChange)
+    a.messageText = [NSString stringWithFormat:@"“%@” changed on disk.", t.currentPath.lastPathComponent];
+    a.informativeText = @"You have unsaved changes here. Keep your version, "
+                         "or reload the file from disk and lose them?";
+    [a addButtonWithTitle:@"Keep Mine"];   // 1000
+    [a addButtonWithTitle:@"Reload"];      // 1001
+    if ([a runModal] == NSAlertSecondButtonReturn) {
+        [self takeDiskText:fresh forTab:t];
+        [self sessionTab:t savedAs:fresh.text];
+        return;
+    }
+    // Kept: the file's new text is what the tab counts as unchanged from
+    // now on, and the host is told so (DocSaved), so it compares the next
+    // change there with that.
+    t.savedText = fresh.text;
+    t.bom = fresh.bom;
+    t.encoding = fresh.encoding;
+    [self sessionTab:t savedAs:fresh.text];
+    [self noteEdited];
+}
+
+- (MCDiskDecision)remoteDiskDecisionForTab:(MCTab *)t {
+    if (!t.hostChanged) return MCDiskWrite;
+    MCDiskText *fresh = [self sessionRemoteTextOf:t];
+    if (!fresh.text || [fresh.text isEqualToString:t.savedText ?: @""]) {
+        t.hostChanged = NO;
+        return MCDiskWrite;
+    }
+    NSAlert *a = [[NSAlert alloc] init];   // diskDecisionForTab:'s question
+    a.messageText = [NSString stringWithFormat:@"“%@” changed on disk.", t.currentPath.lastPathComponent];
+    a.informativeText = @"It changed after it was opened here. Keep your version "
+                         "and write over it, or reload the file from disk and lose "
+                         "your changes?";
+    [a addButtonWithTitle:@"Keep Mine"];   // 1000
+    [a addButtonWithTitle:@"Reload"];      // 1001
+    [a addButtonWithTitle:@"Cancel"];      // 1002
+    const NSModalResponse r = [a runModal];
+    if (r == NSAlertFirstButtonReturn) {
+        t.hostChanged = NO;
+        return MCDiskWrite;
+    }
+    return r == NSAlertSecondButtonReturn ? MCDiskReload : MCDiskCancel;
 }
 
 // ------------------------------------------------------------ Replace in Folder

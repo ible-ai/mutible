@@ -926,8 +926,7 @@ void Host::onSaveAs(ClientId c, Message& m) {
                 d.doc.setGone(false);
                 d.diskSeen = done.written;
                 d.diskLooked = true;
-                d.appStamp = done.written;   // its own write is no change (lookAtAppDoc)
-                d.appStampKnown = done.written.exists;
+                appSaved(m.doc, d, c, done.written);   // its own write is no change (lookAtAppDoc)
                 setDisk(m.doc, d, 0);
                 r.outcome = Outcome::Done;
                 r.v = d.v;
@@ -1019,8 +1018,7 @@ void Host::onSave(ClientId c, Message& m) {
                 r.outcome = Outcome::Done;
                 r.v = d.v;
                 d.diskSeen = done.written;
-                d.appStamp = done.written;   // its own write is no change (lookAtAppDoc)
-                d.appStampKnown = done.written.exists;
+                appSaved(m.doc, d, c, done.written);   // its own write is no change (lookAtAppDoc)
                 d.diskLooked = true;
                 setDisk(m.doc, d, 0);
             }
@@ -1612,10 +1610,11 @@ void Host::setDisk(DocId id, Doc& d, int disk) {
 // state as they are. The version is the file's stamp; a stamp that moved
 // with the saved text still there (a touch, the window's own write, which the
 // host's saves also record in appStamp) is no change.
-void Host::tellApp(DocId id, Doc& d, int flag) {
+void Host::tellApp(DocId id, Doc& d, int flag, ClientId except) {
     for (const auto& [c, seat] : d.seats) {
         auto r = renderers_.find(c);
-        if (seat.viewer || r == renderers_.end() || !r->second.keepsBackups || !r->second.hearsDisk) continue;
+        if (c == except || seat.viewer || r == renderers_.end() || !r->second.keepsBackups || !r->second.hearsDisk)
+            continue;
         Message m;
         m.kind = Kind::DocDisk;
         m.doc = id;
@@ -1623,6 +1622,20 @@ void Host::tellApp(DocId id, Doc& d, int flag) {
         m.v = d.v;
         send(c, std::move(m));
     }
+}
+
+// The window's own write is no change (appStamp), and a gone file it made
+// again is back: the saver knows (its save answer), the other app windows
+// are told 0 now. Left for the next look, a removal before that look (an rm
+// right after the save) was never told, the look finding it gone as told.
+void Host::appSaved(DocId id, Doc& d, ClientId saver, const FolderSearch::FileStamp& written) {
+    d.appStamp = written;
+    d.appStampKnown = written.exists;
+    if (!written.exists) return;
+    d.appHadFile = true;
+    if (!d.appToldGone) return;
+    d.appToldGone = false;
+    tellApp(id, d, 0, saver);
 }
 
 void Host::lookAtAppDoc(DocId id, Doc& d) {

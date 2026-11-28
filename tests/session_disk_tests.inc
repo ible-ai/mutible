@@ -453,6 +453,22 @@ static void testSessionDisk() {
         fs::last_write_time(cpath, fs::last_write_time(cpath) + std::chrono::seconds(5));
         CHECK(changes(2, 1));   // a touch: the file is what the window saved
         CHECK(app3.disks.empty() || app3.disks.back().first != 9);   // no document, nothing
+        // Gone, then made again by the window's own save: the save says it is
+        // back (no 0 after it), and a removal right after it, before the host
+        // looked at the disk again, is told.
+        auto saveAgain = [&] {
+            const std::uint64_t req = app4.client->requestSave(9, 0, true, "utf8");
+            Shared::Client::SaveAnswer a;
+            for (int i = 0; req && i < 200 && !app4.client->saveAnswer(req, &a); i++) app4.client->dispatch();
+            return req != 0 && a.ok && fs::exists(cpath);
+        };
+        fs::remove(cpath);
+        CHECK(changes(3, 2));
+        CHECK(saveAgain());
+        fs::remove(cpath);   // before the host looked
+        CHECK(changes(4, 2));
+        CHECK(saveAgain());
+        CHECK(changes(4, 2));   // no 0 after the window's own save
         app4.client->detach(9);
         app2.client->detach(7);
         app2.client->detach(8);

@@ -1224,6 +1224,7 @@ static const NSUInteger kCatchUpFrom = 1 << 15;
 - (void)tab:(MCTab *)t tookSaveOf:(NSString *)saved stamp:(MCDiskStamp *)stamp dirty:(BOOL)dirty {
     t.savedText = saved;
     t.gone = NO;
+    t.hostChanged = NO;   // what is there now is what it saved
     t.dirty = dirty;
     if (t.preview) [self keepPreviewTab:t];   // saved: kept, as in VS Code
     [self recordStamp:stamp ofTab:t];
