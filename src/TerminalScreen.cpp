@@ -1343,6 +1343,10 @@ void TerminalScreen::osc(const std::string& raw) {
         promptSp_ = x_ > 0 || wrapPending_;
         promptActive_ = true;
         addMark('A', 0);
+    } else if (body.rfind("133;B", 0) == 0) {
+        // Where zsh's line editor began reading: the input's start, for a
+        // click on it (inputClickArrows). Nothing else reads it.
+        if (promptActive_) addMark('B', 0);
     } else if (body.rfind("133;C", 0) == 0) {
         promptActive_ = false;
         addMark('C', 0);
@@ -1511,6 +1515,89 @@ int TerminalScreen::nextCommandLine(int line) const {
     for (const TermCommand& c : commands())
         if (c.ran && c.promptLine > line) found = std::min(found, c.promptLine);
     return found == INT_MAX ? INT_MIN : found;
+}
+
+// ------------------------------------------------------ clicks on input
+bool TerminalScreen::inputClickArrows(int line, int col, int& arrows) const {
+    arrows = 0;
+    if (onAlt_ || mouseTracking_) return false;
+    // The integration marked a command that is still running: its program,
+    // not the shell, reads the keys.
+    if (markSeq_ > 0 && !promptActive_) return false;
+    const int first = -historySize();
+    if (line < first || line >= rows_ || col < 0) return false;
+    const int cy = y_, cx = x_ + (wrapPending_ ? 1 : 0);
+    std::vector<TermCell> scratch;
+    // Characters in [from, to) of a line: one per cell but a wide
+    // character's right half.
+    auto chars = [&](int l, int from, int to) {
+        const std::vector<TermCell>& cells = lineCells(l, scratch);
+        to = std::min(to, (int)cells.size());
+        int n = 0;
+        for (int c = std::max(from, 0); c < to; c++)
+            if (cells[c].width != 0) n++;
+        return n;
+    };
+    // The last cell of a line that is not blank, or -1.
+    auto lastInk = [&](int l, int from) {
+        const std::vector<TermCell>& cells = lineCells(l, scratch);
+        for (int c = std::min(lineTextWidth(l), (int)cells.size()) - 1; c >= from; c--)
+            if (cells[c].width == 0 || (cells[c].ch != " " && !cells[c].ch.empty())) return c;
+        return -1;
+    };
+    // A click on a wide character's right half means the character.
+    if (col > 0 && lineCell(line, col).width == 0) col--;
+
+    // The input's start: the last B in reading order with no A or C after
+    // it, at or before the cursor, and not where its prompt began (zsh
+    // without add-zle-hook-widget sends B with A, before the prompt).
+    long long bId = LLONG_MIN, aId = LLONG_MIN;
+    int bCol = 0, aCol = 0;
+    for (const Mark& m : marks_) {
+        if (m.kind == 'A') { aId = m.id; aCol = m.col; bId = LLONG_MIN; }
+        else if (m.kind == 'C') bId = aId = LLONG_MIN;
+        else if (m.kind == 'B') { bId = m.id; bCol = m.col; }
+    }
+    int bLine = bId == LLONG_MIN ? INT_MIN : (int)(bId - historyBase_);
+    if (bId != LLONG_MIN && bId == aId && bCol == aCol) bLine = INT_MIN;
+    if (bLine != INT_MIN && (bLine < first || bLine > cy || (bLine == cy && bCol > cx)))
+        bLine = INT_MIN;
+    // The input's rows: B's and those its soft wraps continue onto. The
+    // cursor must be on them (a buffer with a line break in it is rows
+    // the wraps do not join: only the cursor's row then).
+    int last = bLine;
+    if (bLine != INT_MIN) {
+        while (last < rows_ - 1 && lineWraps(last)) last++;
+        if (cy > last) bLine = INT_MIN;
+    }
+
+    if (bLine == INT_MIN) {
+        // No start known: along the cursor's row only.
+        if (line != cy) return false;
+        const int end = std::max(lastInk(cy, 0) + 1, cx);
+        if (col > end) return false;
+        arrows = col >= cx ? chars(cy, cx, col) : -chars(cy, col, cx);
+        return true;
+    }
+    if (line < bLine || line > last || (line == bLine && col < bCol)) return false;
+    // Characters from the input's start to a cell of its rows.
+    auto offset = [&](int l, int c) {
+        int n = 0;
+        for (int r = bLine; r < l; r++) n += chars(r, r == bLine ? bCol : 0, lineTextWidth(r));
+        const int to = lineWraps(l) ? std::min(c, lineTextWidth(l)) : c;
+        return n + chars(l, l == bLine ? bCol : 0, to);
+    };
+    int end = offset(cy, cx);
+    for (int r = last; r >= bLine; r--) {
+        const int c = lastInk(r, r == bLine ? bCol : 0);
+        if (c < 0) continue;
+        end = std::max(end, offset(r, c + 1));
+        break;
+    }
+    const int target = offset(line, col);
+    if (target > end) return false;
+    arrows = target - offset(cy, cx);
+    return true;
 }
 
 // ---------------------------------------------------------- hyperlinks
@@ -2403,7 +2490,7 @@ struct TerminalScreen::Replay {
         if (m.kind == 'D') body += ";" + std::to_string(m.status);
         if (!nonce.empty()) body += ";mc=" + nonce;
         out += "\x1b]" + body + "\a";
-        if (m.kind != 'D') prompt = m.kind == 'A';
+        if (m.kind == 'A' || m.kind == 'C') prompt = m.kind == 'A';
         // A prompt mark makes the next wrap zsh's PROMPT_SP (promptSp_);
         // here the wraps are the text's own, so a carriage return ends that
         // at once, and the cursor goes back where it was.
