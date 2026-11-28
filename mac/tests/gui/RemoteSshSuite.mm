@@ -2025,6 +2025,19 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(st == 0);
         GCHECK_EQ_STR(out, @"merge topic 4\n");
     });
+    // The repository as the conflict found it (main at "second, over ssh",
+    // no topic branch, no r.txt), so the sync steps below run unchanged.
+    GitThere(@"git there: the merge and its branch taken back", ^NSString * {
+        return @"git reset -q --hard HEAD~3 && git branch -qD topic && git log -1 --format=%s && "
+               @"git status --porcelain";
+    }, ^(int st, NSString *out) {
+        MCGuiNote(@"after taking the merge back: %@", out);
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"second, over ssh\n?? new.txt\n");
+    });
+    MCGuiWait(@"the panel follows: r.txt gone, new.txt still listed", 20, ^BOOL {
+        return !gGit || GitRows(gGitC, @[ @"# Changes  1", @"W U new.txt" ]);
+    });
     // ---- fetch, pull and push over SSH (stage 9's third slice): the host
     // runs them there, with that machine's credentials and never a prompt.
     // The remote's origin is a bare repository on the stand-in's disk.
