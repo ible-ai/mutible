@@ -70,19 +70,32 @@
     return self.gitPanel;
 }
 
-// A window over SSH (stage 9, docs/notes/git.md, "Over SSH"): the panel's
-// and the change bars' git runs on the other machine, through the host.
-// The review page and the commit page read the work tree and their
-// pictures from this Mac's disk, so over SSH a row opens its git diff and
-// a commit its git show, in the editor's diff tab.
+// A window over SSH (stage 9, docs/notes/git.md, "Over SSH"): the panel's,
+// the change bars', the review and commit pages' and line history's git
+// runs on the other machine, through the host, and the pages read the
+// work tree's files through it too. Each part takes the host as it is made
+// or here, whichever comes last.
 - (void)useHostGit {
     MCGitRunner run = [self hostGitRunner];
+    if (!run) return;
     MCGitPanel *panel = self.gitPanel;
-    if (!run || !panel || panel.overSshHost) return;
-    [panel useGitRunner:run overSsh:self.sessionRemoteLabel ?: @"the other machine"];
-    [_gitGutter useGitRunner:run];
-    panel.onReview = nil;
-    panel.onReviewCommit = nil;
+    if (panel && !panel.overSshHost) {
+        [panel useGitRunner:run overSsh:self.sessionRemoteLabel ?: @"the other machine"];
+        [_gitGutter useGitRunner:run];
+    }
+    for (MCTab *t in [self tabs])
+        if ([t.page isKindOfClass:MCChangeReviewPage.class])
+            [self giveHostToReviewPage:(MCChangeReviewPage *)t.page];
+    [self lineHistoryUseHost];
+}
+
+// A review or commit page of a window over SSH reads through the host.
+- (void)giveHostToReviewPage:(MCChangeReviewPage *)page {
+    MCGitRunner run = [self hostGitRunner];
+    if (!run || page.overSsh || page.worktree) return;
+    [page useGitRunner:run workReader:[self hostWorkReader]];
+    __weak EditorController *weakSelf = self;
+    page.onWorkWritten = ^(NSString *path) { [weakSelf followHostFile:path]; };
 }
 
 - (void)gitChangedOnHost {
@@ -99,9 +112,6 @@
     [self showChangeReviewAt:rel staged:staged preview:NO];
 }
 - (void)showChangeReviewAt:(NSString *)rel staged:(BOOL)staged preview:(BOOL)preview {
-    // It reads the work tree from this Mac's disk: over SSH the panel's
-    // rows open their git diffs instead.
-    if ([self refuseOverSsh:@"Review Changes"]) return;
     NSString *key = [@"review:" stringByAppendingString:_root.path ?: @""];
     MCChangeReviewPage *page = nil;
     for (MCTab *t in [self tabs])
@@ -117,6 +127,7 @@
 - (MCChangeReviewPage *)newChangeReviewPage {
     MCGitPanel *panel = [self ensureGitPanel];
     MCChangeReviewPage *page = [[MCChangeReviewPage alloc] initWithRoot:_root.path panel:panel];
+    [self giveHostToReviewPage:page];   // over SSH: the host's repository and work tree
     __weak EditorController *weakSelf = self;
     page.onOpenFile = ^(NSString *path, NSInteger line) {
         EditorController *s = weakSelf;
@@ -140,6 +151,7 @@
 - (MCChangeReviewPage *)newCommitReviewPage {
     MCGitPanel *panel = [self ensureGitPanel];
     MCChangeReviewPage *page = [[MCChangeReviewPage alloc] initForCommitsWithRoot:_root.path panel:panel];
+    [self giveHostToReviewPage:page];   // over SSH: the host's repository
     __weak EditorController *weakSelf = self;
     page.onOpenFile = ^(NSString *path, NSInteger line) {
         EditorController *s = weakSelf;

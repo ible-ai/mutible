@@ -11,9 +11,17 @@
 @implementation EditorController (LineHistory)
 
 - (MCLineHistory *)ensureLineHistory {
-    if (!_lineHistory && self.textView && self.gutter)
+    if (!_lineHistory && self.textView && self.gutter) {
         _lineHistory = [[MCLineHistory alloc] initWithHost:self];
+        [self lineHistoryUseHost];
+    }
     return _lineHistory;
+}
+
+// A window over SSH: who changed each line is the host's git's answer.
+- (void)lineHistoryUseHost {
+    MCGitRunner run = [self hostGitRunner];
+    if (_lineHistory && run && !_lineHistory.overSsh) [_lineHistory useGitRunner:run];
 }
 
 - (MCLineHistory *)lineHistory { return _lineHistory; }   // tests, by KVC

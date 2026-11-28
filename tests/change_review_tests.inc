@@ -82,6 +82,24 @@ static void testChangeReview() {
         CHECK(plan(d, Op::Discard, false).button == "Discard Change");
     }
 
+    GROUP("review:plan-over-ssh");
+    {
+        // The other machine has no Trash: Discard's words say the copy is
+        // kept as a git object there; the question and button stay.
+        FileDiff d = diffFile(file("a\nb\nc\n", "a\nB\nc\n"), "");
+        const GitUi::ActionPlan block = planOverSsh(d, Op::Discard, false);
+        CHECK(block.question == "Discard this change to f.txt?" && block.button == "Discard Change");
+        CHECK(block.detail.find("no Trash") != std::string::npos &&
+              block.detail.find("git object") != std::string::npos &&
+              block.detail.find("Undo Discard") == std::string::npos);
+        CHECK(block.doneText == "Discarded a change to f.txt.");
+        CHECK(planOverSsh(d, Op::Discard, true).doneText == "Discarded the selected lines of f.txt.");
+        CHECK(planOverSsh(d, Op::Discard, true).detail.find("They go") == 0);
+        // Stage, and a refusal, are as on this machine.
+        CHECK(planOverSsh(d, Op::Stage, false).doneText == plan(d, Op::Stage, false).doneText);
+        CHECK(planOverSsh(d, Op::Unstage, false).refusal == plan(d, Op::Unstage, false).refusal);
+    }
+
     GROUP("review:line-endings");
     {
         // The work tree in CRLF, the index in LF (core.autocrlf): only the

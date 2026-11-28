@@ -49,6 +49,11 @@ FLAKY line.
 - #367 ROADMAP's terminal line (docs only).
 - GTK over SSH: Discard of a block or lines and the conflict choices on the
   review page, written by git on the host (item 172; `src/ChangeReviewRead`).
+- The Mac over SSH catches up: the review and commit pages, comparisons,
+  line history, and the page's Discard and conflict choices through the
+  host, on the same core pieces. GTK's page now takes its no-Trash Discard
+  words from the core's new `ChangeReview::planOverSsh` (its own copy is
+  gone; same words).
 
 ## Where it stands
 

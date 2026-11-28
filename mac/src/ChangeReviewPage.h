@@ -35,8 +35,20 @@
 // any action, a window coming to the front, files changing), keeping the
 // place the eye was on. Rows are all one height, so sizes and places are
 // arithmetic and layout is non-contiguous, as in the compare view.
+//
+// In a window over SSH (useGitRunner:workReader:) the repository and its
+// work tree are on the other machine: every git command runs through the
+// window's host, the changed files' bytes are read through it (the core's
+// ChangeReview::readUncommitted with ImageReading::readWork), and Discard
+// of a block or lines and the conflict choices are written by `git apply`
+// there (ChangeReview::discardTextOnHost, writeWorkOnHost): Discard keeps
+// the file as it was as a git object first, names it, and offers no Undo
+// Discard, since that machine has no Trash. A clean tab of the file then
+// takes the host's text (onWorkWritten). A worktree's page is not made
+// over SSH.
 #import <Cocoa/Cocoa.h>
 #import "EditorPage.h"
+#import "GitPanel.h"
 
 @class MCGitPanel, MCComparison;
 
@@ -81,6 +93,15 @@
 @property(nonatomic, copy) void (^onOpenFile)(NSString *path, NSInteger line);
 @property(nonatomic, copy) void (^onShowComparison)(MCComparison *comparison);
 @property(nonatomic, copy) BOOL (^hasUnsavedText)(NSString *path);
+
+// A window over SSH: git through `runner` on the page's queue, the work
+// tree's files through `reader`, both the window's host's. Before the
+// first read; nil, nil gives this Mac's back.
+- (void)useGitRunner:(MCGitRunner)runner workReader:(MCGitWorkReader)reader;
+@property(nonatomic, readonly) BOOL overSsh;
+// Over SSH, after git there wrote a file of the work tree (absolute, as the
+// host spells it): the window has a clean tab of it take the host's text.
+@property(nonatomic, copy) void (^onWorkWritten)(NSString *path);
 
 // Read everything again, keeping the place.
 - (void)reload;

@@ -451,6 +451,14 @@ void MCControlRegisterCommands(Dispatcher &d, id<MCControlAppHost> hostIn) {
         EditorController *fallback = [host controlControllerContaining:path spelled:nil];
         EditorController *c = MCTarget(host, a, fallback, error);
         if (!c) { respond(Result::failure(error)); return; }
+        // It reads this Mac's files and runs this Mac's git: a window over
+        // SSH's are on the other machine (its review page compares them).
+        if (c.sessionIsRemote) {
+            respond(Result::failure("mutible diff does not work in a window over SSH yet: it reads this "
+                                    "Mac's files. Review Changes in that window compares the other "
+                                    "machine's."));
+            return;
+        }
         const BOOL preview = !a["keep"].asBool();
         NSString *other = a.has("other") ? MCResolved(NS(a["other"])) : nil;
         NSString *ref = a.has("base") ? NS(a["base"]) : @"HEAD";

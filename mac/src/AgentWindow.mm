@@ -198,6 +198,12 @@ static NSString *Resolved(NSString *path) {
 }
 
 - (void)compareWorktreeAt:(NSString *)path {
+    if (_host.sessionIsRemote) {
+        NSBeep();
+        [self note:@"Compare with Main does not work in a window over SSH yet: an agent's worktree is "
+                   @"read from this Mac's disk."];
+        return;
+    }
     MCAgentWorktree *w = [self.model worktreeAtPath:path];
     if (!w) {
         [self note:@"git has not listed that folder as a worktree yet"];

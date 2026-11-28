@@ -24,6 +24,7 @@
 // refreshing) or a session (the Agents model publishing) looks again while
 // the words show.
 #import <Cocoa/Cocoa.h>
+#import "GitPanel.h"
 
 @class CodeTextView, MCAgentModel, MCLineGutter;
 
@@ -49,6 +50,11 @@ void MCSetLineHistoryInline(BOOL on);
 - (instancetype)initWithHost:(id<MCLineHistoryHost>)host;
 - (void)stop;           // the window is closing
 - (void)refreshSoon;    // look again (while wanted)
+// A window over SSH: the blame runs on the window's host (`runner` on the
+// look's queue), and no Claude Code session is matched (their transcripts
+// are this Mac's, the file the other machine's). nil gives this Mac's back.
+- (void)useGitRunner:(MCGitRunner)runner;
+@property(nonatomic, readonly) BOOL overSsh;
 
 // The gutter's hover (MCLineGutter onHoverLine): the box after the pointer
 // rests, NSNotFound to close it. Lines are the editor's, 0-based.

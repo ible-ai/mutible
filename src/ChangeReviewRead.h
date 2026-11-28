@@ -96,6 +96,7 @@ struct Read {
     std::string top;               // the repository's top level
     bool initial = false;          // no commit yet
     std::string branchText;        // the panel's branch line ("main ↑2 ↓1")
+    std::string head;              // HEAD's commit as status read it ("" before the first)
     std::string error;             // why there is nothing to show
     std::vector<FileDiff> diffs;
     std::vector<Extra> extras;     // one per diff

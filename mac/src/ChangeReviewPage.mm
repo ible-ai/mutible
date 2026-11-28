@@ -68,21 +68,13 @@ const size_t kMaxSideBytes = 4u << 20;
 // Past this in all, the rest of the files are not read either.
 const size_t kMaxTotalBytes = 64u << 20;
 
-// What the page keeps beside each file to act on it: its row in the panel,
-// the index entry the view was drawn from, how the index's text was read
-// (so a staged text is written the same way), and the work tree's bytes
-// and encoding (so a discard checks nothing changed, and writes it back
-// as it was written).
-struct Extra {
-    GitUi::Row row;
-    std::string indexObject;       // empty when the index has none
-    QuickDiff::Original indexHow;  // its encoding and mark
-    FolderSearch::TextEncoding workEnc = FolderSearch::TextEncoding::Utf8;
-    bool workBom = false;
-    bool workRead = false;         // the work tree's file was read
-    std::string workBytes;
-    std::string oldImage, newImage;   // a picture file's versions (ChangeReview::showAsImages)
-};
+// What the page keeps beside each file to act on it (the core's, so a read
+// over SSH, which is the core's, and this Mac's are one kind): its row in
+// the panel, the index entry the view was drawn from, how the index's text
+// was read (so a staged text is written the same way), and the work tree's
+// bytes and encoding (so a discard checks nothing changed, and writes it
+// back as it was written).
+using Extra = ChangeReview::Extra;
 
 // One read: every file and its diff, and the page laid out from them.
 struct ReviewData {
@@ -165,6 +157,62 @@ void SeeImages(ChangeReview::File &f, Extra &x, const std::string &oldBytes,
     if (!ChangeReview::showAsImages(f, o, n, rowHeight)) return;
     if (f.oldExists) x.oldImage = oldBytes;
     if (f.newExists) x.newImage = newBytes;
+}
+
+// The core's runner over the calling queue's git (MCGitRunSync: a window
+// over SSH's queue sends it to the host).
+ChangeReview::GitRunner QueueRunner() {
+    return [](const std::string &dir, const std::vector<std::string> &args, const std::string &input) {
+        MCGitResult *r = input.empty()
+            ? MCGitRunSync(NS8(dir), Args(args))
+            : MCGitRunSyncWithInput(NS8(dir), Args(args), [NSData dataWithBytes:input.data() length:input.size()]);
+        ChangeReview::GitOut o;
+        o.ok = r.ok;
+        o.status = r.status;
+        o.timedOut = r.timedOut;
+        o.out = Bytes(r.output);
+        o.err = Std(r.errorText);
+        return o;
+    };
+}
+
+// The core's reading of the uncommitted changes in a window over SSH (on
+// the page's queue, which sends git to the host): the work tree's files
+// read through the host by `reader` (ImageReading::readWork), the
+// pictures' sizes by ImageIO here.
+std::shared_ptr<ReviewData> ReadReviewOnHost(NSString *root, const ChangeReview::Opened &opened,
+                                             double rowHeight, MCGitWorkReader reader) {
+    ChangeReview::ImageReading images;
+    images.size = ImageSideOf;
+    images.rowHeight = rowHeight;
+    images.readWork = [reader](const std::string &path, std::string *out) {
+        BOOL tooLarge = NO;
+        NSData *d = reader(NS8(path), kMaxSideBytes, &tooLarge);
+        if (tooLarge) return FolderSearch::ReadStatus::TooLarge;
+        if (!d) return FolderSearch::ReadStatus::Missing;
+        *out = Bytes(d);
+        return FolderSearch::ReadStatus::Ok;
+    };
+    ChangeReview::Read r = ChangeReview::readUncommitted(Std(root), QueueRunner(), images);
+    auto data = std::make_shared<ReviewData>();
+    data->top = r.top;
+    data->initial = r.initial;
+    data->error = r.error;
+    data->head = r.head;
+    data->diffs = std::move(r.diffs);
+    data->extras = std::move(r.extras);
+    data->page = ChangeReview::layout(data->diffs, opened);
+    return data;
+}
+
+// A read as the core's writers over SSH take it.
+ChangeReview::Read CoreRead(const ReviewData &d) {
+    ChangeReview::Read r;
+    r.top = d.top;
+    r.initial = d.initial;
+    r.diffs = d.diffs;
+    r.extras = d.extras;
+    return r;
 }
 
 // Everything the page shows, read off the main thread.
@@ -365,7 +413,8 @@ std::shared_ptr<ReviewData> ReadReview(NSString *root, const ChangeReview::Opene
 std::shared_ptr<ReviewData> ReadCommit(NSString *root, NSString *hash,
                                        const ChangeReview::Opened &opened, double rowHeight) {
     auto data = std::make_shared<ReviewData>();
-    if (!MCGitExecutable()) {
+    // Over SSH (a runner on the queue) git is the other machine's.
+    if (!MCGitOnHost() && !MCGitExecutable()) {
         data->error = "git was not found, so the commit cannot be shown.";
         return data;
     }
@@ -1288,7 +1337,15 @@ NSString *LabelOf(Act act, NSString *title, const ChangeReview::FileDiff &fd, co
     size_t _lastConflicts;
     NSString *_commitTitle;   // "a1b2c3d Subject", the tab's title
     NSTextField *_bodyLabel;  // the rest of a commit's message
+    MCGitWorkReader _hostReader;   // a window over SSH's work tree; nil on this Mac
 }
+
+- (void)useGitRunner:(MCGitRunner)runner workReader:(MCGitWorkReader)reader {
+    MCGitSetQueueRunner(_queue, runner);
+    _hostReader = runner ? [reader copy] : nil;
+}
+
+- (BOOL)overSsh { return _hostReader != nil; }
 
 - (instancetype)initWithRoot:(NSString *)root panel:(MCGitPanel *)panel {
     if ((self = [super init])) {
@@ -1617,10 +1674,12 @@ NSString *LabelOf(Act act, NSString *title, const ChangeReview::FileDiff &fd, co
     const ChangeReview::Opened opened = _opened;
     const double rowHeight = ReviewRowHeight();
     const NSUInteger serial = ++_readsStarted;
+    MCGitWorkReader hostReader = _hostReader;
     __weak MCChangeReviewPage *weakSelf = self;
     dispatch_async(_queue, ^{
         std::shared_ptr<ReviewData> d = worktree ? ReadWorktree(worktree, mainRef, opened, rowHeight)
                                         : commitMode ? ReadCommit(root, commit, opened, rowHeight)
+                                        : hostReader ? ReadReviewOnHost(root, opened, rowHeight, hostReader)
                                                      : ReadReview(root, opened, rowHeight);
         d->serial = serial;
         d->fingerprint = ChangeReview::fingerprint(d->diffs);
@@ -2349,6 +2408,20 @@ NSString *LabelOf(Act act, NSString *title, const ChangeReview::FileDiff &fd, co
         done = [NSString stringWithFormat:@"No conflicts left in %@. Mark Resolved stages it.",
                                           path.lastPathComponent];
     __weak MCChangeReviewPage *weakSelf = self;
+    if (_hostReader) {
+        // Over SSH git there writes it: one patch from the file as read,
+        // which it refuses when the file moved since.
+        [self act:^{
+            const std::string failure = ChangeReview::writeWorkOnHost(CoreRead(*data), fi, bytes, QueueRunner());
+            dispatch_async(dispatch_get_main_queue(), ^{
+                MCChangeReviewPage *s = weakSelf;
+                if (!s) return;
+                if (failure.empty() && s.onWorkWritten) s.onWorkWritten(path);
+                [s finish:failure.empty() ? done : NS8(failure) ok:failure.empty() about:{rel} ran:YES];
+            });
+        }];
+        return;
+    }
     [self act:^{
         NSString *failure = nil;
         std::string now;
@@ -2402,7 +2475,10 @@ NSString *LabelOf(Act act, NSString *title, const ChangeReview::FileDiff &fd, co
     if (!data || fi >= data->diffs.size()) return;
     const FileDiff &d = data->diffs[fi];
     const bool lines = block < 0;
-    const GitUi::ActionPlan plan = ChangeReview::plan(d, op, lines);
+    // Over SSH the other machine has no Trash: Discard keeps the file as a
+    // git object there, and its words say so.
+    const GitUi::ActionPlan plan = _hostReader ? ChangeReview::planOverSsh(d, op, lines)
+                                               : ChangeReview::plan(d, op, lines);
     if (!plan.refusal.empty()) {
         [self finish:NS8(plan.refusal) ok:NO about:{d.file.path, d.file.origPath} ran:NO];
         return;
@@ -2479,6 +2555,24 @@ NSString *LabelOf(Act act, NSString *title, const ChangeReview::FileDiff &fd, co
     const std::string bytes =
         FolderSearch::encodeFileText(QuickDiff::toUtf8(text), x.workEnc, x.workBom);
     __weak MCChangeReviewPage *weakSelf = self;
+    if (_hostReader) {
+        // The work tree is on the other machine: git there checks the index
+        // entry, keeps the file as it is as an object, and writes the new
+        // text (`git apply`, which refuses it when the file moved since).
+        [self act:^{
+            std::string kept;
+            const std::string failure =
+                ChangeReview::discardTextOnHost(CoreRead(*data), fi, text, QueueRunner(), &kept);
+            const std::string said = failure.empty() ? GitUi::keptCopiesText(plan.doneText, {{rel, kept}}) : failure;
+            dispatch_async(dispatch_get_main_queue(), ^{
+                MCChangeReviewPage *s = weakSelf;
+                if (!s) return;
+                if (failure.empty() && s.onWorkWritten) s.onWorkWritten(path);
+                [s finish:NS8(said) ok:failure.empty() about:{rel, x.row.origPath} ran:YES];
+            });
+        }];
+        return;
+    }
     MCGitPanel *panel = _panel;
     [self act:^{
         NSString *failure = nil;
@@ -2607,19 +2701,7 @@ NSString *LabelOf(Act act, NSString *title, const ChangeReview::FileDiff &fd, co
     NSString *mainPath = NS8(data->mainPath);
     __weak MCChangeReviewPage *weakSelf = self;
     [self act:^{
-        const ChangeReview::GitRunner run = [](const std::string &dir, const std::vector<std::string> &args,
-                                               const std::string &input) {
-            MCGitResult *r = input.empty()
-                ? MCGitRunSync(NS8(dir), Args(args))
-                : MCGitRunSyncWithInput(NS8(dir), Args(args), [NSData dataWithBytes:input.data() length:input.size()]);
-            ChangeReview::GitOut o;
-            o.ok = r.ok;
-            o.status = r.status;
-            o.out = Bytes(r.output);
-            o.err = Std(r.errorText);
-            return o;
-        };
-        const ChangeReview::ApplyResult r = ChangeReview::applyToMain(source, mainName, run);
+        const ChangeReview::ApplyResult r = ChangeReview::applyToMain(source, mainName, QueueRunner());
         dispatch_async(dispatch_get_main_queue(), ^{
             MCChangeReviewPage *s = weakSelf;
             if (!s) return;

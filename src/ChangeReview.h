@@ -218,6 +218,11 @@ bool anyChanged(const FileDiff& d, const std::vector<int>& oldLines,
 // The question, the words afterwards, or why it cannot be done (refusal),
 // for `op` on a block (or on lines) of `d`. Discard always asks.
 GitUi::ActionPlan plan(const FileDiff& d, Op op, bool lines);
+// The same in a window over SSH, whose work tree is on another machine with
+// no Trash: Discard keeps the file as it is there as a git object first
+// (discardTextOnHost, ChangeReviewRead.h), which its words say, and has no
+// Undo Discard.
+GitUi::ActionPlan planOverSsh(const FileDiff& d, Op op, bool lines);
 
 // What a failed action says when the file or the index moved since the
 // view was drawn: nothing was done, and the view shows it as it is now.

@@ -4771,6 +4771,24 @@ docs/notes/formatting.md, "Over SSH".
   (docs/notes/formatting.md lists what each holds). GUI: remote_ssh's
   formatter block. Not run here: CI runs it.
 
+#### The review pages over SSH (2026-11-28, the Mac)
+
+No new request or flag: FsRead "git" (flag 256) and the file reads the
+viewers already use. The Mac's window now does what GTK's did first (#359,
+#366, #368, "The GTK window over SSH, the review pages and comparisons"
+below), on the same core pieces: Review Changes and a commit's page read
+the host's repository, `ChangeReview::readUncommitted` reads the changed
+files with `ImageReading::readWork` (`MCRemoteWorkspace workReader`, one
+`Link::fetchBytes` per file, waited for on the page's queue), the page's
+Discard of a block or lines and its conflict choices are `git apply` there
+(`discardTextOnHost`, `writeWorkOnHost`), a comparison made again from its
+record reads its sides there, and line history blames there. A clean tab
+of a file git wrote takes the host's text (`followHostFile:`). Still
+refused: `mutible diff` and an agent's worktree page. The Mac side is in
+docs/notes/git.md, "Over SSH". Checks: `review:plan-over-ssh`,
+`review-read:host-work-tree` (now also `Read::head`); GUI: remote_ssh's
+git block.
+
 #### Language servers over SSH (2026-11-22, stage 9's second slice, Welcome flag 512)
 
 A window over SSH started no language server (the Mac would have run
@@ -4862,7 +4880,7 @@ docs/notes/lsp.md, "Over SSH".
   app, or a window closed while disconnected, left on the lasting host
   (closing a connected window closes what it had there, but those leave it
   until the idle time, or for good while it is unsaved or running); the first connection and Reconnect off the main
-  thread too (only the automatic tries are); then the rest of stage 9 (git with fetch, pull and push, language servers and formatters are in: "Git over SSH", "Fetch, pull and push over SSH", "Formatters over SSH" and "Language servers over SSH" above; agents, LaTeX)
+  thread too (only the automatic tries are); then the rest of stage 9 (git with fetch, pull and push, language servers, formatters, the review pages and line history are in: "Git over SSH", "Fetch, pull and push over SSH", "Formatters over SSH", "Language servers over SSH" and "The review pages over SSH" above; agents, LaTeX)
   and the parts left out above (ports for the browser pane, Finder drags,
   Quick Look).
 - **Stage 7, after the watching, the Mac's and GTK's saves, Quick Open and

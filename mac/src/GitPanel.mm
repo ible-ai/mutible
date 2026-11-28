@@ -1030,7 +1030,7 @@ static NSColor *LetterColor(unichar c, BOOL unmerged) {
 - (void)useGitRunner:(MCGitRunner)runner overSsh:(NSString *)host {
     MCGitSetQueueRunner(_queue, runner);
     _overSshHost = runner ? [host copy] : nil;
-    if (_overSshHost) _reviewButton.hidden = YES;
+    // Review Changes stays: its page reads through the same host.
 }
 
 - (NSString *)overSshHost { return _overSshHost; }
@@ -1696,7 +1696,7 @@ static NSColor *LetterColor(unichar c, BOOL unmerged) {
     _rows = s.rows ?: @[];
     BOOL anyFile = NO;
     for (MCGitRow *r in _rows) anyFile = anyFile || !r.header;
-    _reviewButton.hidden = !anyFile || _overSshHost != nil;
+    _reviewButton.hidden = !anyFile;
     _branchLabel.stringValue = s.inRepository ? (s.branchText ?: @"") : @"Source Control";
     [self showMessageArea:s.inRepository];
     _notice.stringValue = s.notice ?: @"";

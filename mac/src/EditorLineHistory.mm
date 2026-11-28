@@ -62,19 +62,12 @@ std::string MacDate(long long t) {
     return [f stringFromDate:[NSDate dateWithTimeIntervalSince1970:(double)t]].UTF8String ?: "";
 }
 
-// One look's answer, kept with the text it was for.
+// One look's answer, kept with the text it was for: the core's
+// (LineHistory::assemble, as GTK's look makes it) and where each line
+// starts in the view.
 struct Answer {
     std::vector<NSUInteger> newlines;   // UTF-16 offsets of every "\n" in the text
-    bool hasBlame = false;
-    LineHistory::Blame blame;
-    struct Session {
-        LineHistory::SessionInfo info;
-        std::string file;               // the file as the session's calls named it
-        std::vector<AgentEdits::Change> changes;
-    };
-    std::vector<Session> sessions;
-    std::vector<LineHistory::Line> lines;
-    std::string trouble;                // why nothing is known, when git could not say
+    LineHistory::Answer core;
 };
 
 // A session's calls on one file, kept while its transcript is unchanged.
@@ -180,7 +173,16 @@ const NSTimeInterval kTypingPause = 0.6;
     NSRect _hoverAnchor;   // in screen coordinates
     NSTimer *_hoverTimer, *_closeTimer;
     BOOL _stopped;
+    BOOL _overSsh;   // a window over SSH: blame on the host, no sessions
 }
+
+- (void)useGitRunner:(MCGitRunner)runner {
+    MCGitSetQueueRunner(_queue, runner);
+    _overSsh = runner != nil;
+    [self refreshSoon];
+}
+
+- (BOOL)overSsh { return _overSsh; }
 
 - (instancetype)initWithHost:(id<MCLineHistoryHost>)host {
     if ((self = [super init])) {
@@ -346,7 +348,7 @@ const NSTimeInterval kTypingPause = 0.6;
         return;
     }
     const double c0 = ThreadCpuMs();
-    MCAgentModel *model = host.lineHistoryAgentModel;
+    MCAgentModel *model = _overSsh ? nil : host.lineHistoryAgentModel;   // no sessions over SSH
     if (model && model != _model) {
         if (_model)
             [NSNotificationCenter.defaultCenter removeObserver:self
@@ -411,44 +413,29 @@ const NSTimeInterval kTypingPause = 0.6;
             if (buf[i] == '\n') a->newlines.push_back(at + i);
     }
     const std::string utf8 = Std(text);
-    const size_t count = LineHistory::lineCount(utf8);
 
-    // git blame of the buffer as it is.
+    // git blame of the buffer as it is (the host's git over SSH: this
+    // queue's runner sends it there).
     NSString *dir = path.stringByDeletingLastPathComponent;
     NSData *input = [NSData dataWithBytes:utf8.data() length:utf8.size()];
-    MCGitResult *r = MCGitRunSyncWithInput(
-        dir, @[@"blame", @"--porcelain", @"--contents", @"-", @"--", path.lastPathComponent], input);
-    bool known = true;
-    if (r.ok) {
-        a->hasBlame = LineHistory::parsePorcelain(Std([[NSString alloc] initWithData:r.output
-                                                                             encoding:NSUTF8StringEncoding] ?: @""),
-                                                  &a->blame);
-        if (!a->hasBlame) {
-            // Bytes that are not UTF-8 in a line: read them one by one.
-            std::string raw((const char *)r.output.bytes, r.output.length);
-            a->hasBlame = LineHistory::parsePorcelain(raw, &a->blame);
-        }
-        if (!a->hasBlame) {
-            known = false;
-            a->trouble = "git blame answered in a way mutible does not read.";
-        }
-    } else {
-        NSString *why = r.errorText ?: @"";
-        // A file git does not track, or no repository: nothing is committed.
-        const BOOL notTracked = [why containsString:@"no such path"] ||
-                                [why containsString:@"not a git repository"] ||
-                                [why containsString:@"HEAD"] || [why containsString:@"no such ref"];
-        if (r.timedOut || r.status == -1 || !notTracked) {
-            known = false;
-            a->trouble = why.length ? Std(why) : std::string("git could not say.");
-        }
-    }
+    std::vector<std::string> args = LineHistory::blameArgs(Std(path.lastPathComponent));
+    NSMutableArray<NSString *> *argv = [NSMutableArray arrayWithCapacity:args.size()];
+    for (const std::string &s : args) [argv addObject:NS(s)];
+    MCGitResult *r = MCGitRunSyncWithInput(dir, argv, input);
+    LineHistory::GitOutcome git;
+    git.ok = r.ok;
+    git.timedOut = r.timedOut;
+    git.status = r.status;
+    if (r.output.length) git.out = std::string((const char *)r.output.bytes, r.output.length);
+    git.err = Std(r.errorText ?: @"");
 
-    // The sessions that changed this file, each to the lines its edits wrote.
+    // The sessions that changed this file, each to the lines its edits
+    // wrote: never in a window over SSH, whose file is the other machine's
+    // and whose sessions are this Mac's.
+    std::vector<LineHistory::SessionInput> sessions;
     AgentTranscript::Fs fs = AgentTranscript::posixFs();
     const std::string file = Fs(path);
-    std::vector<LineHistory::SessionLines> lines;
-    for (NSArray<NSString *> *c in candidates) {
+    for (NSArray<NSString *> *c in _overSsh ? @[] : candidates) {
         const std::string transcript = Fs(c[0]), named = Fs(c[2]);
         if (transcript.empty() || !AgentEdits::samePath(fs, named, file)) continue;
         const AgentTranscript::Stat st = fs.stat(transcript);
@@ -460,25 +447,14 @@ const NSTimeInterval kTypingPause = 0.6;
             got.size = st.size;
             got.mtime = st.mtime;
         }
-        Answer::Session sess;
+        LineHistory::SessionInput sess;
         sess.info.title = Std(c[1]);
         sess.info.transcript = transcript;
         sess.file = named;
         sess.changes = got.changes;
-        a->sessions.push_back(std::move(sess));
+        sessions.push_back(std::move(sess));
     }
-    lines.reserve(a->sessions.size());
-    for (const Answer::Session &sess : a->sessions)
-        lines.push_back(LineHistory::SessionLines{&sess.changes, LineHistory::linesWritten(sess.changes, utf8)});
-    if (known) {
-        a->lines = LineHistory::combine(count, a->hasBlame ? &a->blame : nullptr, lines);
-    } else {
-        a->lines.assign(count, LineHistory::Line());
-        // git could not say what is committed; a session's line is still its.
-        std::vector<LineHistory::Line> sessionsOnly = LineHistory::combine(count, nullptr, lines);
-        for (size_t i = 0; i < count; i++)
-            if (sessionsOnly[i].kind == LineHistory::Kind::Session) a->lines[i] = sessionsOnly[i];
-    }
+    a->core = LineHistory::assemble(utf8, git, std::move(sessions));
 }
 
 // ------------------------------------------------------------ lines
@@ -495,7 +471,7 @@ const NSTimeInterval kTypingPause = 0.6;
     if (!_answer || ch >= _validBefore) return -1;
     const std::vector<NSUInteger> &nl = _answer->newlines;
     const size_t k = (size_t)(std::lower_bound(nl.begin(), nl.end(), ch) - nl.begin());
-    if (k >= _answer->lines.size()) return -1;
+    if (k >= _answer->core.lines.size()) return -1;
     // The line must end before the first edit since too.
     const NSUInteger end = k < nl.size() ? nl[k] + 1 : NSUIntegerMax;
     if (end != NSUIntegerMax && end > _validBefore) return -1;
@@ -505,41 +481,19 @@ const NSTimeInterval kTypingPause = 0.6;
     return (long)k;
 }
 
+// The core's words (LineHistory::Answer's label and detail); nil where it
+// has none (a line it does not know, and no reason to give).
 - (NSString *)labelForAnswerLine:(long)k {
     if (k < 0 || !_answer) return nil;
-    const LineHistory::Line &l = _answer->lines[(size_t)k];
-    const long long now = (long long)NSDate.date.timeIntervalSince1970;
-    switch (l.kind) {
-        case LineHistory::Kind::Commit:
-            return NS(LineHistory::commitLabel(_answer->blame.commits[(size_t)l.commit], now));
-        case LineHistory::Kind::Session: {
-            const Answer::Session &s = _answer->sessions[(size_t)l.session];
-            return NS(LineHistory::sessionLabel(s.info, s.changes[(size_t)l.change], now));
-        }
-        case LineHistory::Kind::NotCommitted: return NS(LineHistory::notCommittedLabel());
-        case LineHistory::Kind::Unknown: return nil;
-    }
-    return nil;
+    const std::string s = _answer->core.label((size_t)k, (long long)NSDate.date.timeIntervalSince1970);
+    return s.empty() ? nil : NS(s);
 }
 
 - (NSString *)detailForAnswerLine:(long)k {
     if (k < 0 || !_answer) return nil;
-    const LineHistory::Line &l = _answer->lines[(size_t)k];
-    const long long now = (long long)NSDate.date.timeIntervalSince1970;
-    switch (l.kind) {
-        case LineHistory::Kind::Commit:
-            return NS(LineHistory::commitDetail(_answer->blame.commits[(size_t)l.commit], now, MacDate));
-        case LineHistory::Kind::Session: {
-            const Answer::Session &s = _answer->sessions[(size_t)l.session];
-            return NS(LineHistory::sessionDetail(s.info, s.changes[(size_t)l.change], now, MacDate));
-        }
-        case LineHistory::Kind::NotCommitted: return NS(LineHistory::notCommittedDetail());
-        case LineHistory::Kind::Unknown:
-            return _answer->trouble.empty()
-                       ? nil
-                       : [@"Line history is not available: " stringByAppendingString:NS(_answer->trouble)];
-    }
-    return nil;
+    const std::string s =
+        _answer->core.detail((size_t)k, (long long)NSDate.date.timeIntervalSince1970, MacDate);
+    return s.empty() ? nil : NS(s);
 }
 
 - (NSString *)labelForLine:(NSUInteger)line {
@@ -555,17 +509,17 @@ const NSTimeInterval kTypingPause = 0.6;
         NSBeep();
         return NO;
     }
-    const LineHistory::Line &l = _answer->lines[(size_t)k];
+    const LineHistory::Line &l = _answer->core.lines[(size_t)k];
     id<MCLineHistoryHost> host = _host;
     if (l.kind == LineHistory::Kind::Commit) {
-        const LineHistory::Commit &c = _answer->blame.commits[(size_t)l.commit];
+        const LineHistory::Commit &c = _answer->core.blame.commits[(size_t)l.commit];
         [self closePopup];
         [host lineHistoryShowCommit:NS(c.hash)
                               title:NS(Git::shortHash(c.hash) + " " + c.summary)];
         return YES;
     }
     if (l.kind == LineHistory::Kind::Session) {
-        const Answer::Session &s = _answer->sessions[(size_t)l.session];
+        const LineHistory::SessionInput &s = _answer->core.sessions[(size_t)l.session];
         [self closePopup];
         [host lineHistoryShowSession:NS(s.info.transcript) name:NS(s.info.title) file:NS(s.file)];
         return YES;

@@ -100,6 +100,20 @@ static char kRemoteWorkspaceKey;
     return [self remoteWorkspace].gitRunner;
 }
 
+- (MCGitWorkReader)hostWorkReader {
+    return [self remoteWorkspace].workReader;
+}
+
+- (void)followHostFile:(NSString *)path {
+    MCSessionLinkRef *link = [self sessionRemoteLink];
+    if (_closing || !path.length || !link.link || link.link->lost()) return;
+    for (MCTab *t in [self tabs]) {
+        if (!t.loaded || t.dirty || t.isDiff || ![t.currentPath isEqualToString:path]) continue;
+        MCDiskText *d = link.link->readText(path.fileSystemRepresentation ?: "");
+        if (d.text) [self takeDiskRead:d intoCleanTab:t diff:nullptr];
+    }
+}
+
 - (NSString *)folderToolsKey {
     MCSessionLinkRef *link = [self sessionRemoteLink];
     if ([self sessionIsRemote] && link.link) return @(link.link->key().c_str());
