@@ -339,6 +339,7 @@ static char kRemoteWorkspaceKey;
     if (!ws || !panel) return;
     __weak MCRemoteWorkspace *weakWs = ws;
     panel.hostReplaces = ^BOOL { return [weakWs replacesInFolder]; };
+    panel.hostReplacesOne = ^BOOL { return [weakWs replacesOne]; };
     panel.hostReplace = ^uint64_t(Json request, void (^answers)(const std::vector<Json> &, BOOL)) {
         return [weakWs replace:std::move(request) answers:answers];
     };

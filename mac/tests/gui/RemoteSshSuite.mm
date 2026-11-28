@@ -60,6 +60,10 @@
 //     Replace All replaces on the host: a closed file rewritten on disk, a
 //     clean tab edited there (unsaved, the disk as it was), a tab with
 //     unsaved text left alone and named, in the local question's words.
+//     With Preserve Case on (Welcome flag 2048), Replace This Match
+//     changes one match of a row and Replace All the rest, each in the
+//     case of what it replaces, on the stand-in's disk; a host without the
+//     flag refuses both with a note.
 //   - Addresses the open window's folder holds, as its host resolves them:
 //     src/util.c's opens in that window through its host (no new window, no
 //     ssh run), main.c's through a link to the folder and by ".." lands on
@@ -1116,6 +1120,88 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiWait(@"r2 saved by the host", 10, ^BOOL {
         return [Read(Op(@"r2.txt")) isEqualToString:@"traded two\n"] && !TabFor(gC, Op(@"r2.txt")).dirty;
+    });
+    // ---- Preserve Case and Replace This Match through the host (Welcome
+    // flag 2048, Client::hostReplacesOne): case.txt, closed, holds "foo" in
+    // three cases on its first line and once on its second. A host without
+    // the flag (hostReplacesOne taken away) refuses both with a note and
+    // changes nothing; with it, Replace This Match changes the first row's
+    // first match alone, in its case, and Replace All then does the rest,
+    // each in the case of what it replaces, on the stand-in's disk.
+    MCGuiStep(@"case.txt, closed: Foo foo FOO, then foo; searched for foo, Preserve Case on", ^{
+        MCGuiWriteFile(Op(@"case.txt"), @"Foo foo FOO\nfoo\n");
+        SearchPanel *p = gC.searchPanel;
+        GCHECK(p.hostReplacesOne != nil);
+        p.field.stringValue = @"foo";
+        p.replaceField.stringValue = @"bar";
+        p.matchCase = NO;
+        p.preserveCase = YES;
+        [p runSearch:nil];
+    });
+    MCGuiWait(@"case.txt's rows, from the host", 15, ^BOOL {
+        SearchPanel *p = gC.searchPanel;
+        return !p.busy && [p.status.stringValue containsString:@"match"];
+    });
+    MCGuiStep(@"a host without flag 2048 refuses Replace This Match and Preserve Case", ^{
+        SearchPanel *p = gC.searchPanel;
+        MCGuiNote(@"status: %@", p.status.stringValue);
+        GCHECK_EQ_STR(p.status.stringValue, @"4 matches in 1 file");
+        GCHECK(p.hostReplacesOne && p.hostReplacesOne());   // the build's host has the flag
+        BOOL (^real)(void) = p.hostReplacesOne;
+        p.hostReplacesOne = nil;
+        gAlertsAt = MCGuiAlertsShown().count;
+        [p replaceMatchAtRow:0];
+        MCGuiNote(@"one match: %@", p.status.stringValue);
+        GCHECK([p.status.stringValue hasPrefix:@"Replacing one match does not work in a window over SSH here"]);
+        [p replaceAll:nil];
+        MCGuiNote(@"replace all: %@", p.status.stringValue);
+        GCHECK([p.status.stringValue hasPrefix:@"Preserve Case does not work in Replace in Folder over SSH here"]);
+        GCHECK(AlertsSinceStep().count == 0);
+        GCHECK(!p.busy);
+        GCHECK_EQ_STR(Read(Op(@"case.txt")), @"Foo foo FOO\nfoo\n");
+        p.hostReplacesOne = real;
+    });
+    MCGuiStep(@"Replace This Match on the first row, with the flag", ^{
+        SearchPanel *p = gC.searchPanel;
+        NSOutlineView *t = (NSOutlineView *)p.table;
+        NSInteger index = -1, hits = 0;   // its place among the lines, as replaceMatchAtRow: counts
+        for (NSInteger r = 0; r < t.numberOfRows; r++) {
+            id item = [t itemAtRow:r];
+            if (![item respondsToSelector:@selector(line)]) continue;
+            if ([[item valueForKey:@"line"] integerValue] == 1) index = hits;
+            hits++;
+        }
+        GCHECK(hits == 2 && index >= 0);
+        const NSUInteger replacesBefore = [gC remoteWorkspace].replaces;
+        if (index >= 0) [p replaceMatchAtRow:index];
+        GCHECK([gC remoteWorkspace].replaces == replacesBefore + 1);
+    });
+    MCGuiWait(@"one match replaced, and searched again", 15, ^BOOL {
+        SearchPanel *p = gC.searchPanel;
+        return !p.busy && [p.status.stringValue hasPrefix:@"Replaced"];
+    });
+    MCGuiStep(@"only the first match changed, in its case; the rest as they were", ^{
+        SearchPanel *p = gC.searchPanel;
+        MCGuiNote(@"status: %@; case.txt: %@", p.status.stringValue, Read(Op(@"case.txt")));
+        GCHECK([p.status.stringValue hasPrefix:@"Replaced 1 match in 1 file"]);
+        GCHECK_EQ_STR(Read(Op(@"case.txt")), @"Bar foo FOO\nfoo\n");
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiAnswerAlerts(@[ @(NSAlertFirstButtonReturn) ]);
+        [p replaceAll:nil];
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"Replace 3 matches in 1 file?" ]]);
+    });
+    MCGuiWait(@"Replace All with Preserve Case done, and searched again", 15, ^BOOL {
+        SearchPanel *p = gC.searchPanel;
+        return !p.busy && [p.status.stringValue hasPrefix:@"Replaced"];
+    });
+    MCGuiStep(@"each match in the case of what it replaced, on the host's disk", ^{
+        SearchPanel *p = gC.searchPanel;
+        MCGuiNote(@"status: %@; case.txt: %@", p.status.stringValue, Read(Op(@"case.txt")));
+        GCHECK([p.status.stringValue hasPrefix:@"Replaced 3 matches in 1 file"]);
+        GCHECK_EQ_STR(Read(Op(@"case.txt")), @"Bar bar BAR\nbar\n");
+        p.preserveCase = NO;
+        [[NSFileManager defaultManager] removeItemAtPath:Op(@"case.txt") error:nil];
+        [p.window orderOut:nil];
     });
     // ---- addresses an open window's folder holds. As a local file goes
     // to the window whose folder holds it, a file's address on the same

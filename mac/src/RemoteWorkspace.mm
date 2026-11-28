@@ -252,6 +252,11 @@ static NSString *PrefetchKey(NSString *path, BOOL hidden) {
     return l && l->replacesInFolder();
 }
 
+- (BOOL)replacesOne {
+    MCSession::Link *l = [self live];
+    return l && l->replacesOne();
+}
+
 - (uint64_t)replace:(Json)request answers:(void (^)(const std::vector<Json> &, BOOL))answers {
     MCSession::Link *l = [self live];
     if (!l) return 0;
