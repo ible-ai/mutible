@@ -80,7 +80,7 @@ SESSION_HOST_SRC := src/SessionServer.cpp src/SessionHost.cpp src/SessionClient.
             src/Regex.cpp src/MarkdownTasks.cpp src/MarkdownParser.cpp src/MarkdownEmoji.cpp \
             src/SessionWeb.cpp src/SessionWebPage.cpp src/SessionWebAccess.cpp src/IdeLink.cpp src/MarkdownHtml.cpp \
             src/SyntaxHighlighter.cpp src/Settings.cpp src/AutoIndent.cpp src/LineComments.cpp \
-            src/SessionFiles.cpp src/SessionSearch.cpp src/SessionGit.cpp src/SessionLsp.cpp src/SessionFormat.cpp src/SessionTypeset.cpp src/Formatter.cpp src/FormatRun.cpp src/InstallHints.cpp src/LspServers.cpp src/LspFeatures.cpp src/LspText.cpp src/LspProtocol.cpp src/LspSync.cpp src/LspCompletion.cpp src/CommandPalette.cpp src/FileDetails.cpp src/FileSniff.cpp src/Backups.cpp src/SavePlan.cpp src/Csv.cpp \
+            src/SessionFiles.cpp src/SessionSearch.cpp src/SessionGit.cpp src/SessionLsp.cpp src/SessionFormat.cpp src/SessionTypeset.cpp src/LatexScratch.cpp src/Formatter.cpp src/FormatRun.cpp src/InstallHints.cpp src/LspServers.cpp src/LspFeatures.cpp src/LspText.cpp src/LspProtocol.cpp src/LspSync.cpp src/LspCompletion.cpp src/CommandPalette.cpp src/FileDetails.cpp src/FileSniff.cpp src/Backups.cpp src/SavePlan.cpp src/Csv.cpp \
             src/SessionWebViewers.cpp src/SessionWebTypeset.cpp src/SessionWebGit.cpp src/SqliteRead.cpp src/Notebook.cpp \
             src/ChangeReview.cpp src/ChangeReviewRead.cpp src/SideBySide.cpp src/LineDiff.cpp src/MergeConflicts.cpp \
             src/GitModel.cpp src/GitStatus.cpp src/GitGraph.cpp src/QuickDiff.cpp \
