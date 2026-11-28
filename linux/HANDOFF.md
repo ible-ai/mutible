@@ -24,21 +24,11 @@ Read these first:
 
 ## Unreleased on main (for the next release)
 
-The last release is v1.6.26 (8786246, 2026-11-28), which carried #371 to
-#377. Each Linux PR merged since adds its line here; the next Mac session
+The last release is v1.6.27 (94b61ab, 2026-11-28), which carried #378 to
+#380. Each Linux PR merged since adds its line here; the next Mac session
 releases what is listed and clears it.
 
-- GTK: a file open in a window over SSH that is deleted on the host by
-  anything else (its terminal, git) marks its tabs too, and clears the mark
-  when it returns (item 176). New core notice flag 4096; the Mac follows it
-  too since the Mac's PR for items 176 and 177.
-- GTK: a file open in a window over SSH that is changed in place on the host
-  (git checkout, a formatter, a build, sed -i) is followed by a clean tab as
-  one undoable step, and a tab with unsaved changes asks Keep Mine or Reload
-  (item 177; the same flag 4096, DocDisk 1). The Mac does gone, back and
-  changed in one PR (items 176 and 177; docs/notes/session-host.md, "The
-  Mac"), which also has the host clear its gone note on a window's save
-  and tell the other app windows 0 then (`Host::appSaved`).
+(none yet)
 
 ## Where it stands
 
