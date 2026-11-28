@@ -3,7 +3,9 @@
 // data (termCharWidth, tables written by tools/gen-term-width.py), emoji
 // sequences drawn as one cell, and the shell integration's marks kept on
 // the screen for moving between commands (TerminalScreen::commands) and for
-// Cmd+L's Clear to Previous Mark (`screen:clear-to-mark`).
+// Cmd+L's Clear to Previous Mark (`screen:clear-to-mark`), and the arrows
+// an Option+click on the command line being typed sends
+// (TerminalScreen::inputClickArrows, `screen:input-click`).
 
 namespace {
 
@@ -364,5 +366,137 @@ void testTerminalMarks() {
         CHECK(!v.clearToPreviousMark());
         v.feed(session("a", "A1\r\n", 0) + mark("A") + "% " + "\x1b[?1049h");
         CHECK(!v.clearToPreviousMark());
+    }
+
+    GROUP("screen:input-click");
+    {
+        // What a click at (line, col) sends: the arrows, or "none" when it
+        // is not on the input.
+        auto click = [](const TerminalScreen &t, int line, int col) {
+            int arrows = 0;
+            return t.inputClickArrows(line, col, arrows) ? std::to_string(arrows)
+                                                         : std::string("none");
+        };
+        // A prompt, B where zsh's line editor began, a command typed.
+        TerminalScreen s(20, 6);
+        s.setMarkNonce("n0");
+        s.feed(mark("A") + "% " + mark("B") + "echo hello");
+        CHECK(s.cursorRow() == 0 && s.cursorCol() == 12);
+        CHECK(click(s, 0, 7) == "-5");     // the second h
+        CHECK(click(s, 0, 2) == "-10");    // the input's first character
+        CHECK(click(s, 0, 12) == "0");     // just past the end: where it is
+        CHECK(click(s, 0, 13) == "none");  // further past the end
+        CHECK(click(s, 0, 1) == "none");   // the prompt
+        CHECK(click(s, 1, 3) == "none");   // a row below the input
+        // With the cursor moved back, a click to the right goes right, and
+        // the text after the cursor still counts as the input.
+        s.feed("\x1b[5D");
+        CHECK(s.cursorCol() == 7);
+        CHECK(click(s, 0, 12) == "5");
+        CHECK(click(s, 0, 9) == "2");
+
+        // Wide characters: one arrow each, and a click on the right half
+        // means the character.
+        TerminalScreen w(20, 4);
+        w.setMarkNonce("n0");
+        w.feed(mark("A") + "% " + mark("B") + "a\xe6\xbc\xa2\xe5\xad\x97" "b");   // a漢字b
+        CHECK(w.cursorCol() == 8);
+        CHECK(click(w, 0, 3) == "-3");
+        CHECK(click(w, 0, 4) == "-3");
+        CHECK(click(w, 0, 6) == "-2");
+        CHECK(click(w, 0, 7) == "-1");
+        CHECK(click(w, 0, 2) == "-4");
+
+        // A command that wrapped: counted across the wrap, both ways.
+        TerminalScreen r(10, 4);
+        r.setMarkNonce("n0");
+        r.feed(mark("A") + "% " + mark("B") + "abcdefghijklmno");
+        CHECK(r.rowText(0) == "% abcdefgh" && r.rowText(1) == "ijklmno");
+        CHECK(r.cursorRow() == 1 && r.cursorCol() == 7);
+        CHECK(click(r, 0, 4) == "-13");    // c
+        CHECK(click(r, 1, 2) == "-5");     // k
+        CHECK(click(r, 1, 8) == "none");
+        r.feed("\x1b[1;5H");               // the cursor on c
+        CHECK(click(r, 1, 7) == "13");     // the end, on the next row
+        CHECK(click(r, 1, 0) == "6");      // i
+        // A wide character that did not fit at the edge went to the next
+        // row and left a blank, which is no character.
+        TerminalScreen e(10, 4);
+        e.setMarkNonce("n0");
+        e.feed(mark("A") + "% " + mark("B") + "abcdefg\xe6\xbc\xa2x");   // abcdefg漢x
+        CHECK(e.cursorRow() == 1 && e.cursorCol() == 3);
+        CHECK(click(e, 1, 0) == "-2");
+        CHECK(click(e, 1, 1) == "-2");
+        CHECK(click(e, 0, 9) == "-2");
+        CHECK(click(e, 0, 8) == "-3");     // g
+        // The input's start in the scrollback, under a long line.
+        TerminalScreen h(10, 3);
+        h.setScrollbackLimit(100);
+        h.setMarkNonce("n0");
+        h.feed(mark("A") + "% " + mark("B") + std::string(40, 'x'));
+        CHECK(h.cursorRow() == 2 && h.cursorCol() == 2 && h.historySize() == 2);
+        CHECK(click(h, 0, 5) == "-17");
+        CHECK(click(h, -2, 2) == "-40");
+        CHECK(click(h, -2, 1) == "none");
+        // A reflow carries the start with its text.
+        TerminalScreen f(20, 4);
+        f.setMarkNonce("n0");
+        f.feed(mark("A") + "% " + mark("B") + "abcdefghijklmnopqrstuvw");
+        CHECK(f.cursorRow() == 1);
+        f.resize(30, 4);
+        CHECK(f.cursorRow() == 0 && f.cursorCol() == 25);
+        CHECK(click(f, 0, 4) == "-21");
+        CHECK(click(f, 0, 1) == "none");
+        // And so does the host's replay to a renderer.
+        TerminalScreen g(30, 4);
+        g.setMarkNonce("n0");
+        g.feed(f.replay("n0"));
+        if (click(g, 0, 4) != "-21")
+            std::printf("  replayed: %s, cursor %d,%d, %zu marks\n", click(g, 0, 4).c_str(),
+                        g.cursorRow(), g.cursorCol(), g.markCount());
+        CHECK(click(g, 0, 4) == "-21" && click(g, 0, 1) == "none");
+
+        // Never on the alternate screen, while a program takes the mouse,
+        // or while a command runs.
+        TerminalScreen n(20, 4);
+        n.setMarkNonce("n0");
+        n.feed(mark("A") + "% " + mark("B") + "ls");
+        CHECK(click(n, 0, 2) == "-2");
+        n.feed("\x1b[?1000h");
+        CHECK(click(n, 0, 2) == "none");
+        n.feed("\x1b[?1000l\x1b[?1049h");
+        CHECK(click(n, 0, 2) == "none");
+        n.feed("\x1b[?1049l\r\n" + mark("C") + "partial");
+        CHECK(click(n, 1, 2) == "none" && click(n, 0, 2) == "none");
+
+        // With no marks at all, the cursor's row only.
+        TerminalScreen b(20, 4);
+        b.feed("$ ls -la");
+        CHECK(click(b, 0, 3) == "-5");
+        CHECK(click(b, 0, 8) == "0");
+        CHECK(click(b, 0, 9) == "none");
+        CHECK(click(b, 1, 0) == "none");
+        b.feed("\x1b[4D");
+        CHECK(click(b, 0, 7) == "3");
+        // The marks cleared (ED 2) at the prompt: the same.
+        TerminalScreen c(20, 4);
+        c.setMarkNonce("n0");
+        c.feed(mark("A") + "% " + mark("B") + "ls\x1b[2J\x1b[H% ls");
+        CHECK(c.markCount() == 0);
+        CHECK(click(c, 0, 2) == "-2");
+        CHECK(click(c, 1, 0) == "none");
+        // A B sent with the A, before the prompt (zsh without
+        // add-zle-hook-widget): no start known, so not across the wrap.
+        TerminalScreen z(10, 4);
+        z.setMarkNonce("n0");
+        z.feed(mark("A") + mark("B") + "% abcdefghijkl");
+        CHECK(z.cursorRow() == 1 && z.cursorCol() == 4);
+        CHECK(click(z, 0, 5) == "none");
+        CHECK(click(z, 1, 1) == "-3");
+        // A B after the command ran counts for nothing.
+        TerminalScreen q(20, 4);
+        q.setMarkNonce("n0");
+        q.feed(session("ls", "a\r\n", 0) + mark("A") + "% " + mark("B") + "pwd");
+        CHECK(click(q, 2, 2) == "-3" && click(q, 0, 2) == "none");
     }
 }
