@@ -5188,9 +5188,13 @@ the status bar, changing nothing; the local actions are unchanged.
   one's: "Delete “x” permanently?", its detail saying the machine has no
   Trash for mutible, buttons "Delete Permanently" and "Cancel"; only then
   `{delete, permanent: true}`. The row goes at once (`FileTree::removing`)
-  and the tabs of it close unless they hold unsaved changes, which stay
-  (the local Trash's rule, `forgetGone`), so a clean tab does not stay open
-  on a file that is gone; a dirty one's save writes the file again.
+  and every tab of it or under it stays, in both groups, clean ones too:
+  `forgetGone(app, path, true)` calls `Editor::pathDeleted`, which
+  `Document::markGone`s each, as the Mac's `remoteDeletePath:` (2026-11-28,
+  HANDOFF 175; before, `forgetGone` closed the clean ones, the local
+  Trash's rule). A marked tab is titled "x (deleted)", a loaded text tab is
+  unsaved (the dot, closing asks), a picture, PDF or player only marked; a
+  save writes the file again through the host and clears the mark.
 - **Tabs follow** two ways, whichever comes first: the answer calls
   `Editor::pathMoved(from, to, onHost)` for this window (paths under a
   renamed or moved folder too, non-text tabs too), and the host's DocDirty

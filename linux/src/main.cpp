@@ -3119,13 +3119,17 @@ static void dropOnTree(App* app, const std::vector<std::string>& paths,
     g_object_unref(task);
 }
 
-// What a path gone leaves in one window: its tabs close, unless they hold
-// unsaved changes, which stay (the Mac's rule). The tab shown next is not
-// revealed in any tree: following it put the tree at that file, the top of
-// the tree for one near it ("the view resets and I am brought to the top").
-static void forgetGone(App* a, const std::string& path) {
+// What a path gone leaves in one window. Moved to the Trash here: its tabs
+// close, unless they hold unsaved changes, which stay (the Mac's trashPath:).
+// Deleted on the host over SSH (`deleted`, no Trash there): every tab of it
+// stays, marked deleted and unsaved (the Mac's remoteDeletePath:). The tab
+// shown next is not revealed in any tree: following it put the tree at that
+// file, the top of the tree for one near it ("the view resets and I am
+// brought to the top").
+static void forgetGone(App* a, const std::string& path, bool deleted = false) {
     if (a->treeFollow) a->treeFollow->quiet(true);
-    a->editor->pathTrashed(path);
+    if (deleted) a->editor->pathDeleted(path);
+    else a->editor->pathTrashed(path);
     if (a->treeFollow) a->treeFollow->quiet(false);
     a->nav->removed(path);   // no place to go back to
     updateTitle(a);
@@ -3163,7 +3167,7 @@ static void act_trash(GSimpleAction*, GVariant*, gpointer userp) {
     q.message = app->remote ? "Delete “" + baseName(path) + "” permanently?"
                             : "Move “" + baseName(path) + "” to the Trash?";
     // The Mac asks the same question. A tab of it with unsaved changes stays
-    // open with them, so say so.
+    // open with them, so say so (over SSH every tab stays, marked deleted).
     for (Document* d : app->editor->dirtyDocuments())
         if (isInside(d->path(), path)) {
             q.detail = "“" + baseName(d->path()) +
@@ -3189,7 +3193,7 @@ static void act_trash(GSimpleAction*, GVariant*, gpointer userp) {
         r.set("permanent", Json(true));
         overSshFileOp(app, "Delete", std::move(r), [app, path](const Json&) {
             app->tree->removing(path);   // its row now; the host's notice lists the folder again
-            forgetGone(app, path);
+            forgetGone(app, path, true);
         });
     });
 }
