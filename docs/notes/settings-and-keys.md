@@ -93,7 +93,7 @@ found through that list.
 
 ## Keys: the registry, keys.conf and the key monitor
 
-- `src/Commands.cpp` has every command (about 160) in menu order: id, title,
+- `src/Commands.cpp` has every command (about 250), grouped by menu: id, title,
   menu, default keys (`shift+cmd+p` notation), where it applies (`Any`,
   `Editor`, `Terminal`, `Tree`), selector and tag, flags (`Global`: the key
   monitor runs it before any view, the grid included; `Fixed`: a view's own
@@ -114,6 +114,29 @@ found through that list.
   language (`MCKeymapLanguage`). Cmd+B stays the sidebar and Cmd+I the inline
   agent in Markdown (the owner's call, 2026-11-06): Toggle Bold and Italic
   have no key.
+- **The Mac's menus** (2026-11-28, the owner's: "the dropdown menus are
+  really excessive"): `BuildMenu` in main.mm lays them out by hand, not
+  from the registry's order. Each menu opens with what people click
+  (Show Session in Browser, the pane and panel toggles, Find in Folder,
+  Go to File, Run File, saving and closing), grouped by separators; the
+  commands people reach by key (the cursor's moves, line commands, tabs by
+  number, focus, next problem or change, terminal resizing) go in
+  submenus at the menu's foot, made with `MCAddSubmenu` (File > Tabs, File
+  Tree, Browser Bookmarks; Edit > Find, Find Options, Cursors and
+  Selection, Lines, Code, Markdown; View > Source Control, File Tree,
+  Panes, Folding, Page Zoom, More; Terminal > Tabs and Panes; Navigate >
+  Cursor, Go to Tab, Focus, Problems and Changes). A menu key works from
+  a submenu as from the top, and the palette walks every submenu ("View >
+  More > Play/Pause"). The registry's `menu` stays the top-level menu, so
+  keys.conf's comments and the GTK port, which build from the registry's
+  order, are unchanged. A new command goes at its menu's top only if
+  people would click it; keyboard-only ones go in the submenu that fits.
+  The keymap suite holds Show Session in Browser and Toggle Terminal among
+  View's first six items, every menu's top level at 32 of its own items
+  at most, and every command with a menu item on a visible one in the
+  registry's top-level menu. A check that looks for an item walks the
+  submenus too (`MCGuiMenuItemWhere`, Harness.h), never only the top
+  level of each menu.
 - `Keymap.mm` reads and watches the file and puts the keys on the menu items
   found by action and tag (the first on the item, others on hidden items beside
   it, `allowsKeyEquivalentWhenHidden`). Errors join the settings errors in the

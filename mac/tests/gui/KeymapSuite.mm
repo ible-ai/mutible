@@ -112,6 +112,70 @@ MC_GUI_SUITE(keymap) {
         GCHECK([Hints(c) containsString:@"⇧⌘P"]);
     });
 
+    // The owner's (2026-11-28): each menu opens with what people click, and
+    // keeps its keyboard commands in submenus at its foot (main.mm).
+    MCGuiStep(@"the menus open with what people click and still reach every command", ^{
+        NSMenu *view = nil;
+        for (NSMenuItem *top in NSApp.mainMenu.itemArray)
+            if ([top.submenu.title isEqualToString:@"View"]) view = top.submenu;
+        GCHECK(view != nil);
+        NSMutableArray<NSString *> *first = [NSMutableArray array];
+        for (NSMenuItem *it in view.itemArray) {
+            if (it.isSeparatorItem || it.isHidden) continue;
+            if (first.count == 6) break;
+            [first addObject:it.title];
+        }
+        MCGuiNote(@"View opens with %@", [first componentsJoinedByString:@", "]);
+        GCHECK([first containsObject:@"Show Session in Browser…"]);
+        GCHECK([first containsObject:@"Toggle Terminal"]);
+        // No menu's top level runs long again: its own items and submenus,
+        // not those AppKit adds (Enter Full Screen, Start Dictation…).
+        // (Bookmarks lists the user's bookmarks, as many as there are.)
+        for (NSMenuItem *top in NSApp.mainMenu.itemArray) {
+            if ([top.submenu.title isEqualToString:@"Bookmarks"]) continue;
+            NSUInteger n = 0;
+            for (NSMenuItem *it in top.submenu.itemArray)
+                if (!it.isSeparatorItem && !it.isHidden &&
+                    (it.hasSubmenu ||
+                     (it.action && Commands::findBySelector(
+                                       NSStringFromSelector(it.action).UTF8String, (int)it.tag))))
+                    n++;
+            if (n > 32) MCGuiNote(@"%@ has %lu items at its top", top.submenu.title, (unsigned long)n);
+            GCHECK(n <= 32);
+        }
+        // Every command the registry gives a menu item has a visible one in
+        // its own menu, a submenu of it included: the top-level menu's
+        // title (the app menu's is "mutible", as the registry names it)
+        // for each command id.
+        NSMutableDictionary<NSString *, NSMutableSet<NSString *> *> *where =
+            [NSMutableDictionary dictionary];
+        __block void (^walk)(NSMenu *, NSString *) = nil;
+        __block __weak void (^weakWalk)(NSMenu *, NSString *) = nil;
+        weakWalk = walk = ^(NSMenu *menu, NSString *top) {
+            for (NSMenuItem *it in menu.itemArray) {
+                if (it.submenu) weakWalk(it.submenu, top);
+                if (it.isHidden || !it.action) continue;
+                const Commands::Command *cmd = Commands::findBySelector(
+                    NSStringFromSelector(it.action).UTF8String, (int)it.tag);
+                if (!cmd) continue;
+                NSString *cid = @(cmd->id);
+                if (!where[cid]) where[cid] = [NSMutableSet set];
+                [where[cid] addObject:top];
+            }
+        };
+        for (NSMenuItem *top in NSApp.mainMenu.itemArray)
+            walk(top.submenu, top.submenu.title.length ? top.submenu.title : @"mutible");
+        walk = nil;
+        for (const Commands::Command &cmd : Commands::all()) {
+            if (!cmd.selector || (cmd.flags & Commands::Fixed) || cmd.note) continue;
+            std::string menu = cmd.menu;
+            NSString *top = @(menu.substr(0, menu.find(" > ")).c_str());
+            const BOOL found = [where[@(cmd.id)] containsObject:top];
+            if (!found) MCGuiNote(@"%s (%s) has no visible item in %@", cmd.id, cmd.title, top);
+            GCHECK(found);
+        }
+    });
+
     MCGuiStep(@"the monitor's default keys: Cmd+keypad 0 and Ctrl+`", ^{
         [c.window makeFirstResponder:Text(c)];
         MCEditorZoomBy(2);

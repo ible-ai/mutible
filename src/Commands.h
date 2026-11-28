@@ -129,7 +129,11 @@ std::string languageName(const std::string& language);
 // files", "the terminal", "anywhere".
 std::string placeName(const Command& c);
 
-// Every command, in menu order.
+// Every command, grouped by menu: the order keys.conf's file and the GTK
+// port's menus list them in. The Mac's menus are laid out in main.mm, each
+// opening with what people click and keeping its keyboard commands in
+// submenus, so a row's `menu` names the Mac's top-level menu, and its own
+// submenu only where the row says one ("View > Folding").
 const std::vector<Command>& all();
 const Command* find(const std::string& id);
 const Command* findBySelector(const std::string& selector, int tag);

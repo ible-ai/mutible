@@ -361,7 +361,7 @@ const std::vector<Command>& all() {
         // the editor Cmd+D stays Add Next Occurrence.
         {"mutible.browser.saveBookmark", "Save Page as Bookmark", "File", "cmd+d", P,
          "saveBookmarkFromPage:", 0, 0,
-         "the browser pane (File > Save Page as Bookmark, saveBrowserBookmark:, from anywhere)"},
+         "the browser pane (File > Browser Bookmarks > Save Page as Bookmark, saveBrowserBookmark:, from anywhere)"},
         {"mutible.browser.saveAllTabs", "Save All Tabs as Bookmarks", "File", "", A,
          "saveBrowserTabsAsBookmarks:", 0, 0, nullptr},
         {"mutible.browser.openBookmarks", "Open All in Browser Tabs", "File", "", A,
@@ -688,7 +688,7 @@ const std::vector<Command>& all() {
         // keyboard: a page key, which only the pane answers, so the key goes
         // on to Go to Symbol in Workspace in a PDF too.
         {"mutible.browser.newTab", "New Browser Tab", "View", "cmd+t", P, "newBrowserTab:", 0,
-         0, "the browser pane (View > New Browser Tab, openBrowserTab:, opens one from anywhere)"},
+         0, "the browser pane (View > More > New Browser Tab, openBrowserTab:, opens one from anywhere)"},
         {"mutible.togglePlayback", "Play/Pause", "View", "shift+cmd+space", A,
          "togglePlayback:", 0, 0, nullptr},
         {"editor.action.showContextMenu", "Show Context Menu", "View",
