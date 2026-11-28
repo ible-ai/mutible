@@ -5606,17 +5606,57 @@ window's tabs as a local file deleted on disk does (HANDOFF 176).
   not on show, `hostChanged_` stays set and the next show asks, as the
   local path asks again); Reload reads through the host too
   (`reloadFromDisk`).
-- **The Mac needs** (not wired): in `mac/src/SessionLink.mm`'s `hearDisk`,
-  replace the empty document callback with one that tells the
-  `MCRemoteWorkspace` (`+Remote.mm`) which host document id and state came,
-  mapped to the tab; state 1 is a changed file (a clean tab reads it through
-  the host and follows it as one undoable step, one with edits asks Keep Mine
-  or Reload as the local `checkExternalChange` does); state 2 does what `remoteDeletePath:` does for one tab
-  (`t.gone`, `tabWentMissing:`), state 0 clears `gone` as `tabCameBack:`
-  does and has a clean tab read the file through the host (as the local
-  path reads it) or a tab with edits count against it. Only when
-  `client().hostTellsDocsGone()`.
+- **The Mac** (2026-11-28, HANDOFF 176 and 177). `SessionLink.mm`'s
+  `attachClient` gives a remote link's `hearDisk` a document callback that,
+  when `hostTellsDocsGone()`, finds the tab's `MCSessionDoc` by client and
+  id (`DocRegistry`, as DocDirty does) and calls its `hostDisk:`, which
+  defers a turn and asks the tab's owner `tab:diskFromHost:`
+  (`EditorController+Remote.mm`; `MCDiskFromHostNotices` counts them for
+  the checks). An older host sends nothing, so nothing changes there; a
+  local window's link hears no disk at all. 2: `markRemoteTabGone:` (the
+  tree's `remoteDeletePath:` uses it too): `gone`, unsaved when it is
+  loaded text, the strip and title redrawn. 0, only on a gone tab (the 0 a
+  window's own save could bring is nothing): `tabCameBack:`, then a read
+  through the host (`sessionRemoteTextOf:`): a clean tab takes it with
+  `takeDiskRead:intoCleanTab:` (one "Reload from Disk" step, the host told
+  it saved), one with edits is counted against it (`savedText`, `savedAs`)
+  without asking, as GTK's. 1 on a loaded text tab not gone: clean, read and
+  followed at once, on show or not (as `checkTabsOnDisk` follows a local
+  file); with edits, `t.hostChanged` is set and, when the tab is on show in
+  the key window, the question is asked on a later run-loop turn
+  (`performSelector:afterDelay:0`, not inside the GCD block, which would
+  hold the main queue and the link's dispatch while the alert is up), else
+  by `checkExternalChange`, whose remote branch is
+  `askAboutHostChangeOf:`, on the next show or focus: the host's text
+  equal to `savedText` is nothing (an own write, a change back), Keep Mine
+  takes the file's text as `savedText` and tells the host (`savedAs`, so
+  the host compares the next change with it), Reload is
+  `takeDiskText:forTab:` (history forgotten, as locally) and `savedAs`.
+  While `hostChanged` is set, Cmd+S and Save All ask Keep Mine, Reload or
+  Cancel (`remoteDiskDecisionForTab:`, from `diskDecisionForTab:`; Reload
+  reads through the host, `reloadTabFromDisk:`), and auto-save skips the
+  tab with the local note. A save (`tab:tookSaveOf:`) and any read
+  (`takeDiskRead:`, `takeDiskText:`) clear it.
+- **The host after a save that makes a gone file again** (2026-11-28):
+  DocSave and Save As call `Host::appSaved`: `appStamp` as before, and a
+  gone file made again clears `appToldGone` and tells the other app
+  windows with a seat 0 at once (`tellApp`'s `except`, the saver, which
+  knows from its save answer). Before, the flag stayed set until the next
+  look sent the 0, and a removal before that look (an `rm` right after a
+  save) was never told: the look saw it gone, as told.
 - **Checked.** Core `diskwatch:host` (an app's window that hears the disk:
   gone once, back once, a window without the document nothing, a file not
-  made yet no notice, the host's copy untouched); `remote_ssh` (a clean and a
-  typed tab, files unlinked on the stand-in's disk and written again).
+  made yet no notice, the host's copy untouched; gone, the window's save,
+  removed before the host looked: told again; no 0 after a save);
+  `remote_ssh` on GTK (a clean and a typed tab, files unlinked on the
+  stand-in's disk and written again). On the Mac, `remote_ssh` (files
+  changed on the stand-in's disk): a clean tab's file removed is marked
+  "(deleted)", stays open and unsaved, and Cmd+S writes it there with no
+  question; removed again and made with other text, the mark clears and
+  the tab reads it; rewritten in place, the clean tab follows, never
+  marked unsaved by the host, Undo ("Reload from Disk") gives the old text
+  back, unsaved, and Redo the new; a tab with typed text whose file is
+  rewritten asks "“mine.txt” changed on disk.", Keep Mine keeps the text
+  with the file's as its saved text, Cmd+S then writes without asking, and
+  that save brings no notice in the 3 s after it. Not run locally (another
+  agent had the screen); CI runs it.

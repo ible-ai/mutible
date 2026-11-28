@@ -195,7 +195,11 @@ found through that list.
   host's disk is watched too (HANDOFF 176, `DocDisk` 2 and 0, Welcome flag
   4096): a file deleted there by anything marks its tabs, and one changed there in
   place (`DocDisk` 1, the same flag) is followed by a clean tab and asked about by a
-  tab with edits, as `checkExternalChange` does locally. GTK does not
+  tab with edits, as `checkExternalChange` does locally, on both systems
+  (the Mac since 2026-11-28: `tab:diskFromHost:` in `+Remote.mm`, detail
+  in session-host.md, "A file gone on the host's disk"; a remote tab has no stamps, so its
+  `checkExternalChange`, `diskDecisionForTab:` and auto-save look at
+  `t.hostChanged`, set by the host's 1 under unsaved changes). GTK does not
   follow a rename by inode (the Mac's `renamedFileFor:`), and its Ctrl+S does
   not ask first on a gone file. **A clean tab follows the disk**: from FSEvents
   (`followCleanTabInBackground:`) the file is read and diffed off the main

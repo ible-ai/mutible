@@ -904,6 +904,21 @@ extern NSUInteger MCDirtyFromHostMarks;
 - (void)remoteMakePath:(NSString *)path folder:(BOOL)folder;
 // The host moved `t`'s file (DocDirty's "moved"): the tab follows.
 - (void)remoteTab:(MCTab *)t movedTo:(NSString *)path;
+// The host said `t`'s file went (2), came back (0) or changed in place (1)
+// on its disk (DocDisk, Welcome flag 4096): marked "(deleted)", the mark
+// cleared, or followed (a clean tab) or asked about (one with edits), as
+// a local tab is by its own disk checks.
+- (void)tab:(MCTab *)t diskFromHost:(int)disk;
+// How many of those notices the window's tabs took (checks: a save
+// through the host brings none).
+extern NSUInteger MCDiskFromHostNotices;
+// From checkExternalChange in a window over SSH (the tab shown, the window
+// key): Keep Mine or Reload, when the host said the file changed under the
+// tab's unsaved changes (t.hostChanged).
+- (void)askAboutHostChangeOf:(MCTab *)t;
+// The question before a save writes over a file changed on the host
+// (t.hostChanged): Keep Mine writes, Reload takes the host's text.
+- (MCDiskDecision)remoteDiskDecisionForTab:(MCTab *)t;
 @end
 
 // EditorController+RemoteViewers.mm: a window over SSH's files in the

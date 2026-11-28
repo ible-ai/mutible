@@ -1054,6 +1054,11 @@ static NSString *MCTabEncodingName(MCTab *t) {
         // A file on another machine (stage 8): its host writes it, and this
         // Mac's disk has nothing to say about it.
         if ([self sessionIsRemote]) {
+            // Changed there under its edits (the host said so): Cmd+S asks.
+            if (t.hostChanged) {
+                [changed addObject:t.currentPath.lastPathComponent ?: @"?"];
+                continue;
+            }
             [self writeTabForAutoSave:t];
             continue;
         }
@@ -1151,6 +1156,7 @@ static const unsigned long long kFollowLiveBytes = 8ull * 1024 * 1024;
     NSString *fresh = d.text;
     if (!fresh) return;   // gone, or not text now: the stamp stays, so it is looked at again
     t.diskReadGeneration++;   // any read still out is older than this
+    t.hostChanged = NO;
     t.bom = d.bom;
     t.encoding = d.encoding;
     if ([fresh isEqualToString:t.savedText ?: @""] && !t.gone) {   // touched, not changed
@@ -1234,7 +1240,13 @@ static const unsigned long long kFollowLiveBytes = 8ull * 1024 * 1024;
 }
 
 // Called when the window regains focus: reconcile with on-disk changes.
+// A window over SSH has no stamps: its host says what changed there
+// (+Remote's tab:diskFromHost:), and what waits for the tab is asked here.
 - (void)checkExternalChange {
+    if ([self sessionIsRemote]) {
+        [self askAboutHostChangeOf:_activeTab];
+        return;
+    }
     if (!self.currentPath || !self.fileModDate) return;
     MCTab *t = _activeTab;
     MCDiskStamp *disk = MCStampOfFile(self.currentPath);
@@ -1291,6 +1303,7 @@ static const unsigned long long kFollowLiveBytes = 8ull * 1024 * 1024;
 - (void)takeDiskText:(MCDiskText *)d forTab:(MCTab *)t {
     if (!t || !d.text) return;
     t.diskReadGeneration++;
+    t.hostChanged = NO;
     t.sourceText = d.text;
     t.savedText = d.text;
     t.bom = d.bom;
@@ -1395,11 +1408,18 @@ static const unsigned long long kFollowLiveBytes = 8ull * 1024 * 1024;
 }
 
 - (void)reloadTabFromDisk:(MCTab *)t {
+    if ([self sessionIsRemote]) {   // the host's file, read through it
+        MCDiskText *d = [self sessionRemoteTextOf:t];
+        [self takeDiskText:d forTab:t];
+        if (d.text) [self sessionTab:t savedAs:d.text];
+        return;
+    }
     [self takeDiskText:MCReadDiskText(t.currentPath, ULLONG_MAX) forTab:t];
 }
 
 // The question mayWriteTab: asks, without acting on the answer.
 - (MCDiskDecision)diskDecisionForTab:(MCTab *)t {
+    if ([self sessionIsRemote]) return [self remoteDiskDecisionForTab:t];
     if (!t.fileModDate) return MCDiskWrite;   // never on disk as far as we know
     MCDiskStamp *disk = MCStampOfFile(t.currentPath);
     if (disk && ![self tab:t changedOnDisk:disk] && !t.gone) return MCDiskWrite;

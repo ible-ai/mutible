@@ -55,6 +55,15 @@
 //     tab following, and no file URL of this Mac's is on the drag; Delete
 //     asks "Delete ... permanently?" (no Trash there: Cancel keeps it), then
 //     deletes, the tab staying, marked deleted.
+//   - Files changed on the stand-in's disk by something else (DocDisk,
+//     Welcome flag 4096): a clean tab's file unlinked is marked deleted,
+//     stays open and unsaved, and Cmd+S writes it there with no question;
+//     unlinked again and made with other text, the mark clears and the tab
+//     reads it; rewritten in place, the clean tab follows, never marked
+//     unsaved by the host, and one Undo ("Reload from Disk") gives the old
+//     text back; a tab with typed text whose file is rewritten asks, Keep
+//     Mine keeps its text against the file's, Cmd+S writes without asking,
+//     and that save brings no notice.
 //   - Cmd+P lists the host's files (the ignored one left out) and opens one;
 //     Find in Folder searches on the host and its rows open their files;
 //     Replace All replaces on the host: a closed file rewritten on disk, a
@@ -307,6 +316,7 @@ unsigned long long HostWaits(EditorController *c) {
     return ref.link ? (unsigned long long)ref.link->client().waits() : 0;
 }
 unsigned long long gWaitsBefore;
+NSUInteger gNoticesBefore;   // MCDiskFromHostNotices (or MCDirtyFromHostMarks) before a step's
 
 // How many times the stand-in refused to connect (gBlock there).
 NSUInteger RefusedTries() {
@@ -1033,6 +1043,106 @@ MC_GUI_SUITE(remote_ssh) {
         if (t) GCHECK([gC closeTab:t prompt:NO]);
         // The questions of these steps are this suite's own: the later steps
         // count from here.
+        gAlertsBefore = MCGuiAlertsShown().count;
+    });
+    // ---- files changed there by something else (DocDisk, Welcome flag 4096)
+    MCGuiStep(@"a clean tab's file removed there (rm): the tab stays, marked deleted", ^{
+        MCSessionLinkRef *ref = [gC sessionRemoteLink];
+        GCHECK(ref.link && ref.link->client().hostTellsDocsGone());
+        MCGuiWriteFile(Op(@"follow.txt"), @"one\n");
+        GCHECK([gC showFile:Op(@"follow.txt")]);
+        MCTab *t = TabFor(gC, Op(@"follow.txt"));
+        GCHECK(t != nil && !t.dirty && !t.gone);
+        GCHECK_EQ_STR(t.currentText, @"one\n");
+        unlink(Op(@"follow.txt").fileSystemRepresentation);
+    });
+    MCGuiWait(@"marked deleted by the host's notice", 15, ^BOOL { return TabFor(gC, Op(@"follow.txt")).gone; });
+    MCGuiStep(@"its text kept, unsaved, the title saying so; Cmd+S makes the file again", ^{
+        MCTab *t = TabFor(gC, Op(@"follow.txt"));
+        GCHECK(t != nil && [gC holdsTab:t] && t.dirty);
+        GCHECK_EQ_STR(t.currentText, @"one\n");
+        MCGuiNote(@"title: %@", gC.window.title);
+        GCHECK([gC.window.title containsString:@"follow.txt (deleted)"]);
+        gAlertsAt = MCGuiAlertsShown().count;
+        [gC saveCurrentFile:nil];
+    });
+    MCGuiWait(@"written there again by the host, the mark gone", 10, ^BOOL {
+        MCTab *t = TabFor(gC, Op(@"follow.txt"));
+        return [Read(Op(@"follow.txt")) isEqualToString:@"one\n"] && !t.dirty && !t.gone;
+    });
+    MCGuiStep(@"no question before that save; removed there again", ^{
+        GCHECK(AlertsSinceStep().count == 0);
+        unlink(Op(@"follow.txt").fileSystemRepresentation);
+    });
+    MCGuiWait(@"marked deleted again", 15, ^BOOL { return TabFor(gC, Op(@"follow.txt")).gone; });
+    MCGuiStep(@"made again there with other text", ^{ MCGuiWriteFile(Op(@"follow.txt"), @"one again\n"); });
+    MCGuiWait(@"the mark cleared, the clean tab reading the file through the host", 15, ^BOOL {
+        MCTab *t = TabFor(gC, Op(@"follow.txt"));
+        return !t.gone && !t.dirty && [t.currentText isEqualToString:@"one again\n"];
+    });
+    MCGuiStep(@"rewritten in place there", ^{
+        GCHECK([gC.window.title containsString:@"follow.txt — standin:"]);
+        gNoticesBefore = MCDirtyFromHostMarks;
+        MCGuiWriteFile(Op(@"follow.txt"), @"two\n");
+    });
+    MCGuiWait(@"the clean tab follows it, and the host has taken that", 15, ^BOOL {
+        MCTab *t = TabFor(gC, Op(@"follow.txt"));
+        return !t.dirty && [t.currentText isEqualToString:@"two\n"] && t.session && !t.session.savePending &&
+               !t.session.deferredEdits;
+    });
+    MCGuiStep(@"never marked unsaved; one Undo brings the old text back, Redo the host's", ^{
+        MCTab *t = TabFor(gC, Op(@"follow.txt"));
+        GCHECK(!t.dirty && MCDirtyFromHostMarks == gNoticesBefore);
+        GCHECK_EQ_STR(gC.currentPath, Op(@"follow.txt"));
+        NSUndoManager *u = ((NSTextView *)[gC valueForKey:@"textView"]).undoManager;
+        if (u.groupsByEvent && u.groupingLevel > 0) [u endUndoGrouping];
+        GCHECK_EQ_STR(u.undoActionName, @"Reload from Disk");
+        [u undo];
+        GCHECK_EQ_STR(t.currentText, @"one again\n");
+        GCHECK(t.dirty);   // differs from the file now
+        [u redo];
+        GCHECK_EQ_STR(t.currentText, @"two\n");
+        GCHECK(!t.dirty);
+        if (t) GCHECK([gC closeTab:t prompt:NO]);
+    });
+    MCGuiStep(@"a tab with unsaved text, its file rewritten there: asked, Keep Mine", ^{
+        MCGuiWriteFile(Op(@"mine.txt"), @"mine\n");
+        GCHECK([gC showFile:Op(@"mine.txt")]);
+        MCTab *t = TabFor(gC, Op(@"mine.txt"));
+        TypeAtEnd(gC, @"typed\n");
+        GCHECK(t.dirty);
+        MCGuiSetKeyWindow(gC.window);
+        gAlertsAt = MCGuiAlertsShown().count;
+        MCGuiAnswerAlerts(@[ @(NSAlertFirstButtonReturn) ]);   // Keep Mine
+        MCGuiWriteFile(Op(@"mine.txt"), @"theirs\n");
+    });
+    MCGuiWait(@"the question", 15, ^BOOL { return AlertsSinceStep().count > 0; });
+    MCGuiStep(@"its text kept, unsaved against the host's; Cmd+S writes it without asking", ^{
+        MCGuiNote(@"alerts: %@", AlertsSinceStep());
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"“mine.txt” changed on disk." ]]);
+        MCTab *t = TabFor(gC, Op(@"mine.txt"));
+        GCHECK_EQ_STR(t.currentText, @"mine\ntyped\n");
+        GCHECK_EQ_STR(t.savedText, @"theirs\n");
+        GCHECK(t.dirty && !t.hostChanged);
+        GCHECK_EQ_STR(Read(Op(@"mine.txt")), @"theirs\n");
+        [gC saveCurrentFile:nil];
+    });
+    MCGuiWait(@"saved there by the host", 10, ^BOOL {
+        return [Read(Op(@"mine.txt")) isEqualToString:@"mine\ntyped\n"] && !TabFor(gC, Op(@"mine.txt")).dirty;
+    });
+    MCGuiStep(@"(counting the host's notices from the save)", ^{ gNoticesBefore = MCDiskFromHostNotices; });
+    // A negative check: the host's disk watch reports within a second or
+    // two (the steps above), so nothing in this time is no notice at all.
+    MCGuiPause(3);
+    MCGuiStep(@"the save through the host brought no notice, no question and no reload", ^{
+        MCGuiNote(@"notices since the save: %lu", (unsigned long)(MCDiskFromHostNotices - gNoticesBefore));
+        GCHECK(MCDiskFromHostNotices == gNoticesBefore);
+        GCHECK([AlertsSinceStep() isEqualToArray:@[ @"“mine.txt” changed on disk." ]]);
+        MCTab *t = TabFor(gC, Op(@"mine.txt"));
+        GCHECK_EQ_STR(t.currentText, @"mine\ntyped\n");
+        GCHECK(!t.dirty);
+        MCGuiSetKeyWindow(nil);
+        if (t) GCHECK([gC closeTab:t prompt:NO]);
         gAlertsBefore = MCGuiAlertsShown().count;
     });
     // ---- Quick Open and Find in Folder on the host

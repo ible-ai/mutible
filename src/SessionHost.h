@@ -492,7 +492,12 @@ private:
     void dropEmptyPageDocs();
     void setDisk(DocId id, Doc& d, int disk);
     void lookAtAppDoc(DocId id, Doc& d);
-    void tellApp(DocId id, Doc& d, int flag);
+    // DocDisk `flag` to the app windows with a seat that hear the disk, all
+    // but `except` (a window whose own save says it already).
+    void tellApp(DocId id, Doc& d, int flag, ClientId except = 0);
+    // A window's save (DocSave, Save As) wrote `written`: a gone file is
+    // back, told to the other app windows now, not at the next look.
+    void appSaved(DocId id, Doc& d, ClientId saver, const FolderSearch::FileStamp& written);
 
     struct Term {
         // Renderers showing it: the pty is read while every one of them has
