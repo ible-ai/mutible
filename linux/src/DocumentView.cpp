@@ -564,6 +564,15 @@ bool Document::goneFromDisk() const {
     return diskStamp_.exists && !path_.empty() && stat(path_.c_str(), &st) != 0;
 }
 
+// Only text that is loaded has anything to save; a picture, a PDF, a diff or
+// a message is just marked (the Mac's remoteDeletePath: and tabWentMissing:).
+void Document::markGone() {
+    if (gone_ || kind_ == Kind::Diff || path_.empty()) return;
+    gone_ = true;
+    if (kind_ == Kind::Text && !loading() && !unread_) markDirty(true);
+    else host_->documentStateChanged(this);
+}
+
 bool Document::changedOnDisk() const {
     if (kind_ != Kind::Text || path_.empty() || remote()) return false;
     struct stat st;
@@ -622,6 +631,7 @@ void Document::rememberDisk(const std::string& content, const FolderSearch::File
     saved_ = content;
     savedChars_ = g_utf8_strlen(content.data(), (gssize)content.size());
     diskQuestion_ = false;
+    gone_ = false;   // read or written: the file is there
     diskStamp_ = DiskStamp();
     struct stat st;
     if (written && written->exists && !remote()) {
@@ -648,7 +658,7 @@ bool Document::matchesSaved() {
 void Document::checkDirty() {
     dirtyCheckPending_ = false;
     if (kind_ != Kind::Text) return;
-    markDirty(!matchesSaved());
+    markDirty(gone_ || !matchesSaved());
 }
 
 void Document::markDirty(bool d) {
@@ -1157,7 +1167,7 @@ void Document::takeHostDirty() {
     // Not an untitled buffer (the host has no path for it), a file never
     // read or gone, one still being read or not read yet.
     if (kind_ != Kind::Text || loading() || unread_ || path_.empty() || hostPath_ != path_ ||
-        !diskKnown_ || goneFromDisk())
+        !diskKnown_ || gone_ || goneFromDisk())
         return;
     markDirty(hostDirty_);
 }
@@ -1254,9 +1264,11 @@ void Document::onFileChanged(GFileMonitor*, GFile*, GFile*, GFileMonitorEvent ev
         case G_FILE_MONITOR_EVENT_CREATED:
         case G_FILE_MONITOR_EVENT_RENAMED:
         case G_FILE_MONITOR_EVENT_MOVED_IN:
-            break;
+        case G_FILE_MONITOR_EVENT_DELETED:
+        case G_FILE_MONITOR_EVENT_MOVED_OUT:
+            break;   // the last two: the tab stays, marked deleted (checkExternalChange)
         default:
-            return;   // attribute changes, and deletion (the buffer stays, as on the Mac)
+            return;   // attribute changes
     }
     if (self->checkTimer_) g_source_remove(self->checkTimer_);
     self->checkTimer_ = g_timeout_add(200, [](gpointer p) -> gboolean {
@@ -1269,11 +1281,23 @@ void Document::onFileChanged(GFileMonitor*, GFile*, GFile*, GFileMonitorEvent ev
 
 void Document::checkExternalChange() {
     if (kind_ != Kind::Text || path_.empty() || !diskKnown_ || remote()) return;
-    // Gone, unreadable, replaced by a pipe, grown past what the editor opens
-    // or no longer text: what is in the editor stays, as on the Mac.
+    // Gone: the tab stays, marked deleted and unsaved (tabWentMissing:). A
+    // file deleted and made again is read below, and the mark goes with the
+    // read (tabCameBack:). Unreadable, replaced by a pipe, grown past what
+    // the editor opens or no longer text: what is in the editor stays, as on
+    // the Mac.
     std::string content;
     FileEncoding encoding;
-    if (readText(path_, content, &encoding) != Read::Ok) return;
+    if (readText(path_, content, &encoding) != Read::Ok) {
+        struct stat st;
+        if (!gone_ && stat(path_.c_str(), &st) != 0 && (errno == ENOENT || errno == ENOTDIR))
+            markGone();
+        return;
+    }
+    if (gone_) {   // it came back: the buffer counts against what is there now
+        gone_ = false;
+        checkDirty();
+    }
     // Back from a backup made from an older version of the file: asked about
     // once, as a change seen now would be (askAboutDiskChange).
     if (diskQuestion_ && !dirty()) diskQuestion_ = false;

@@ -290,8 +290,13 @@ public:
     void pathMoved(const std::string& from, const std::string& to, bool onHost = false);
     // It went to the Trash: tabs of it, or under it, close, unless they hold
     // unsaved changes, which stay, so saving writes the file again (the
-    // Mac's rule).
+    // Mac's rule). Local only: the tree's Delete over SSH is pathDeleted.
     void pathTrashed(const std::string& path);
+    // The host deleted it (over SSH, which has no Trash): every tab of it or
+    // under it stays, in both groups, marked deleted (" (deleted)", Document::
+    // markGone); a loaded text tab counts as unsaved, so saving writes the
+    // file again (the Mac's remoteDeletePath:).
+    void pathDeleted(const std::string& path);
     TabStrip* strip() const { return strip_; }
 
     // ---- editor groups (PARITY.md 4.6, Groups.cpp): VS Code's Split

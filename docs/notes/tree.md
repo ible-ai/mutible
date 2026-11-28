@@ -507,7 +507,8 @@ found through that list.
   whose informative text is the host's sentence. A delete asks "Delete
   “x” permanently?" (the host has no Trash) and leaves the open tabs of
   what went, marked deleted and unsaved, where a local Move to Trash
-  closes the clean ones. A dragged row is an `NSPasteboardItem` of
+  closes the clean ones (GTK the same: `Editor::pathDeleted` over SSH,
+  `pathTrashed` for the local Trash). A dragged row is an `NSPasteboardItem` of
   `MCTreeRowPasteboardType` (never a file URL of this Mac's); only the
   tree's own rows drop (a Finder drag says it does not work over SSH).
   Without the host's flag 64 the items are disabled

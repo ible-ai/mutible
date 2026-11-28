@@ -657,7 +657,7 @@ void Persistence::autoSaveNow() {
         // Its Ctrl+S waits for the formatter, and saves when that is done.
         if (host_.saveWaits && host_.saveWaits(d)) continue;
         // Moved or deleted: not written again unasked.
-        if (d->goneFromDisk()) continue;
+        if (d->gone() || d->goneFromDisk()) continue;
         // Never on disk (a copy kept apart, an untitled buffer the host
         // held): the file is made only by Ctrl+S, as the Mac's untitled tabs.
         if (!d->diskStamp().exists && !existsNotFolder(d->path())) continue;

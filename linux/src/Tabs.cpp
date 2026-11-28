@@ -941,6 +941,19 @@ void Editor::pathMoved(const std::string& from, const std::string& to, bool onHo
     titleChanged();
 }
 
+// The host deleted a path (the tree's Delete over SSH): every tab of it or
+// under it, in both groups, stays and is marked deleted, a loaded text tab
+// unsaved too, so saving writes the file again (the Mac's remoteDeletePath:).
+void Editor::pathDeleted(const std::string& path) {
+    for (Document* d : documents())
+        if (isInside(d->path(), path)) d->markGone();
+    refreshStrip();
+    titleChanged();
+}
+
+// A path moved to the Trash on this machine: its tabs close, unless they hold
+// unsaved changes, which stay (the Mac's trashPath:). Not over SSH, where
+// the host has no Trash and the tabs stay marked (pathDeleted).
 void Editor::pathTrashed(const std::string& path) {
     const std::vector<Document*> all = documents();
     for (Document* d : all)
@@ -971,6 +984,7 @@ void Editor::refreshStrip() {
             it.hint = names[i].hint;
         }
         if (it.title.empty()) it.title = baseName(d->path());
+        if (d->gone()) it.title += " (deleted)";   // the Mac's strip
         it.tooltip = d->path().empty() ? it.title : d->path();
         it.dirty = d->dirty();
         it.preview = win_->isPreview(d->id());
