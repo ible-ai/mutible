@@ -1184,6 +1184,13 @@ static BOOL MCWindowTabAction(SEL a) {
 
 @end
 
+// Plain keys first: an item whose key is another's with Shift added comes
+// after that other in the menu bar (Toggle Sidebar's Cmd+B before Toggle
+// Browser's Shift+Cmd+B). A key press from the hardware matches either way,
+// but one made with keyEventWithType: (Browser's typeCommandKey, the GUI
+// checks' presses) is matched without its Shift, so the first item on the
+// letter takes it. The keymap suite holds the order.
+//
 // A submenu of `menu` under `title`, added at its end: where each menu keeps
 // the commands people reach by key rather than by click.
 static NSMenu *MCAddSubmenu(NSMenu *menu, NSString *title) {
@@ -1429,59 +1436,6 @@ static void BuildMenu(void) {
                         action:@selector(selectAll:) keyEquivalent:@"a"];
     [editMenu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *findInFolder =
-        [[NSMenuItem alloc] initWithTitle:@"Find in Folder…"
-                                   action:@selector(openSearch:) keyEquivalent:@"f"];
-    findInFolder.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [editMenu addItem:findInFolder];
-    // VS Code's Replace in Files is Shift+Cmd+H, which is the hints here.
-    NSMenuItem *replaceInFolder =
-        [[NSMenuItem alloc] initWithTitle:@"Replace in Folder…"
-                                   action:@selector(openReplaceInFolder:) keyEquivalent:@"f"];
-    replaceInFolder.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
-    [editMenu addItem:replaceInFolder];
-    // Shift+Cmd+D ("to do"): Shift+Cmd+L is VS Code's Select All
-    // Occurrences, and VS Code's Shift+Cmd+D opens its debugger, which
-    // mutible has no counterpart for.
-    NSMenuItem *todos =
-        [[NSMenuItem alloc] initWithTitle:@"TODOs in Folder…"
-                                   action:@selector(showTodos:) keyEquivalent:@"d"];
-    todos.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [editMenu addItem:todos];
-    [editMenu addItem:[NSMenuItem separatorItem]];
-
-    // VS Code's inline chat key. It works from every pane, and every window:
-    // what has the keyboard decides what the agent does (AgentPanel.h).
-    [editMenu addItemWithTitle:@"Inline Agent…"
-                        action:@selector(inlineAgent:) keyEquivalent:@"i"];
-    // Claude Code on a fresh worktree from a prompt (AgentTaskBar.h).
-    // Option+Shift+Cmd+A, beside the Agents panel's Shift+Cmd+A.
-    NSMenuItem *agentTask = [[NSMenuItem alloc] initWithTitle:@"New Agent Task…"
-                                                       action:@selector(newAgentTask:)
-                                                keyEquivalent:@"a"];
-    agentTask.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
-    [editMenu addItem:agentTask];
-    [editMenu addItem:[NSMenuItem separatorItem]];
-
-    [editMenu addItemWithTitle:@"Toggle Comment"
-                        action:@selector(toggleComment:) keyEquivalent:@"/"];
-    // VS Code's key on the Mac. It has no Command, so it is also a character
-    // (Ï on a US keyboard); the key monitor above lets it type that outside
-    // the editor. Nothing else here uses Option.
-    NSMenuItem *format = [[NSMenuItem alloc] initWithTitle:@"Format Document"
-                                                    action:@selector(formatDocument:)
-                                             keyEquivalent:@"f"];
-    format.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagShift;
-    [editMenu addItem:format];
-    // format.on-save on or off, checked while on (FormatOnSave.h). No key,
-    // as in VS Code.
-    [editMenu addItem:MCFormatOnSaveMenuItem()];
-    [editMenu addItem:[NSMenuItem separatorItem]];
-
     // Find and replace in the file, as the Mac's Edit > Find. The items send
     // performTextFinderAction: with the NSTextFinderAction value as the tag,
     // which the editor (its find bar, EditorFind.h), a terminal (find, next
@@ -1547,6 +1501,10 @@ static void BuildMenu(void) {
     NSMenu *cursorsMenu = MCAddSubmenu(editMenu, @"Cursors and Selection");
     [cursorsMenu addItemWithTitle:@"Add Next Occurrence"
                            action:@selector(addNextOccurrence:) keyEquivalent:@"d"];
+    // VS Code's Cmd+L, before Select All Occurrences' Shift+Cmd+L. Enabled
+    // while the editor's text view has the keyboard, as the items here.
+    [cursorsMenu addItemWithTitle:@"Select Line"
+                           action:@selector(expandLineSelection:) keyEquivalent:@"l"];
     NSMenuItem *allOccurrences =
         [[NSMenuItem alloc] initWithTitle:@"Select All Occurrences"
                                    action:@selector(selectAllOccurrences:) keyEquivalent:@"l"];
@@ -1567,10 +1525,60 @@ static void BuildMenu(void) {
                                               (unichar)NSDownArrowFunctionKey]];
     cursorBelow.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
     [cursorsMenu addItem:cursorBelow];
-    // VS Code's Cmd+L. Enabled while the editor's text view has the
-    // keyboard, as the items above.
-    [cursorsMenu addItemWithTitle:@"Select Line"
-                           action:@selector(expandLineSelection:) keyEquivalent:@"l"];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *findInFolder =
+        [[NSMenuItem alloc] initWithTitle:@"Find in Folder…"
+                                   action:@selector(openSearch:) keyEquivalent:@"f"];
+    findInFolder.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [editMenu addItem:findInFolder];
+    // VS Code's Replace in Files is Shift+Cmd+H, which is the hints here.
+    NSMenuItem *replaceInFolder =
+        [[NSMenuItem alloc] initWithTitle:@"Replace in Folder…"
+                                   action:@selector(openReplaceInFolder:) keyEquivalent:@"f"];
+    replaceInFolder.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
+    [editMenu addItem:replaceInFolder];
+    // Shift+Cmd+D ("to do"): Shift+Cmd+L is VS Code's Select All
+    // Occurrences, and VS Code's Shift+Cmd+D opens its debugger, which
+    // mutible has no counterpart for.
+    NSMenuItem *todos =
+        [[NSMenuItem alloc] initWithTitle:@"TODOs in Folder…"
+                                   action:@selector(showTodos:) keyEquivalent:@"d"];
+    todos.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [editMenu addItem:todos];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+
+    // VS Code's inline chat key. It works from every pane, and every window:
+    // what has the keyboard decides what the agent does (AgentPanel.h).
+    [editMenu addItemWithTitle:@"Inline Agent…"
+                        action:@selector(inlineAgent:) keyEquivalent:@"i"];
+    // Claude Code on a fresh worktree from a prompt (AgentTaskBar.h).
+    // Option+Shift+Cmd+A, beside the Agents panel's Shift+Cmd+A.
+    NSMenuItem *agentTask = [[NSMenuItem alloc] initWithTitle:@"New Agent Task…"
+                                                       action:@selector(newAgentTask:)
+                                                keyEquivalent:@"a"];
+    agentTask.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
+    [editMenu addItem:agentTask];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+
+    [editMenu addItemWithTitle:@"Toggle Comment"
+                        action:@selector(toggleComment:) keyEquivalent:@"/"];
+    // VS Code's key on the Mac. It has no Command, so it is also a character
+    // (Ï on a US keyboard); the key monitor above lets it type that outside
+    // the editor. Nothing else here uses Option.
+    NSMenuItem *format = [[NSMenuItem alloc] initWithTitle:@"Format Document"
+                                                    action:@selector(formatDocument:)
+                                             keyEquivalent:@"f"];
+    format.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagShift;
+    [editMenu addItem:format];
+    // format.on-save on or off, checked while on (FormatOnSave.h). No key,
+    // as in VS Code.
+    [editMenu addItem:MCFormatOnSaveMenuItem()];
+    [editMenu addItem:[NSMenuItem separatorItem]];
 
     // VS Code's Shift+Cmd+K with Control for Command, since Shift+Cmd+K is
     // Request a Change; VS Code's Indent Line and Outdent Line, and Insert
@@ -1687,10 +1695,16 @@ static void BuildMenu(void) {
     [viewMenu addItemWithTitle:@"Copy Session Browser Link"
                         action:@selector(copySessionBrowserLink:)
                  keyEquivalent:@""];
-    // Claude Code's /ide for each window (agent.ide-link; IdeLinkServer.h).
-    [viewMenu addItem:MCIdeLinkMenuItem()];
     [viewMenu addItem:[NSMenuItem separatorItem]];
 
+    // The window's panes: the sidebar first, so Cmd+B's item comes before
+    // Shift+Cmd+B's (see "Plain keys first" above BuildMenu).
+    NSMenuItem *sidebar =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Sidebar"
+                                   action:@selector(toggleSidebarVisibility:)
+                            keyEquivalent:@"b"];
+    sidebar.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    [viewMenu addItem:sidebar];
     // Terminal: Shift+Cmd+T in the menu, like the other pane toggles; Ctrl+`
     // also works, caught by the local key monitor above.
     NSMenuItem *term =
@@ -1727,15 +1741,8 @@ static void BuildMenu(void) {
     [viewMenu addItem:problems];
     [viewMenu addItem:[NSMenuItem separatorItem]];
 
-    // The sidebar, and what can take the file tree's place in it (the
-    // sidebar's row of icons).
-    NSMenuItem *sidebar =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Sidebar"
-                                   action:@selector(toggleSidebarVisibility:)
-                            keyEquivalent:@"b"];
-    sidebar.keyEquivalentModifierMask = NSEventModifierFlagCommand;
-    [viewMenu addItem:sidebar];
-    // Shift+Cmd+G, and Ctrl+Shift+G as in VS Code (on a hidden item the
+    // What can take the file tree's place in the sidebar (its row of
+    // icons). Shift+Cmd+G, and Ctrl+Shift+G as in VS Code (on a hidden item the
     // keymap adds); a find bar's field takes Shift+Cmd+G as Find Previous.
     NSMenuItem *git =
         [[NSMenuItem alloc] initWithTitle:@"Toggle Source Control"
@@ -1761,6 +1768,8 @@ static void BuildMenu(void) {
                             keyEquivalent:@"j"];
     processes.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
     [viewMenu addItem:processes];
+    // Claude Code's /ide for each window (agent.ide-link; IdeLinkServer.h).
+    [viewMenu addItem:MCIdeLinkMenuItem()];
     [viewMenu addItem:[NSMenuItem separatorItem]];
 
     // Shift+Cmd+V, VS Code's Markdown preview key (Shift+Cmd+P until 1.5.4).
@@ -2243,6 +2252,24 @@ static void BuildMenu(void) {
     forward.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagShift;
     [cursorMenu addItem:forward];
 
+    // The keyboard to a pane, by key.
+    NSMenu *focusMenu = MCAddSubmenu(navMenu, @"Focus");
+    [focusMenu addItemWithTitle:@"Focus File Tree"
+                         action:@selector(focusTree:)
+                  keyEquivalent:@"0"];
+    [focusMenu addItemWithTitle:@"Focus First Editor Group"
+                         action:@selector(focusFirstEditorGroup:)
+                  keyEquivalent:@"1"];
+    [focusMenu addItemWithTitle:@"Focus Second Editor Group"
+                         action:@selector(focusSecondEditorGroup:)
+                  keyEquivalent:@"2"];
+    [focusMenu addItemWithTitle:@"Focus Terminal"
+                         action:@selector(focusTerminal:)
+                  keyEquivalent:@""];
+    [focusMenu addItemWithTitle:@"Focus Browser"
+                         action:@selector(focusBrowser:)
+                  keyEquivalent:@"3"];
+
     // Tabs. Each action has a second key on a hidden item: Ctrl+Tab as in
     // VS Code and browsers, Shift+Cmd+] as in Safari and Terminal.
     NSMenu *goMenu = MCAddSubmenu(navMenu, @"Go to Tab");
@@ -2288,24 +2315,6 @@ static void BuildMenu(void) {
         b.allowsKeyEquivalentWhenHidden = YES;
         [goMenu addItem:b];
     }
-
-    // The keyboard to a pane, by key.
-    NSMenu *focusMenu = MCAddSubmenu(navMenu, @"Focus");
-    [focusMenu addItemWithTitle:@"Focus File Tree"
-                         action:@selector(focusTree:)
-                  keyEquivalent:@"0"];
-    [focusMenu addItemWithTitle:@"Focus First Editor Group"
-                         action:@selector(focusFirstEditorGroup:)
-                  keyEquivalent:@"1"];
-    [focusMenu addItemWithTitle:@"Focus Second Editor Group"
-                         action:@selector(focusSecondEditorGroup:)
-                  keyEquivalent:@"2"];
-    [focusMenu addItemWithTitle:@"Focus Terminal"
-                         action:@selector(focusTerminal:)
-                  keyEquivalent:@""];
-    [focusMenu addItemWithTitle:@"Focus Browser"
-                         action:@selector(focusBrowser:)
-                  keyEquivalent:@"3"];
 
     NSMenu *nextMenu = MCAddSubmenu(navMenu, @"Problems and Changes");
     // F8 and Shift+F8 as in VS Code: the next or previous problem in the

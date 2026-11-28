@@ -137,6 +137,16 @@ found through that list.
   registry's top-level menu. A check that looks for an item walks the
   submenus too (`MCGuiMenuItemWhere`, Harness.h), never only the top
   level of each menu.
+- **Trap (plain keys first, 2026-11-28)**: a key press made with
+  `keyEventWithType:` (the GUI checks' `MCGuiSendKeyToApp` and suites'
+  own, Browser's `typeCommandKey`) is matched by the main menu without its
+  Shift, so the first item on the letter takes it; a hardware press, or
+  one from `eventWithCGEvent:`, matches either way. The first reorder put
+  Toggle Browser (Shift+Cmd+B) above Toggle Sidebar, and zoomfit's Cmd+B
+  opened the browser. Every item whose key is another's with Shift added
+  comes after that other in the bar (Find… before Find in Folder…, Focus
+  before Go to Tab), which the keymap suite checks, but for five older
+  pairs no such press uses (Cmd+K, Cmd+P, Cmd+T, Option+Cmd+T, Ctrl+G).
 - `Keymap.mm` reads and watches the file and puts the keys on the menu items
   found by action and tag (the first on the item, others on hidden items beside
   it, `allowsKeyEquivalentWhenHidden`). Errors join the settings errors in the
@@ -308,6 +318,7 @@ Each trap's first sentence, in the order it appears above; the whole
 text is in place in its section.
 
 - Settings, themes and Adjust Settings: Trap: an NSTextView with `usesFontPanel` sets the shared NSColorPanel to the color under the caret when the selection moves, and the panel forwarded that to `colorPicked:`, so every pick became the text color; the editor sets `usesFontPanel = NO`.
+- Keys: the registry, keys.conf and the key monitor: **Trap (plain keys first)**: a key press made with `keyEventWithType:` is matched by the main menu without its Shift, so a plain key's item must come before its Shift variant's.
 - Keys: the registry, keys.conf and the key monitor: **Trap (1.5.0 and 1.5.1)**: Shift+Option+F typed Ï, because the "verified" check had sent the event to the menu directly.
 - Keys: the registry, keys.conf and the key monitor: **Trap** (the hints' search box on Linux): an input method types nothing for Alt+letter (`GDK_MODIFIER_INTENT_NO_TEXT_INPUT`), so a forwarded Alt+Z was lost.
 - Keys: the registry, keys.conf and the key monitor: **Trap** (the hints' keys on Linux): a monospace font gives a thin space a whole cell, so a key's spaces are drawn at half the keys' size.

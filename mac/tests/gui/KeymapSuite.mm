@@ -166,6 +166,60 @@ MC_GUI_SUITE(keymap) {
         for (NSMenuItem *top in NSApp.mainMenu.itemArray)
             walk(top.submenu, top.submenu.title.length ? top.submenu.title : @"mutible");
         walk = nil;
+        // Plain keys first (main.mm, above BuildMenu): a press made with
+        // keyEventWithType:, as Browser's typeCommandKey and these checks
+        // make them, is matched without its Shift, so Cmd+B ran Toggle
+        // Browser once Shift+Cmd+B's item came first. Each item whose key is
+        // another's with Shift added comes after that other, but for five
+        // pairs older than the order (2026-11-28) that no such press uses.
+        const NSEventModifierFlags kMods = NSEventModifierFlagCommand | NSEventModifierFlagShift |
+                                           NSEventModifierFlagOption | NSEventModifierFlagControl;
+        NSString *(^keyOf)(NSEventModifierFlags, NSString *) = ^(NSEventModifierFlags m, NSString *k) {
+            return [NSString stringWithFormat:@"%lu:%@", (unsigned long)(m & kMods), k];
+        };
+        const NSEventModifierFlags cmdOnly = NSEventModifierFlagCommand;
+        NSSet<NSString *> *older = [NSSet setWithArray:@[
+            keyOf(cmdOnly, @"k"), keyOf(cmdOnly, @"p"), keyOf(cmdOnly, @"t"),
+            keyOf(cmdOnly | NSEventModifierFlagOption, @"t"), keyOf(NSEventModifierFlagControl, @"g")]];
+        NSMutableArray<NSMenuItem *> *keyed = [NSMutableArray array];
+        __block void (^collect)(NSMenu *) = nil;
+        __block __weak void (^weakCollect)(NSMenu *) = nil;
+        weakCollect = collect = ^(NSMenu *menu) {
+            for (NSMenuItem *it in menu.itemArray) {
+                if (it.submenu) weakCollect(it.submenu);
+                if (!it.keyEquivalent.length || it.isAlternate || !it.action ||
+                    it.action == NSSelectorFromString(@"orderFrontCharacterPalette:") ||
+                    it.action == NSSelectorFromString(@"startDictation:"))
+                    continue;
+                [keyed addObject:it];
+            }
+        };
+        collect(NSApp.mainMenu);
+        collect = nil;
+        NSMutableDictionary<NSString *, NSNumber *> *firstAt = [NSMutableDictionary dictionary];
+        NSString *(^itemKey)(NSMenuItem *) = ^(NSMenuItem *it) {
+            NSEventModifierFlags m = it.keyEquivalentModifierMask & kMods;
+            NSString *k = it.keyEquivalent.lowercaseString;
+            if (![k isEqualToString:it.keyEquivalent]) m |= NSEventModifierFlagShift;
+            return keyOf(m, k);
+        };
+        for (NSUInteger i = 0; i < keyed.count; i++)
+            if (!firstAt[itemKey(keyed[i])]) firstAt[itemKey(keyed[i])] = @(i);
+        for (NSUInteger i = 0; i < keyed.count; i++) {
+            NSMenuItem *it = keyed[i];
+            NSEventModifierFlags m = it.keyEquivalentModifierMask & kMods;
+            NSString *k = it.keyEquivalent.lowercaseString;
+            if (![k isEqualToString:it.keyEquivalent]) m |= NSEventModifierFlagShift;
+            if (!(m & NSEventModifierFlagShift)) continue;
+            NSString *plain = keyOf(m & ~NSEventModifierFlagShift, k);
+            NSNumber *at = firstAt[plain];
+            if (!at || at.unsignedIntegerValue < i || [older containsObject:plain]) continue;
+            NSMenuItem *other = keyed[at.unsignedIntegerValue];
+            if (other.action == it.action) continue;   // one command's two keys
+            MCGuiNote(@"%@ (%@) comes before %@, whose key is its without Shift", it.title,
+                      itemKey(it), other.title);
+            GCHECK(at.unsignedIntegerValue < i);
+        }
         for (const Commands::Command &cmd : Commands::all()) {
             if (!cmd.selector || (cmd.flags & Commands::Fixed) || cmd.note) continue;
             std::string menu = cmd.menu;
