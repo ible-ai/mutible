@@ -1184,6 +1184,23 @@ static BOOL MCWindowTabAction(SEL a) {
 
 @end
 
+// Plain keys first: an item whose key is another's with Shift added comes
+// after that other in the menu bar (Toggle Sidebar's Cmd+B before Toggle
+// Browser's Shift+Cmd+B). A key press from the hardware matches either way,
+// but one made with keyEventWithType: (Browser's typeCommandKey, the GUI
+// checks' presses) is matched without its Shift, so the first item on the
+// letter takes it. The keymap suite holds the order.
+//
+// A submenu of `menu` under `title`, added at its end: where each menu keeps
+// the commands people reach by key rather than by click.
+static NSMenu *MCAddSubmenu(NSMenu *menu, NSString *title) {
+    NSMenu *sub = [[NSMenu alloc] initWithTitle:title];
+    NSMenuItem *item = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
+    item.submenu = sub;
+    [menu addItem:item];
+    return sub;
+}
+
 static void BuildMenu(void) {
     NSMenu *menubar = [[NSMenu alloc] init];
     [NSApp setMainMenu:menubar];
@@ -1245,7 +1262,10 @@ static void BuildMenu(void) {
                 keyEquivalent:@"q"];
     appItem.submenu = appMenu;
 
-    // File menu
+    // File menu. Each menu opens with what people click (opening, saving,
+    // closing, exporting); the commands people reach by key or from a right
+    // click are in submenus at its foot (2026-11-28, the owner's), every key
+    // kept: a menu key works from a submenu as from the top.
     NSMenuItem *fileItem = [[NSMenuItem alloc] init];
     [menubar addItem:fileItem];
     NSMenu *fileMenu = [[NSMenu alloc] initWithTitle:@"File"];
@@ -1276,6 +1296,7 @@ static void BuildMenu(void) {
                                                  keyEquivalent:@"r"];
     openRecent.keyEquivalentModifierMask = NSEventModifierFlagControl;
     [fileMenu addItem:openRecent];
+    [fileMenu addItem:[NSMenuItem separatorItem]];
     [fileMenu addItemWithTitle:@"Save"
                         action:@selector(saveCurrentFile:)
                  keyEquivalent:@"s"];
@@ -1287,70 +1308,6 @@ static void BuildMenu(void) {
                                               keyEquivalent:@"s"];
     saveAll.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
     [fileMenu addItem:saveAll];
-    NSMenuItem *exportPDF =
-        [[NSMenuItem alloc] initWithTitle:@"Export PDF…"
-                                   action:@selector(exportPDF:) keyEquivalent:@"s"];
-    exportPDF.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [fileMenu addItem:exportPDF];
-    // A Markdown file as a standalone page; VS Code has no export, so no key.
-    [fileMenu addItemWithTitle:@"Export as HTML…"
-                        action:@selector(exportMarkdownHtml:) keyEquivalent:@""];
-    [fileMenu addItem:[NSMenuItem separatorItem]];
-
-    // Web bookmarks (.url files in the bookmark folder). Cmd+D does the
-    // first while the browser has the keyboard (the pane's own
-    // saveBookmarkFromPage:, a page key), so the key stays the editor's Add
-    // Next Occurrence; the tree's folder item repeats its right click.
-    [fileMenu addItemWithTitle:@"Save Page as Bookmark"
-                        action:@selector(saveBrowserBookmark:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Save All Tabs as Bookmarks"
-                        action:@selector(saveBrowserTabsAsBookmarks:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Open All in Browser Tabs"
-                        action:@selector(openBookmarksInTabs:) keyEquivalent:@""];
-    [fileMenu addItem:[NSMenuItem separatorItem]];
-
-    // The file tree's commands, on its clicked or selected row (else the
-    // open folder), as in its right click menu. Their keys (Shift+Cmd+N,
-    // F2, Cmd+Delete) are the tree's alone, so none sits on its item.
-    [fileMenu addItemWithTitle:@"New Folder…"
-                        action:@selector(newFolder:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Rename…"
-                        action:@selector(renameSelected:) keyEquivalent:@""];
-    // No key equivalent: a menu key works from every pane, and Cmd+Delete
-    // in the editor or a text field deletes to the start of the line. The
-    // file tree takes Cmd+Delete itself (ClickOutline keyDown:).
-    [fileMenu addItemWithTitle:@"Move to Trash"
-                        action:@selector(deleteSelected:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Reveal in Finder"
-                        action:@selector(revealInFinder:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Copy Path"
-                        action:@selector(copyPath:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Copy Relative Path"
-                        action:@selector(copyRelativePath:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Refresh File Tree"
-                        action:@selector(refreshTree:) keyEquivalent:@"r"];
-    // The tree rooted at one folder or several, and back
-    // (EditorController+TreeFocus.mm).
-    [fileMenu addItemWithTitle:@"Focus on Folder"
-                        action:@selector(focusOnFolder:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Add to Focus"
-                        action:@selector(addFolderToFocus:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Add Folder to Focus…"
-                        action:@selector(chooseFolderToAddToFocus:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Show Whole Folder in Tree"
-                        action:@selector(showWholeFolderInTree:) keyEquivalent:@""];
-    [fileMenu addItem:[NSMenuItem separatorItem]];
-
-    // A tab's right click menu, for the tab on show (VS Code's names).
-    [fileMenu addItemWithTitle:@"Copy Path of Active File"
-                        action:@selector(copyActiveFilePath:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Copy Relative Path of Active File"
-                        action:@selector(copyActiveFileRelativePath:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Reveal Active File in Finder"
-                        action:@selector(revealActiveFileInFinder:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Reveal Active File in File Tree"
-                        action:@selector(revealActiveFileInTree:) keyEquivalent:@""];
     [fileMenu addItem:[NSMenuItem separatorItem]];
 
     // Cmd+W closes what has the keyboard: the tab on show, or the terminal
@@ -1365,20 +1322,6 @@ static void BuildMenu(void) {
     reopen.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
     [fileMenu addItem:reopen];
-    NSMenuItem *closeOthers = [[NSMenuItem alloc] initWithTitle:@"Close Other Tabs"
-                                                         action:@selector(closeOtherTabs:)
-                                                  keyEquivalent:@"t"];
-    closeOthers.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [fileMenu addItem:closeOthers];
-    [fileMenu addItemWithTitle:@"Close Tabs to the Right"
-                        action:@selector(closeTabsToTheRight:) keyEquivalent:@""];
-    [fileMenu addItemWithTitle:@"Close All Tabs"
-                        action:@selector(closeAllTabs:) keyEquivalent:@""];
-    // The preview tab (its title in italics) as an ordinary one, as VS
-    // Code's Keep Editor; its key there is a Cmd+K chord, none here.
-    [fileMenu addItemWithTitle:@"Keep Open"
-                        action:@selector(keepActiveTabOpen:) keyEquivalent:@""];
-
     // Cmd+Shift+W closes the whole window, asking about unsaved tabs first.
     NSMenuItem *closeWindow =
         [[NSMenuItem alloc] initWithTitle:@"Close Window"
@@ -1387,10 +1330,95 @@ static void BuildMenu(void) {
     closeWindow.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
     [fileMenu addItem:closeWindow];
+    [fileMenu addItem:[NSMenuItem separatorItem]];
+
+    NSMenuItem *exportPDF =
+        [[NSMenuItem alloc] initWithTitle:@"Export PDF…"
+                                   action:@selector(exportPDF:) keyEquivalent:@"s"];
+    exportPDF.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [fileMenu addItem:exportPDF];
+    // A Markdown file as a standalone page; VS Code has no export, so no key.
+    [fileMenu addItemWithTitle:@"Export as HTML…"
+                        action:@selector(exportMarkdownHtml:) keyEquivalent:@""];
+    [fileMenu addItem:[NSMenuItem separatorItem]];
+
+    // The rest of the tab's right click menu, for the tab on show.
+    NSMenu *tabsMenu = MCAddSubmenu(fileMenu, @"Tabs");
+    NSMenuItem *closeOthers = [[NSMenuItem alloc] initWithTitle:@"Close Other Tabs"
+                                                         action:@selector(closeOtherTabs:)
+                                                  keyEquivalent:@"t"];
+    closeOthers.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [tabsMenu addItem:closeOthers];
+    [tabsMenu addItemWithTitle:@"Close Tabs to the Right"
+                        action:@selector(closeTabsToTheRight:) keyEquivalent:@""];
+    [tabsMenu addItemWithTitle:@"Close All Tabs"
+                        action:@selector(closeAllTabs:) keyEquivalent:@""];
+    // The preview tab (its title in italics) as an ordinary one, as VS
+    // Code's Keep Editor; its key there is a Cmd+K chord, none here.
+    [tabsMenu addItemWithTitle:@"Keep Open"
+                        action:@selector(keepActiveTabOpen:) keyEquivalent:@""];
+    [tabsMenu addItem:[NSMenuItem separatorItem]];
+    // A tab's right click menu, for the tab on show (VS Code's names).
+    [tabsMenu addItemWithTitle:@"Copy Path of Active File"
+                        action:@selector(copyActiveFilePath:) keyEquivalent:@""];
+    [tabsMenu addItemWithTitle:@"Copy Relative Path of Active File"
+                        action:@selector(copyActiveFileRelativePath:) keyEquivalent:@""];
+    [tabsMenu addItemWithTitle:@"Reveal Active File in Finder"
+                        action:@selector(revealActiveFileInFinder:) keyEquivalent:@""];
+    [tabsMenu addItemWithTitle:@"Reveal Active File in File Tree"
+                        action:@selector(revealActiveFileInTree:) keyEquivalent:@""];
+
+    // The file tree's commands, on its clicked or selected row (else the
+    // open folder), as in its right click menu. Their keys (Shift+Cmd+N,
+    // F2, Cmd+Delete) are the tree's alone, so none sits on its item.
+    NSMenu *treeMenu = MCAddSubmenu(fileMenu, @"File Tree");
+    [treeMenu addItemWithTitle:@"New Folder…"
+                        action:@selector(newFolder:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Rename…"
+                        action:@selector(renameSelected:) keyEquivalent:@""];
+    // No key equivalent: a menu key works from every pane, and Cmd+Delete
+    // in the editor or a text field deletes to the start of the line. The
+    // file tree takes Cmd+Delete itself (ClickOutline keyDown:).
+    [treeMenu addItemWithTitle:@"Move to Trash"
+                        action:@selector(deleteSelected:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Reveal in Finder"
+                        action:@selector(revealInFinder:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Copy Path"
+                        action:@selector(copyPath:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Copy Relative Path"
+                        action:@selector(copyRelativePath:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Refresh File Tree"
+                        action:@selector(refreshTree:) keyEquivalent:@"r"];
+    [treeMenu addItem:[NSMenuItem separatorItem]];
+    // The tree rooted at one folder or several, and back
+    // (EditorController+TreeFocus.mm).
+    [treeMenu addItemWithTitle:@"Focus on Folder"
+                        action:@selector(focusOnFolder:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Add to Focus"
+                        action:@selector(addFolderToFocus:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Add Folder to Focus…"
+                        action:@selector(chooseFolderToAddToFocus:) keyEquivalent:@""];
+    [treeMenu addItemWithTitle:@"Show Whole Folder in Tree"
+                        action:@selector(showWholeFolderInTree:) keyEquivalent:@""];
+
+    // Web bookmarks (.url files in the bookmark folder). Cmd+D does the
+    // first while the browser has the keyboard (the pane's own
+    // saveBookmarkFromPage:, a page key), so the key stays the editor's Add
+    // Next Occurrence; the tree's folder item repeats its right click.
+    NSMenu *webMarks = MCAddSubmenu(fileMenu, @"Browser Bookmarks");
+    [webMarks addItemWithTitle:@"Save Page as Bookmark"
+                        action:@selector(saveBrowserBookmark:) keyEquivalent:@""];
+    [webMarks addItemWithTitle:@"Save All Tabs as Bookmarks"
+                        action:@selector(saveBrowserTabsAsBookmarks:) keyEquivalent:@""];
+    [webMarks addItemWithTitle:@"Open All in Browser Tabs"
+                        action:@selector(openBookmarksInTabs:) keyEquivalent:@""];
 
     fileItem.submenu = fileMenu;
 
-    // Edit menu (gives Copy/Select-All to the text view for free)
+    // Edit menu (gives Copy/Select-All to the text view for free): the
+    // clipboard, the folder's searches, the agents and formatting first;
+    // the editor's keyboard commands in submenus at its foot.
     NSMenuItem *editItem = [[NSMenuItem alloc] init];
     [menubar addItem:editItem];
     NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
@@ -1406,178 +1434,51 @@ static void BuildMenu(void) {
     [editMenu addItemWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
     [editMenu addItemWithTitle:@"Select All"
                         action:@selector(selectAll:) keyEquivalent:@"a"];
-    // VS Code's multi-cursor keys on the Mac, answered by the editor's text
-    // view (CodeTextView) through the responder chain, so they are enabled
-    // only while it has the keyboard.
-    [editMenu addItemWithTitle:@"Add Next Occurrence"
-                        action:@selector(addNextOccurrence:) keyEquivalent:@"d"];
-    NSMenuItem *allOccurrences =
-        [[NSMenuItem alloc] initWithTitle:@"Select All Occurrences"
-                                   action:@selector(selectAllOccurrences:) keyEquivalent:@"l"];
-    allOccurrences.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [editMenu addItem:allOccurrences];
-    NSMenuItem *cursorAbove =
-        [[NSMenuItem alloc] initWithTitle:@"Add Cursor Above"
-                                   action:@selector(addCursorAbove:)
-                            keyEquivalent:[NSString stringWithFormat:@"%C",
-                                              (unichar)NSUpArrowFunctionKey]];
-    cursorAbove.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [editMenu addItem:cursorAbove];
-    NSMenuItem *cursorBelow =
-        [[NSMenuItem alloc] initWithTitle:@"Add Cursor Below"
-                                   action:@selector(addCursorBelow:)
-                            keyEquivalent:[NSString stringWithFormat:@"%C",
-                                              (unichar)NSDownArrowFunctionKey]];
-    cursorBelow.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [editMenu addItem:cursorBelow];
-    // VS Code's Cmd+L, and its Shift+Cmd+K with Control for Command, since
-    // Shift+Cmd+K is Request a Change. Enabled while the editor's text view
-    // has the keyboard, as the items above.
-    [editMenu addItemWithTitle:@"Select Line"
-                        action:@selector(expandLineSelection:) keyEquivalent:@"l"];
-    NSMenuItem *deleteLine =
-        [[NSMenuItem alloc] initWithTitle:@"Delete Line"
-                                   action:@selector(deleteLine:) keyEquivalent:@"k"];
-    deleteLine.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagShift;
-    [editMenu addItem:deleteLine];
-    // VS Code's Indent Line and Outdent Line, and Insert Line Below (its
-    // Insert Line Above, Shift+Cmd+Return, is Run File here).
-    [editMenu addItemWithTitle:@"Indent Lines" action:@selector(indentLines:) keyEquivalent:@"]"];
-    [editMenu addItemWithTitle:@"Outdent Lines" action:@selector(outdentLines:) keyEquivalent:@"["];
-    [editMenu addItemWithTitle:@"Insert Line Below"
-                        action:@selector(insertLineBelow:) keyEquivalent:@"\r"];
-    [editMenu addItemWithTitle:@"Insert Line Above"
-                        action:@selector(insertLineAbove:) keyEquivalent:@""];
-    [editMenu addItem:[NSMenuItem separatorItem]];
-    // VS Code's inline chat key. It works from every pane, and every window:
-    // what has the keyboard decides what the agent does (AgentPanel.h).
-    [editMenu addItemWithTitle:@"Inline Agent…"
-                        action:@selector(inlineAgent:) keyEquivalent:@"i"];
-    // Claude Code on a fresh worktree from a prompt (AgentTaskBar.h).
-    // Option+Shift+Cmd+A, beside the Agents panel's Shift+Cmd+A.
-    NSMenuItem *agentTask = [[NSMenuItem alloc] initWithTitle:@"New Agent Task…"
-                                                       action:@selector(newAgentTask:)
-                                                keyEquivalent:@"a"];
-    agentTask.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
-    [editMenu addItem:agentTask];
-    [editMenu addItem:[NSMenuItem separatorItem]];
-    [editMenu addItemWithTitle:@"Toggle Comment"
-                        action:@selector(toggleComment:) keyEquivalent:@"/"];
-    // Option+Cmd+L: Cmd+L went to Select Line, VS Code's.
-    NSMenuItem *task = [[NSMenuItem alloc] initWithTitle:@"Toggle Task"
-                                                  action:@selector(toggleTask:)
-                                           keyEquivalent:@"l"];
-    task.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [editMenu addItem:task];
-    // In Markdown. No keys: markdown-all-in-one's Cmd+B and Cmd+I are the
-    // sidebar and the inline agent here, as in VS Code itself.
-    [editMenu addItemWithTitle:@"Toggle Bold" action:@selector(toggleBold:) keyEquivalent:@""];
-    [editMenu addItemWithTitle:@"Toggle Italic" action:@selector(toggleItalic:) keyEquivalent:@""];
-    // VS Code's key on the Mac. It has no Command, so it is also a character
-    // (Ï on a US keyboard); the key monitor above lets it type that outside
-    // the editor. Nothing else here uses Option.
-    NSMenuItem *format = [[NSMenuItem alloc] initWithTitle:@"Format Document"
-                                                    action:@selector(formatDocument:)
-                                             keyEquivalent:@"f"];
-    format.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagShift;
-    [editMenu addItem:format];
-    // format.on-save on or off, checked while on (FormatOnSave.h). No key,
-    // as in VS Code.
-    [editMenu addItem:MCFormatOnSaveMenuItem()];
-    // F9 as in Sublime Text (fn+F9 on a laptop keyboard): the selected
-    // lines, or the keep-sorted block around the caret.
-    NSString *f9 = [NSString stringWithFormat:@"%C", (unichar)NSF9FunctionKey];
-    NSMenuItem *sortLines = [[NSMenuItem alloc] initWithTitle:@"Sort Lines"
-                                                       action:@selector(sortLines:)
-                                                keyEquivalent:f9];
-    sortLines.keyEquivalentModifierMask = 0;
-    [editMenu addItem:sortLines];
-    NSMenuItem *fixSorted = [[NSMenuItem alloc] initWithTitle:@"Sort keep-sorted Blocks"
-                                                       action:@selector(fixKeepSorted:)
-                                                keyEquivalent:f9];
-    fixSorted.keyEquivalentModifierMask = NSEventModifierFlagShift;
-    [editMenu addItem:fixSorted];
-    // Language server completion. Ctrl+Space is also the system shortcut for
-    // switching input sources when more than one is enabled; Option+Esc
-    // (the text view's complete:) reaches the same list either way.
-    NSMenuItem *complete =
-        [[NSMenuItem alloc] initWithTitle:@"Complete"
-                                   action:@selector(triggerCompletion:)
-                            keyEquivalent:@" "];
-    complete.keyEquivalentModifierMask = NSEventModifierFlagControl;
-    [editMenu addItem:complete];
-    // Option+Cmd+I: Cmd+I is VS Code's inline chat key, and the agent's here.
-    NSMenuItem *hover = [[NSMenuItem alloc] initWithTitle:@"Show Hover Info"
-                                                   action:@selector(showHoverInfo:)
-                                            keyEquivalent:@"i"];
-    hover.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [editMenu addItem:hover];
-    // VS Code's keys: F2 (fn+F2 on a laptop) renames the name at the cursor,
-    // or in the file tree the selected file; Cmd+. lists the quick fixes.
-    // Both are also caught by the key monitor above, so the editor gets
-    // them first and Cmd+. stays cancel everywhere else.
-    NSMenuItem *renameSymbol =
-        [[NSMenuItem alloc] initWithTitle:@"Rename Symbol…"
-                                   action:@selector(renameSymbol:)
-                            keyEquivalent:[NSString stringWithFormat:@"%C",
-                                              (unichar)NSF2FunctionKey]];
-    renameSymbol.keyEquivalentModifierMask = 0;
-    [editMenu addItem:renameSymbol];
-    [editMenu addItemWithTitle:@"Quick Fix…"
-                        action:@selector(showQuickFixes:) keyEquivalent:@"."];
-    // VS Code's key. Like Format Document it has no Command, so it is also
-    // a character (Ø on a US keyboard), which the key monitor above lets it
-    // type outside the editor.
-    NSMenuItem *organize = [[NSMenuItem alloc] initWithTitle:@"Organize Imports"
-                                                      action:@selector(organizeImports:)
-                                               keyEquivalent:@"o"];
-    organize.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagShift;
-    [editMenu addItem:organize];
     [editMenu addItem:[NSMenuItem separatorItem]];
 
-    // Find and replace. The items send performTextFinderAction: with the
-    // NSTextFinderAction value as the tag, which the editor (its find bar,
-    // EditorFind.h), a terminal (find, next and previous) and the diff view
-    // (NSTextFinder) each answer. VS Code's keys, except Replace's
-    // Shift+Cmd+1, which is Go to Tab 1 here and Replace only while the
-    // find bar has the keyboard (the bar takes it first).
-    NSMenuItem *find = [editMenu addItemWithTitle:@"Find…"
+    // Find and replace in the file, as the Mac's Edit > Find. The items send
+    // performTextFinderAction: with the NSTextFinderAction value as the tag,
+    // which the editor (its find bar, EditorFind.h), a terminal (find, next
+    // and previous) and the diff view (NSTextFinder) each answer. VS Code's
+    // keys, except Replace's Shift+Cmd+1, which is Go to Tab 1 here and
+    // Replace only while the find bar has the keyboard (the bar takes it
+    // first).
+    NSMenu *findMenu = MCAddSubmenu(editMenu, @"Find");
+    NSMenuItem *find = [findMenu addItemWithTitle:@"Find…"
                                            action:@selector(performTextFinderAction:)
                                     keyEquivalent:@"f"];
     find.tag = NSTextFinderActionShowFindInterface;
-    NSMenuItem *replace = [editMenu addItemWithTitle:@"Replace…"
+    NSMenuItem *replace = [findMenu addItemWithTitle:@"Replace…"
                                               action:@selector(performTextFinderAction:)
                                        keyEquivalent:@"f"];
     replace.tag = NSTextFinderActionShowReplaceInterface;
     replace.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    NSMenuItem *findNext = [editMenu addItemWithTitle:@"Find Next"
+    NSMenuItem *findNext = [findMenu addItemWithTitle:@"Find Next"
                                                action:@selector(performTextFinderAction:)
                                         keyEquivalent:@"g"];
     findNext.tag = NSTextFinderActionNextMatch;
-    NSMenuItem *findPrev = [editMenu addItemWithTitle:@"Find Previous"
+    NSMenuItem *findPrev = [findMenu addItemWithTitle:@"Find Previous"
                                                action:@selector(performTextFinderAction:)
                                         keyEquivalent:@""];
     // Its Shift+Cmd+G is a find bar's own (Commands.cpp): as a menu key it
     // would take Toggle Source Control's from every pane.
     findPrev.tag = NSTextFinderActionPreviousMatch;
-    NSMenuItem *useSelection = [editMenu addItemWithTitle:@"Use Selection for Find"
+    NSMenuItem *useSelection = [findMenu addItemWithTitle:@"Use Selection for Find"
                                                    action:@selector(performTextFinderAction:)
                                             keyEquivalent:@"e"];
     useSelection.tag = NSTextFinderActionSetSearchString;
-    NSMenuItem *replaceOne = [editMenu addItemWithTitle:@"Replace"
+    NSMenuItem *replaceOne = [findMenu addItemWithTitle:@"Replace"
                                                  action:@selector(performTextFinderAction:)
                                           keyEquivalent:@""];
     replaceOne.tag = NSTextFinderActionReplaceAndFind;
-    NSMenuItem *replaceAll = [editMenu addItemWithTitle:@"Replace All"
+    NSMenuItem *replaceAll = [findMenu addItemWithTitle:@"Replace All"
                                                  action:@selector(performTextFinderAction:)
                                           keyEquivalent:@"\r"];
     replaceAll.tag = NSTextFinderActionReplaceAll;
     replaceAll.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
     // The editor's find bar and Find in Folder each answer these for
     // themselves (EditorController and SearchPanel, as window delegates).
-    NSMenu *findOptions = [[NSMenu alloc] initWithTitle:@"Find Options"];
+    NSMenu *findOptions = MCAddSubmenu(editMenu, @"Find Options");
     // Find in Selection has no key here: VS Code's Option+Cmd+L is Toggle
     // Task's, so the find bar takes it only while one of its fields has the
     // keyboard.
@@ -1593,10 +1494,39 @@ static void BuildMenu(void) {
         if (optionKeys[i].length)
             it.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
     }
-    NSMenuItem *findOptionsItem = [[NSMenuItem alloc] initWithTitle:@"Find Options"
-                                                              action:nil keyEquivalent:@""];
-    findOptionsItem.submenu = findOptions;
-    [editMenu addItem:findOptionsItem];
+
+    // VS Code's multi-cursor keys on the Mac, answered by the editor's text
+    // view (CodeTextView) through the responder chain, so they are enabled
+    // only while it has the keyboard.
+    NSMenu *cursorsMenu = MCAddSubmenu(editMenu, @"Cursors and Selection");
+    [cursorsMenu addItemWithTitle:@"Add Next Occurrence"
+                           action:@selector(addNextOccurrence:) keyEquivalent:@"d"];
+    // VS Code's Cmd+L, before Select All Occurrences' Shift+Cmd+L. Enabled
+    // while the editor's text view has the keyboard, as the items here.
+    [cursorsMenu addItemWithTitle:@"Select Line"
+                           action:@selector(expandLineSelection:) keyEquivalent:@"l"];
+    NSMenuItem *allOccurrences =
+        [[NSMenuItem alloc] initWithTitle:@"Select All Occurrences"
+                                   action:@selector(selectAllOccurrences:) keyEquivalent:@"l"];
+    allOccurrences.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [cursorsMenu addItem:allOccurrences];
+    NSMenuItem *cursorAbove =
+        [[NSMenuItem alloc] initWithTitle:@"Add Cursor Above"
+                                   action:@selector(addCursorAbove:)
+                            keyEquivalent:[NSString stringWithFormat:@"%C",
+                                              (unichar)NSUpArrowFunctionKey]];
+    cursorAbove.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [cursorsMenu addItem:cursorAbove];
+    NSMenuItem *cursorBelow =
+        [[NSMenuItem alloc] initWithTitle:@"Add Cursor Below"
+                                   action:@selector(addCursorBelow:)
+                            keyEquivalent:[NSString stringWithFormat:@"%C",
+                                              (unichar)NSDownArrowFunctionKey]];
+    cursorBelow.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [cursorsMenu addItem:cursorBelow];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+
     NSMenuItem *findInFolder =
         [[NSMenuItem alloc] initWithTitle:@"Find in Folder…"
                                    action:@selector(openSearch:) keyEquivalent:@"f"];
@@ -1619,9 +1549,124 @@ static void BuildMenu(void) {
     todos.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
     [editMenu addItem:todos];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+
+    // VS Code's inline chat key. It works from every pane, and every window:
+    // what has the keyboard decides what the agent does (AgentPanel.h).
+    [editMenu addItemWithTitle:@"Inline Agent…"
+                        action:@selector(inlineAgent:) keyEquivalent:@"i"];
+    // Claude Code on a fresh worktree from a prompt (AgentTaskBar.h).
+    // Option+Shift+Cmd+A, beside the Agents panel's Shift+Cmd+A.
+    NSMenuItem *agentTask = [[NSMenuItem alloc] initWithTitle:@"New Agent Task…"
+                                                       action:@selector(newAgentTask:)
+                                                keyEquivalent:@"a"];
+    agentTask.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift | NSEventModifierFlagOption;
+    [editMenu addItem:agentTask];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+
+    [editMenu addItemWithTitle:@"Toggle Comment"
+                        action:@selector(toggleComment:) keyEquivalent:@"/"];
+    // VS Code's key on the Mac. It has no Command, so it is also a character
+    // (Ï on a US keyboard); the key monitor above lets it type that outside
+    // the editor. Nothing else here uses Option.
+    NSMenuItem *format = [[NSMenuItem alloc] initWithTitle:@"Format Document"
+                                                    action:@selector(formatDocument:)
+                                             keyEquivalent:@"f"];
+    format.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagShift;
+    [editMenu addItem:format];
+    // format.on-save on or off, checked while on (FormatOnSave.h). No key,
+    // as in VS Code.
+    [editMenu addItem:MCFormatOnSaveMenuItem()];
+    [editMenu addItem:[NSMenuItem separatorItem]];
+
+    // VS Code's Shift+Cmd+K with Control for Command, since Shift+Cmd+K is
+    // Request a Change; VS Code's Indent Line and Outdent Line, and Insert
+    // Line Below (its Insert Line Above, Shift+Cmd+Return, is Run File here).
+    NSMenu *linesMenu = MCAddSubmenu(editMenu, @"Lines");
+    NSMenuItem *deleteLine =
+        [[NSMenuItem alloc] initWithTitle:@"Delete Line"
+                                   action:@selector(deleteLine:) keyEquivalent:@"k"];
+    deleteLine.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagShift;
+    [linesMenu addItem:deleteLine];
+    [linesMenu addItemWithTitle:@"Indent Lines" action:@selector(indentLines:) keyEquivalent:@"]"];
+    [linesMenu addItemWithTitle:@"Outdent Lines" action:@selector(outdentLines:) keyEquivalent:@"["];
+    [linesMenu addItemWithTitle:@"Insert Line Below"
+                         action:@selector(insertLineBelow:) keyEquivalent:@"\r"];
+    [linesMenu addItemWithTitle:@"Insert Line Above"
+                         action:@selector(insertLineAbove:) keyEquivalent:@""];
+    [linesMenu addItem:[NSMenuItem separatorItem]];
+    // F9 as in Sublime Text (fn+F9 on a laptop keyboard): the selected
+    // lines, or the keep-sorted block around the caret.
+    NSString *f9 = [NSString stringWithFormat:@"%C", (unichar)NSF9FunctionKey];
+    NSMenuItem *sortLines = [[NSMenuItem alloc] initWithTitle:@"Sort Lines"
+                                                       action:@selector(sortLines:)
+                                                keyEquivalent:f9];
+    sortLines.keyEquivalentModifierMask = 0;
+    [linesMenu addItem:sortLines];
+    NSMenuItem *fixSorted = [[NSMenuItem alloc] initWithTitle:@"Sort keep-sorted Blocks"
+                                                       action:@selector(fixKeepSorted:)
+                                                keyEquivalent:f9];
+    fixSorted.keyEquivalentModifierMask = NSEventModifierFlagShift;
+    [linesMenu addItem:fixSorted];
+
+    // The language server's commands at the cursor.
+    NSMenu *codeMenu = MCAddSubmenu(editMenu, @"Code");
+    // Language server completion. Ctrl+Space is also the system shortcut for
+    // switching input sources when more than one is enabled; Option+Esc
+    // (the text view's complete:) reaches the same list either way.
+    NSMenuItem *complete =
+        [[NSMenuItem alloc] initWithTitle:@"Complete"
+                                   action:@selector(triggerCompletion:)
+                            keyEquivalent:@" "];
+    complete.keyEquivalentModifierMask = NSEventModifierFlagControl;
+    [codeMenu addItem:complete];
+    // Option+Cmd+I: Cmd+I is VS Code's inline chat key, and the agent's here.
+    NSMenuItem *hover = [[NSMenuItem alloc] initWithTitle:@"Show Hover Info"
+                                                   action:@selector(showHoverInfo:)
+                                            keyEquivalent:@"i"];
+    hover.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [codeMenu addItem:hover];
+    // VS Code's keys: F2 (fn+F2 on a laptop) renames the name at the cursor,
+    // or in the file tree the selected file; Cmd+. lists the quick fixes.
+    // Both are also caught by the key monitor above, so the editor gets
+    // them first and Cmd+. stays cancel everywhere else.
+    NSMenuItem *renameSymbol =
+        [[NSMenuItem alloc] initWithTitle:@"Rename Symbol…"
+                                   action:@selector(renameSymbol:)
+                            keyEquivalent:[NSString stringWithFormat:@"%C",
+                                              (unichar)NSF2FunctionKey]];
+    renameSymbol.keyEquivalentModifierMask = 0;
+    [codeMenu addItem:renameSymbol];
+    [codeMenu addItemWithTitle:@"Quick Fix…"
+                        action:@selector(showQuickFixes:) keyEquivalent:@"."];
+    // VS Code's key. Like Format Document it has no Command, so it is also
+    // a character (Ø on a US keyboard), which the key monitor above lets it
+    // type outside the editor.
+    NSMenuItem *organize = [[NSMenuItem alloc] initWithTitle:@"Organize Imports"
+                                                      action:@selector(organizeImports:)
+                                               keyEquivalent:@"o"];
+    organize.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagShift;
+    [codeMenu addItem:organize];
+
+    NSMenu *markdownMenu = MCAddSubmenu(editMenu, @"Markdown");
+    // Option+Cmd+L: Cmd+L went to Select Line, VS Code's.
+    NSMenuItem *task = [[NSMenuItem alloc] initWithTitle:@"Toggle Task"
+                                                  action:@selector(toggleTask:)
+                                           keyEquivalent:@"l"];
+    task.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [markdownMenu addItem:task];
+    // No keys: markdown-all-in-one's Cmd+B and Cmd+I are the sidebar and
+    // the inline agent here, as in VS Code itself.
+    [markdownMenu addItemWithTitle:@"Toggle Bold" action:@selector(toggleBold:) keyEquivalent:@""];
+    [markdownMenu addItemWithTitle:@"Toggle Italic" action:@selector(toggleItalic:)
+                     keyEquivalent:@""];
     editItem.submenu = editMenu;
 
-    // View menu
+    // View menu: the palette and the hints, the session in a browser, the
+    // panes and panels, the previews, how the text shows, and the theme;
+    // everything else in submenus at its foot. The keymap suite holds Show
+    // Session in Browser and Toggle Terminal among its first six items.
     NSMenuItem *viewItem = [[NSMenuItem alloc] init];
     [menubar addItem:viewItem];
     NSMenu *viewMenu = [[NSMenu alloc] initWithTitle:@"View"];
@@ -1633,6 +1678,100 @@ static void BuildMenu(void) {
     palette.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
     [viewMenu addItem:palette];
+    NSMenuItem *hints =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Shortcut Hints"
+                                   action:@selector(toggleHints:)
+                            keyEquivalent:@"h"];
+    hints.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [viewMenu addItem:hints];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+
+    // The window's tabs on the session's host, read-only in the default
+    // browser (editor.session-host; SessionBrowser.h).
+    [viewMenu addItemWithTitle:@"Show Session in Browser…"
+                        action:@selector(showSessionInBrowser:)
+                 keyEquivalent:@""];
+    [viewMenu addItemWithTitle:@"Copy Session Browser Link"
+                        action:@selector(copySessionBrowserLink:)
+                 keyEquivalent:@""];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+
+    // The window's panes: the sidebar first, so Cmd+B's item comes before
+    // Shift+Cmd+B's (see "Plain keys first" above BuildMenu).
+    NSMenuItem *sidebar =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Sidebar"
+                                   action:@selector(toggleSidebarVisibility:)
+                            keyEquivalent:@"b"];
+    sidebar.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    [viewMenu addItem:sidebar];
+    // Terminal: Shift+Cmd+T in the menu, like the other pane toggles; Ctrl+`
+    // also works, caught by the local key monitor above.
+    NSMenuItem *term =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Terminal"
+                                   action:@selector(toggleTerminal:)
+                            keyEquivalent:@"t"];
+    term.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [viewMenu addItem:term];
+    // Cmd+J too, VS Code's Toggle Panel (hidden: one item, two keys).
+    NSMenuItem *term2 =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Terminal"
+                                   action:@selector(toggleTerminal:)
+                            keyEquivalent:@"j"];
+    term2.keyEquivalentModifierMask = NSEventModifierFlagCommand;
+    term2.hidden = YES;
+    term2.allowsKeyEquivalentWhenHidden = YES;
+    [viewMenu addItem:term2];
+    NSMenuItem *browser =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Browser"
+                                   action:@selector(toggleBrowser:)
+                            keyEquivalent:@"b"];
+    browser.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [viewMenu addItem:browser];
+    // Shift+Cmd+M as in VS Code: every problem the language servers report,
+    // above the terminal.
+    NSMenuItem *problems =
+        [[NSMenuItem alloc] initWithTitle:@"Problems"
+                                   action:@selector(toggleProblems:)
+                            keyEquivalent:@"m"];
+    problems.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [viewMenu addItem:problems];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+
+    // What can take the file tree's place in the sidebar (its row of
+    // icons). Shift+Cmd+G, and Ctrl+Shift+G as in VS Code (on a hidden item the
+    // keymap adds); a find bar's field takes Shift+Cmd+G as Find Previous.
+    NSMenuItem *git =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Source Control"
+                                   action:@selector(toggleSourceControl:)
+                            keyEquivalent:@"g"];
+    git.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [viewMenu addItem:git];
+    // Shift+Cmd+A: the agent sessions that worked in the folder, in the
+    // sidebar's place (AgentsPanel.h).
+    NSMenuItem *agents =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Agents"
+                                   action:@selector(toggleAgents:)
+                            keyEquivalent:@"a"];
+    agents.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [viewMenu addItem:agents];
+    // What this window's terminals started and what runs in its folder, in
+    // the sidebar's place (ProcessesPanel.h). Shift+Cmd+J, mutible's own.
+    NSMenuItem *processes =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Processes"
+                                   action:@selector(toggleProcesses:)
+                            keyEquivalent:@"j"];
+    processes.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [viewMenu addItem:processes];
+    // Claude Code's /ide for each window (agent.ide-link; IdeLinkServer.h).
+    [viewMenu addItem:MCIdeLinkMenuItem()];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
+
     // Shift+Cmd+V, VS Code's Markdown preview key (Shift+Cmd+P until 1.5.4).
     NSMenuItem *toggle =
         [[NSMenuItem alloc] initWithTitle:@"Toggle Preview"
@@ -1650,22 +1789,26 @@ static void BuildMenu(void) {
     side.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagControl;
     [viewMenu addItem:side];
-    // Option+Cmd+J, LaTeX Workshop's SyncTeX from Cursor (forward search).
-    NSMenuItem *lineInPDF =
-        [[NSMenuItem alloc] initWithTitle:@"Show Line in PDF"
-                                   action:@selector(showLineInPDF:)
-                            keyEquivalent:@"j"];
-    lineInPDF.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [viewMenu addItem:lineInPDF];
+    // Two editor groups side by side (EditorController+Groups.mm); the keys
+    // come from the registry (Cmd+\, Ctrl+Cmd+Right and Left).
+    [viewMenu addItemWithTitle:@"Split Editor" action:@selector(splitEditor:) keyEquivalent:@"\\"];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *hints =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Shortcut Hints"
-                                   action:@selector(toggleHints:)
-                            keyEquivalent:@"h"];
-    hints.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:hints];
+    // Option+Z, VS Code's: long lines wrap or run on (editor.word-wrap).
+    NSMenuItem *wrap = [[NSMenuItem alloc] initWithTitle:@"Word Wrap"
+                                                  action:@selector(toggleWordWrap:)
+                                           keyEquivalent:@"z"];
+    wrap.keyEquivalentModifierMask = NSEventModifierFlagOption;
+    [viewMenu addItem:wrap];
+    // The language server's inlay hints on or off (editor.inlay-hints;
+    // LspInlayHints.h). No key, as in VS Code.
+    [viewMenu addItem:MCInlayHintsMenuItem()];
+    // Who last changed each line, beside every line (EditorLineHistory.h);
+    // resting on a line number shows it for that line either way. No key:
+    // VS Code's git blame toggle has none.
+    [viewMenu addItemWithTitle:@"Show Line History" action:@selector(toggleLineHistory:)
+                 keyEquivalent:@""];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
 
     // The editor's font, VS Code's keys: Cmd+= (and Shift+Cmd+=, Cmd++),
     // Cmd+-, and reset on Option+Cmd+0, since Cmd+0 focuses the file tree
@@ -1695,100 +1838,24 @@ static void BuildMenu(void) {
                                                 keyEquivalent:@"0"];
     zoomReset.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagOption;
     [viewMenu addItem:zoomReset];
-
-    // The browser's page or a PDF (EditorController+ZoomFit.mm). Cmd+=,
-    // Cmd+- and Cmd+0 do these while one has the keyboard or the pointer;
-    // the keys stay off the items, which would take them from the editor.
-    NSMenuItem *pageZoomItem = [[NSMenuItem alloc] initWithTitle:@"Page Zoom" action:nil
-                                                   keyEquivalent:@""];
-    NSMenu *pageZoomMenu = [[NSMenu alloc] initWithTitle:@"Page Zoom"];
-    [pageZoomMenu addItemWithTitle:@"Zoom In" action:@selector(zoomPageIn:) keyEquivalent:@""];
-    [pageZoomMenu addItemWithTitle:@"Zoom Out" action:@selector(zoomPageOut:) keyEquivalent:@""];
-    [pageZoomMenu addItemWithTitle:@"Actual Size" action:@selector(zoomPageToActualSize:)
-                     keyEquivalent:@""];
-    [pageZoomMenu addItem:[NSMenuItem separatorItem]];
-    [pageZoomMenu addItemWithTitle:@"Zoom to Fit Width" action:@selector(zoomPageToFitWidth:)
-                     keyEquivalent:@""];
-    [pageZoomMenu addItemWithTitle:@"Zoom to Fit Page" action:@selector(zoomPageToFit:)
-                     keyEquivalent:@""];
-    pageZoomItem.submenu = pageZoomMenu;
-    [viewMenu addItem:pageZoomItem];
-
-    // Option+Z, VS Code's: long lines wrap or run on (editor.word-wrap).
-    NSMenuItem *wrap = [[NSMenuItem alloc] initWithTitle:@"Word Wrap"
-                                                  action:@selector(toggleWordWrap:)
-                                           keyEquivalent:@"z"];
-    wrap.keyEquivalentModifierMask = NSEventModifierFlagOption;
-    [viewMenu addItem:wrap];
-    // The language server's inlay hints on or off (editor.inlay-hints;
-    // LspInlayHints.h). No key, as in VS Code.
-    [viewMenu addItem:MCInlayHintsMenuItem()];
-    // Who last changed each line, beside every line (EditorLineHistory.h);
-    // resting on a line number shows it for that line either way. No key:
-    // VS Code's git blame toggle has none.
-    [viewMenu addItemWithTitle:@"Show Line History" action:@selector(toggleLineHistory:)
-                 keyEquivalent:@""];
-
-    // Folding (FoldView.h). VS Code's Option+Cmd+[ and ] are mutible's
-    // previous and next terminal, and its other folding keys are Cmd+K
-    // chords, which mutible has none of; so Control+Command with the
-    // chord's second key: [ fold, ] unfold, L toggle, 0 fold all, J unfold
-    // all, / fold comments, 1 to 7 a level. Answered by the editor's text
-    // view while it has the keyboard.
-    NSMenuItem *foldingItem = [[NSMenuItem alloc] initWithTitle:@"Folding" action:nil
-                                                  keyEquivalent:@""];
-    NSMenu *foldingMenu = [[NSMenu alloc] initWithTitle:@"Folding"];
-    const NSEventModifierFlags ctrlCmd = NSEventModifierFlagControl | NSEventModifierFlagCommand;
-    NSMenuItem *(^addFold)(NSString *, SEL, NSString *) =
-        ^NSMenuItem *(NSString *title, SEL action, NSString *key) {
-            NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:action
-                                                 keyEquivalent:key];
-            it.keyEquivalentModifierMask = key.length ? ctrlCmd : 0;
-            [foldingMenu addItem:it];
-            return it;
-        };
-    addFold(@"Fold", @selector(foldRegion:), @"[");
-    addFold(@"Unfold", @selector(unfoldRegion:), @"]");
-    addFold(@"Toggle Fold", @selector(toggleFold:), @"l");
-    addFold(@"Fold Recursively", @selector(foldRecursively:), @"");
-    addFold(@"Unfold Recursively", @selector(unfoldRecursively:), @"");
-    [foldingMenu addItem:[NSMenuItem separatorItem]];
-    addFold(@"Fold All", @selector(foldAll:), @"0");
-    addFold(@"Unfold All", @selector(unfoldAll:), @"j");
-    addFold(@"Fold All Comments", @selector(foldAllComments:), @"/");
-    for (NSInteger level = 1; level <= 7; level++) {
-        NSMenuItem *it = addFold([NSString stringWithFormat:@"Fold Level %ld", (long)level],
-                                 @selector(foldLevel:),
-                                 [NSString stringWithFormat:@"%ld", (long)level]);
-        it.tag = level;
-    }
-    foldingItem.submenu = foldingMenu;
-    [viewMenu addItem:foldingItem];
-
     [viewMenu addItem:[NSMenuItem separatorItem]];
 
-    NSMenuItem *sidebar =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Sidebar"
-                                   action:@selector(toggleSidebarVisibility:)
-                            keyEquivalent:@"b"];
-    sidebar.keyEquivalentModifierMask = NSEventModifierFlagCommand;
-    [viewMenu addItem:sidebar];
+    // VS Code's built-in color themes; the choice is the settings file's
+    // theme line, so it stays one plain line there.
+    NSMenuItem *themes = [[NSMenuItem alloc] initWithTitle:@"Theme" action:nil keyEquivalent:@""];
+    themes.submenu = MCThemeSubmenu();
+    [viewMenu addItem:themes];
+    // The same as a right click's Adjust Settings, for each part of the window.
+    NSMenuItem *adjust = [[NSMenuItem alloc] initWithTitle:@"Adjust Settings"
+                                                    action:nil keyEquivalent:@""];
+    adjust.submenu = MCAdjustSettingsSubmenu();
+    [viewMenu addItem:adjust];
+    [viewMenu addItem:[NSMenuItem separatorItem]];
 
-    // Shift+Cmd+G, and Ctrl+Shift+G as in VS Code (on a hidden item the
-    // keymap adds); a find bar's field takes Shift+Cmd+G as Find Previous.
-    NSMenuItem *git =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Source Control"
-                                   action:@selector(toggleSourceControl:)
-                            keyEquivalent:@"g"];
-    git.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:git];
     // Pushing and pulling (git.fetch, git.pull, git.push, git.sync), staging
     // everything, discarding and switching branches, with no keys, as in VS
     // Code; the panel's button and menus run them too.
-    NSMenuItem *gitItem = [[NSMenuItem alloc] initWithTitle:@"Source Control" action:nil
-                                              keyEquivalent:@""];
-    NSMenu *gitMenu = [[NSMenu alloc] initWithTitle:@"Source Control"];
+    NSMenu *gitMenu = MCAddSubmenu(viewMenu, @"Source Control");
     // Every uncommitted change in one tab (ChangeReviewPage.h).
     [gitMenu addItemWithTitle:@"Review Changes" action:@selector(gitReviewChanges:)
                 keyEquivalent:@""];
@@ -1821,137 +1888,120 @@ static void BuildMenu(void) {
     [gitMenu addItemWithTitle:@"Revert Change" action:@selector(revertChange:) keyEquivalent:@""];
     [gitMenu addItemWithTitle:@"Stage Change" action:@selector(stageChange:) keyEquivalent:@""];
 
-    gitItem.submenu = gitMenu;
-    [viewMenu addItem:gitItem];
-
-    // Shift+Cmd+A: the agent sessions that worked in the folder, in the
-    // sidebar's place (AgentsPanel.h).
-    NSMenuItem *agents =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Agents"
-                                   action:@selector(toggleAgents:)
-                            keyEquivalent:@"a"];
-    agents.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:agents];
-
-    // What this window's terminals started and what runs in its folder, in
-    // the sidebar's place (ProcessesPanel.h). Shift+Cmd+J, mutible's own.
-    NSMenuItem *processes =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Processes"
-                                   action:@selector(toggleProcesses:)
-                            keyEquivalent:@"j"];
-    processes.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:processes];
-    // Claude Code's /ide for each window (agent.ide-link; IdeLinkServer.h).
-    [viewMenu addItem:MCIdeLinkMenuItem()];
-    // The window's tabs on the session's host, read-only in the default
-    // browser (editor.session-host; SessionBrowser.h).
-    [viewMenu addItemWithTitle:@"Show Session in Browser…"
-                        action:@selector(showSessionInBrowser:)
-                 keyEquivalent:@""];
-    [viewMenu addItemWithTitle:@"Copy Session Browser Link"
-                        action:@selector(copySessionBrowserLink:)
-                 keyEquivalent:@""];
-    // The browsers Always Allow remembered for those pages: listed, and
-    // forgotten (SessionBrowser.h).
-    [viewMenu addItemWithTitle:@"Remembered Browsers…"
-                        action:@selector(showRememberedBrowsers:)
-                 keyEquivalent:@""];
-
-    // Shift+Cmd+M as in VS Code: every problem the language servers report,
-    // above the terminal.
-    NSMenuItem *problems =
-        [[NSMenuItem alloc] initWithTitle:@"Problems"
-                                   action:@selector(toggleProblems:)
-                            keyEquivalent:@"m"];
-    problems.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:problems];
-
-    NSMenuItem *editorPane =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Editor"
-                                   action:@selector(toggleEditor:)
-                            keyEquivalent:@"e"];
-    editorPane.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:editorPane];
-
-    // The pane with the keyboard takes the whole right area, and back.
-    NSMenuItem *maximize = [[NSMenuItem alloc] initWithTitle:@"Maximize Pane"
-                                                      action:@selector(toggleMaximizedPane:)
-                                               keyEquivalent:@"m"];
-    maximize.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagControl;
-    [viewMenu addItem:maximize];
-
-    // Two editor groups side by side (EditorController+Groups.mm); the keys
-    // come from the registry (Cmd+\, Ctrl+Cmd+Right and Left).
-    [viewMenu addItemWithTitle:@"Split Editor" action:@selector(splitEditor:) keyEquivalent:@"\\"];
-    {
-        const unichar right = NSRightArrowFunctionKey, left = NSLeftArrowFunctionKey;
-        NSMenuItem *next = [viewMenu addItemWithTitle:@"Move Editor into Next Group"
-                                               action:@selector(moveEditorToNextGroup:)
-                                        keyEquivalent:[NSString stringWithCharacters:&right
-                                                                              length:1]];
-        NSMenuItem *previous = [viewMenu addItemWithTitle:@"Move Editor into Previous Group"
-                                                   action:@selector(moveEditorToPreviousGroup:)
-                                            keyEquivalent:[NSString stringWithCharacters:&left
-                                                                                  length:1]];
-        next.keyEquivalentModifierMask = previous.keyEquivalentModifierMask =
-            NSEventModifierFlagControl | NSEventModifierFlagCommand;
-    }
-
+    // The file tree's hidden files and columns, and its order.
+    NSMenu *treeView = MCAddSubmenu(viewMenu, @"File Tree");
     NSMenuItem *hidden =
         [[NSMenuItem alloc] initWithTitle:@"Show Hidden Files"
                                    action:@selector(toggleHiddenFiles:)
                             keyEquivalent:@"."];
     hidden.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:hidden];
-
+    [treeView addItem:hidden];
     // Columns at the right of the file tree's rows, each on its own key:
     // sizes, when last saved (which also shows the open file's last save in
     // the status bar) and when created. Cmd+I alone is the inline agent,
     // and Option+Cmd+I Show Hover Info.
-    for (NSMenuItem *it in MCTreeColumnMenuItems()) [viewMenu addItem:it];
+    for (NSMenuItem *it in MCTreeColumnMenuItems()) [treeView addItem:it];
     // The tree's order, as its right click menu's Sort By has it.
     NSMenuItem *sortTree = [[NSMenuItem alloc] initWithTitle:@"Sort File Tree By"
                                                       action:nil keyEquivalent:@""];
     sortTree.submenu = [EditorController treeSortMenu];
-    [viewMenu addItem:sortTree];
+    [treeView addItem:sortTree];
 
-    // Terminal: Shift+Cmd+T in the menu, like the other pane toggles; Ctrl+`
-    // also works, caught by the local key monitor above.
-    NSMenuItem *term =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Terminal"
-                                   action:@selector(toggleTerminal:)
-                            keyEquivalent:@"t"];
-    term.keyEquivalentModifierMask =
+    // The panes' sizes and the editor groups, by key mostly.
+    NSMenu *panesMenu = MCAddSubmenu(viewMenu, @"Panes");
+    NSMenuItem *editorPane =
+        [[NSMenuItem alloc] initWithTitle:@"Toggle Editor"
+                                   action:@selector(toggleEditor:)
+                            keyEquivalent:@"e"];
+    editorPane.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:term];
-    // Cmd+J too, VS Code's Toggle Panel (hidden: one item, two keys).
-    NSMenuItem *term2 =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Terminal"
-                                   action:@selector(toggleTerminal:)
+    [panesMenu addItem:editorPane];
+    // The pane with the keyboard takes the whole right area, and back.
+    NSMenuItem *maximize = [[NSMenuItem alloc] initWithTitle:@"Maximize Pane"
+                                                      action:@selector(toggleMaximizedPane:)
+                                               keyEquivalent:@"m"];
+    maximize.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagControl;
+    [panesMenu addItem:maximize];
+    [panesMenu addItem:[NSMenuItem separatorItem]];
+    {
+        const unichar right = NSRightArrowFunctionKey, left = NSLeftArrowFunctionKey;
+        NSMenuItem *next = [panesMenu addItemWithTitle:@"Move Editor into Next Group"
+                                                action:@selector(moveEditorToNextGroup:)
+                                         keyEquivalent:[NSString stringWithCharacters:&right
+                                                                               length:1]];
+        NSMenuItem *previous = [panesMenu addItemWithTitle:@"Move Editor into Previous Group"
+                                                    action:@selector(moveEditorToPreviousGroup:)
+                                             keyEquivalent:[NSString stringWithCharacters:&left
+                                                                                   length:1]];
+        next.keyEquivalentModifierMask = previous.keyEquivalentModifierMask =
+            NSEventModifierFlagControl | NSEventModifierFlagCommand;
+    }
+
+    // Folding (FoldView.h). VS Code's Option+Cmd+[ and ] are mutible's
+    // previous and next terminal, and its other folding keys are Cmd+K
+    // chords, which mutible has none of; so Control+Command with the
+    // chord's second key: [ fold, ] unfold, L toggle, 0 fold all, J unfold
+    // all, / fold comments, 1 to 7 a level. Answered by the editor's text
+    // view while it has the keyboard.
+    NSMenu *foldingMenu = MCAddSubmenu(viewMenu, @"Folding");
+    const NSEventModifierFlags ctrlCmd = NSEventModifierFlagControl | NSEventModifierFlagCommand;
+    NSMenuItem *(^addFold)(NSString *, SEL, NSString *) =
+        ^NSMenuItem *(NSString *title, SEL action, NSString *key) {
+            NSMenuItem *it = [[NSMenuItem alloc] initWithTitle:title action:action
+                                                 keyEquivalent:key];
+            it.keyEquivalentModifierMask = key.length ? ctrlCmd : 0;
+            [foldingMenu addItem:it];
+            return it;
+        };
+    addFold(@"Fold", @selector(foldRegion:), @"[");
+    addFold(@"Unfold", @selector(unfoldRegion:), @"]");
+    addFold(@"Toggle Fold", @selector(toggleFold:), @"l");
+    addFold(@"Fold Recursively", @selector(foldRecursively:), @"");
+    addFold(@"Unfold Recursively", @selector(unfoldRecursively:), @"");
+    [foldingMenu addItem:[NSMenuItem separatorItem]];
+    addFold(@"Fold All", @selector(foldAll:), @"0");
+    addFold(@"Unfold All", @selector(unfoldAll:), @"j");
+    addFold(@"Fold All Comments", @selector(foldAllComments:), @"/");
+    for (NSInteger level = 1; level <= 7; level++) {
+        NSMenuItem *it = addFold([NSString stringWithFormat:@"Fold Level %ld", (long)level],
+                                 @selector(foldLevel:),
+                                 [NSString stringWithFormat:@"%ld", (long)level]);
+        it.tag = level;
+    }
+
+    // The browser's page or a PDF (EditorController+ZoomFit.mm). Cmd+=,
+    // Cmd+- and Cmd+0 do these while one has the keyboard or the pointer;
+    // the keys stay off the items, which would take them from the editor.
+    NSMenu *pageZoomMenu = MCAddSubmenu(viewMenu, @"Page Zoom");
+    [pageZoomMenu addItemWithTitle:@"Zoom In" action:@selector(zoomPageIn:) keyEquivalent:@""];
+    [pageZoomMenu addItemWithTitle:@"Zoom Out" action:@selector(zoomPageOut:) keyEquivalent:@""];
+    [pageZoomMenu addItemWithTitle:@"Actual Size" action:@selector(zoomPageToActualSize:)
+                     keyEquivalent:@""];
+    [pageZoomMenu addItem:[NSMenuItem separatorItem]];
+    [pageZoomMenu addItemWithTitle:@"Zoom to Fit Width" action:@selector(zoomPageToFitWidth:)
+                     keyEquivalent:@""];
+    [pageZoomMenu addItemWithTitle:@"Zoom to Fit Page" action:@selector(zoomPageToFit:)
+                     keyEquivalent:@""];
+
+    NSMenu *moreView = MCAddSubmenu(viewMenu, @"More");
+    // Option+Cmd+J, LaTeX Workshop's SyncTeX from Cursor (forward search).
+    NSMenuItem *lineInPDF =
+        [[NSMenuItem alloc] initWithTitle:@"Show Line in PDF"
+                                   action:@selector(showLineInPDF:)
                             keyEquivalent:@"j"];
-    term2.keyEquivalentModifierMask = NSEventModifierFlagCommand;
-    term2.hidden = YES;
-    term2.allowsKeyEquivalentWhenHidden = YES;
-    [viewMenu addItem:term2];
-
-    NSMenuItem *browser =
-        [[NSMenuItem alloc] initWithTitle:@"Toggle Browser"
-                                   action:@selector(toggleBrowser:)
-                            keyEquivalent:@"b"];
-    browser.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:browser];
+    lineInPDF.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [moreView addItem:lineInPDF];
     // From anywhere. Cmd+T does the same while the browser has the keyboard
     // (the pane's own newBrowserTab:, a page key the key monitor runs).
-    [viewMenu addItemWithTitle:@"New Browser Tab" action:@selector(openBrowserTab:)
+    [moreView addItemWithTitle:@"New Browser Tab" action:@selector(openBrowserTab:)
                  keyEquivalent:@""];
-
-    [viewMenu addItem:[NSMenuItem separatorItem]];
-
+    // The browsers Always Allow remembered for the session's pages: listed,
+    // and forgotten (SessionBrowser.h).
+    [moreView addItemWithTitle:@"Remembered Browsers…"
+                        action:@selector(showRememberedBrowsers:)
+                 keyEquivalent:@""];
     // Video and audio. Not Cmd+Return, which commits in the git panel's
     // message box, and not Space alone, which the tree and text need; the
     // player's own Space works once it has the focus (Cmd+1).
@@ -1961,9 +2011,8 @@ static void BuildMenu(void) {
                             keyEquivalent:@" "];
     play.keyEquivalentModifierMask =
         NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [viewMenu addItem:play];
-
-    [viewMenu addItem:[NSMenuItem separatorItem]];
+    [moreView addItem:play];
+    [moreView addItem:[NSMenuItem separatorItem]];
     // The right click's menu from the keyboard, for what has the keyboard:
     // Shift+F10 as on Windows and Linux, and Ctrl+Return (hidden), which a
     // text view would otherwise take for a Unicode line separator.
@@ -1973,7 +2022,7 @@ static void BuildMenu(void) {
                             keyEquivalent:[NSString stringWithFormat:@"%C",
                                               (unichar)NSF10FunctionKey]];
     contextMenu.keyEquivalentModifierMask = NSEventModifierFlagShift;
-    [viewMenu addItem:contextMenu];
+    [moreView addItem:contextMenu];
     NSMenuItem *contextMenu2 =
         [[NSMenuItem alloc] initWithTitle:@"Show Context Menu"
                                    action:@selector(showContextMenu:)
@@ -1981,21 +2030,12 @@ static void BuildMenu(void) {
     contextMenu2.keyEquivalentModifierMask = NSEventModifierFlagControl;
     contextMenu2.hidden = YES;
     contextMenu2.allowsKeyEquivalentWhenHidden = YES;
-    [viewMenu addItem:contextMenu2];
-    // The same as a right click's Adjust Settings, for each part of the window.
-    NSMenuItem *adjust = [[NSMenuItem alloc] initWithTitle:@"Adjust Settings"
-                                                    action:nil keyEquivalent:@""];
-    adjust.submenu = MCAdjustSettingsSubmenu();
-    [viewMenu addItem:adjust];
-    // VS Code's built-in color themes; the choice is the settings file's
-    // theme line, so it stays one plain line there.
-    NSMenuItem *themes = [[NSMenuItem alloc] initWithTitle:@"Theme" action:nil keyEquivalent:@""];
-    themes.submenu = MCThemeSubmenu();
-    [viewMenu addItem:themes];
+    [moreView addItem:contextMenu2];
 
     viewItem.submenu = viewMenu;
 
-    // Terminal menu: several terminals, and running the open file in one.
+    // Terminal menu: several terminals, and running the open file in one;
+    // moving between them and arranging them in a submenu at its foot.
     NSMenuItem *termItem = [[NSMenuItem alloc] init];
     [menubar addItem:termItem];
     NSMenu *termMenu = [[NSMenu alloc] initWithTitle:@"Terminal"];
@@ -2017,20 +2057,6 @@ static void BuildMenu(void) {
     [termMenu addItemWithTitle:@"Split Terminal Down"
                         action:@selector(splitTerminalDown:)
                  keyEquivalent:@""];
-    NSMenuItem *nextTerm =
-        [[NSMenuItem alloc] initWithTitle:@"Next Terminal"
-                                   action:@selector(nextTerminal:)
-                            keyEquivalent:@"]"];
-    nextTerm.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [termMenu addItem:nextTerm];
-    NSMenuItem *prevTerm =
-        [[NSMenuItem alloc] initWithTitle:@"Previous Terminal"
-                                   action:@selector(previousTerminal:)
-                            keyEquivalent:@"["];
-    prevTerm.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagOption;
-    [termMenu addItem:prevTerm];
     NSMenuItem *closeTerm =
         [[NSMenuItem alloc] initWithTitle:@"Close Terminal"
                                    action:@selector(closeTerminal:)
@@ -2038,6 +2064,23 @@ static void BuildMenu(void) {
     closeTerm.keyEquivalentModifierMask =
         NSEventModifierFlagControl | NSEventModifierFlagShift;
     [termMenu addItem:closeTerm];
+    [termMenu addItem:[NSMenuItem separatorItem]];
+    // Not Cmd+Return, which commits in the git panel's message box.
+    NSMenuItem *runFile =
+        [[NSMenuItem alloc] initWithTitle:@"Run File"
+                                   action:@selector(runCurrentFile:)
+                            keyEquivalent:@"\r"];
+    runFile.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [termMenu addItem:runFile];
+    // The ▶ beside a test runs that one; this, the one the cursor is in.
+    [termMenu addItemWithTitle:@"Run Test at Cursor"
+                        action:@selector(runTestAtCursor:) keyEquivalent:@""];
+    // Shift+Return in a Python file, which the key monitor runs (Keymap.h):
+    // a menu key without Command would take Shift+Return from every field.
+    [termMenu addItemWithTitle:@"Run Selection or Line in Python REPL"
+                        action:@selector(runSelectionInTerminal:) keyEquivalent:@""];
+    [termMenu addItem:[NSMenuItem separatorItem]];
     // A terminal whose Claude Code waits for an answer (TerminalAttention.h),
     // in any window.
     NSMenuItem *nextWaiting =
@@ -2063,6 +2106,12 @@ static void BuildMenu(void) {
     [termMenu addItemWithTitle:@"Copy Last Command Output"
                         action:@selector(copyLastCommandOutput:)
                  keyEquivalent:@""];
+    // The shown tab's active terminal: a name of the user's that wins over
+    // the program's title. No key, as in VS Code.
+    [termMenu addItemWithTitle:@"Rename Terminal…"
+                        action:@selector(renameTerminal:)
+                 keyEquivalent:@""];
+    [termMenu addItem:[NSMenuItem separatorItem]];
     // The terminals' own zoom (EditorFont.h). Its keys are the editor's,
     // Cmd+=, Cmd+- and Option+Cmd+0, which the key monitor runs as these
     // while a terminal has the keyboard, so none is on the items.
@@ -2071,18 +2120,32 @@ static void BuildMenu(void) {
     [termMenu addItemWithTitle:@"Reset Zoom" action:@selector(terminalZoomReset:)
                  keyEquivalent:@""];
     [termMenu addItem:[NSMenuItem separatorItem]];
-    // The shown tab's active terminal: a name of the user's that wins over
-    // the program's title, and the tab's place in the strip (a drag there
-    // does the same). No keys, as in VS Code.
-    [termMenu addItemWithTitle:@"Rename Terminal…"
-                        action:@selector(renameTerminal:)
-                 keyEquivalent:@""];
-    [termMenu addItemWithTitle:@"Move Terminal Left"
-                        action:@selector(moveTerminalLeft:)
-                 keyEquivalent:@""];
-    [termMenu addItemWithTitle:@"Move Terminal Right"
-                        action:@selector(moveTerminalRight:)
-                 keyEquivalent:@""];
+
+    NSMenu *termPanes = MCAddSubmenu(termMenu, @"Tabs and Panes");
+    NSMenuItem *nextTerm =
+        [[NSMenuItem alloc] initWithTitle:@"Next Terminal"
+                                   action:@selector(nextTerminal:)
+                            keyEquivalent:@"]"];
+    nextTerm.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [termPanes addItem:nextTerm];
+    NSMenuItem *prevTerm =
+        [[NSMenuItem alloc] initWithTitle:@"Previous Terminal"
+                                   action:@selector(previousTerminal:)
+                            keyEquivalent:@"["];
+    prevTerm.keyEquivalentModifierMask =
+        NSEventModifierFlagCommand | NSEventModifierFlagOption;
+    [termPanes addItem:prevTerm];
+    [termPanes addItem:[NSMenuItem separatorItem]];
+    // The tab's place in the strip (a drag there does the same). No keys,
+    // as in VS Code.
+    [termPanes addItemWithTitle:@"Move Terminal Left"
+                         action:@selector(moveTerminalLeft:)
+                  keyEquivalent:@""];
+    [termPanes addItemWithTitle:@"Move Terminal Right"
+                         action:@selector(moveTerminalRight:)
+                  keyEquivalent:@""];
+    [termPanes addItem:[NSMenuItem separatorItem]];
     // VS Code's Ctrl+Cmd+arrows, answered by the terminal panel with the
     // keyboard in one of its terminals (MCTerminalPanel resizeTerminalPane:),
     // so elsewhere they are off. The tag is the direction. Left and Right
@@ -2103,41 +2166,21 @@ static void BuildMenu(void) {
                 NSEventModifierFlagControl | NSEventModifierFlagCommand;
             if (i < 2) resize.keyEquivalent = @"";
             resize.tag = i + 1;
-            [termMenu addItem:resize];
+            [termPanes addItem:resize];
         }
     }
-    [termMenu addItem:[NSMenuItem separatorItem]];
-    // Not Cmd+Return, which commits in the git panel's message box.
-    NSMenuItem *runFile =
-        [[NSMenuItem alloc] initWithTitle:@"Run File"
-                                   action:@selector(runCurrentFile:)
-                            keyEquivalent:@"\r"];
-    runFile.keyEquivalentModifierMask =
-        NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [termMenu addItem:runFile];
-    // The ▶ beside a test runs that one; this, the one the cursor is in.
-    [termMenu addItemWithTitle:@"Run Test at Cursor"
-                        action:@selector(runTestAtCursor:) keyEquivalent:@""];
-    // Shift+Return in a Python file, which the key monitor runs (Keymap.h):
-    // a menu key without Command would take Shift+Return from every field.
-    [termMenu addItemWithTitle:@"Run Selection or Line in Python REPL"
-                        action:@selector(runSelectionInTerminal:) keyEquivalent:@""];
     termItem.submenu = termMenu;
 
-    // Navigate menu — keyboard-driven movement.
+    // Navigate menu: going to a file or a symbol, the language server's
+    // jumps and an agent's tour first; the cursor's moves, the tabs, the
+    // panes' focus and the next problem or change in submenus at its foot.
     NSMenuItem *navItem = [[NSMenuItem alloc] init];
     [menubar addItem:navItem];
     NSMenu *navMenu = [[NSMenu alloc] initWithTitle:@"Navigate"];
-    // VS Code's keys: Cmd+P lists the folder's files, Ctrl+G asks for a
-    // line (the key monitor leaves Ctrl+G to a program on the terminal grid).
+    // VS Code's key: Cmd+P lists the folder's files.
     [navMenu addItemWithTitle:@"Go to File…"
                        action:@selector(quickOpen:)
                 keyEquivalent:@"p"];
-    NSMenuItem *goLine = [[NSMenuItem alloc] initWithTitle:@"Go to Line…"
-                                                    action:@selector(goToLinePrompt:)
-                                             keyEquivalent:@"g"];
-    goLine.keyEquivalentModifierMask = NSEventModifierFlagControl;
-    [navMenu addItem:goLine];
     // VS Code's keys: Shift+Cmd+O the file's symbols ("@" in the palette),
     // Cmd+T the workspace's ("#"), from the language servers or, for the
     // file, the built-in outline.
@@ -2149,43 +2192,87 @@ static void BuildMenu(void) {
     [navMenu addItemWithTitle:@"Go to Symbol in Workspace…"
                        action:@selector(goToSymbolInWorkspace:)
                 keyEquivalent:@"t"];
+    [navMenu addItem:[NSMenuItem separatorItem]];
+    // F12 as in most editors (fn+F12 on a laptop keyboard); Cmd+click works too.
+    NSMenuItem *definition =
+        [[NSMenuItem alloc] initWithTitle:@"Go to Definition"
+                                   action:@selector(goToDefinition:)
+                            keyEquivalent:[NSString stringWithFormat:@"%C",
+                                              (unichar)NSF12FunctionKey]];
+    definition.keyEquivalentModifierMask = 0;
+    [navMenu addItem:definition];
+    NSMenuItem *references =
+        [[NSMenuItem alloc] initWithTitle:@"Find All References"
+                                   action:@selector(findReferences:)
+                            keyEquivalent:[NSString stringWithFormat:@"%C",
+                                              (unichar)NSF12FunctionKey]];
+    references.keyEquivalentModifierMask = NSEventModifierFlagShift;
+    [navMenu addItem:references];
+    // An agent's tour (`mutible tour`): enabled only while one is on, and
+    // the key monitor takes the keys only then, so Option+] still types ‘.
+    [navMenu addItem:[NSMenuItem separatorItem]];
+    NSMenuItem *nextStop = [[NSMenuItem alloc] initWithTitle:@"Next Tour Stop"
+                                                      action:@selector(nextTourStop:)
+                                               keyEquivalent:@"]"];
+    nextStop.keyEquivalentModifierMask = NSEventModifierFlagOption;
+    [navMenu addItem:nextStop];
+    NSMenuItem *prevStop = [[NSMenuItem alloc] initWithTitle:@"Previous Tour Stop"
+                                                      action:@selector(previousTourStop:)
+                                               keyEquivalent:@"["];
+    prevStop.keyEquivalentModifierMask = NSEventModifierFlagOption;
+    [navMenu addItem:prevStop];
+    [navMenu addItem:[NSMenuItem separatorItem]];
+
+    // The cursor's own moves, by key.
+    NSMenu *cursorMenu = MCAddSubmenu(navMenu, @"Cursor");
+    // VS Code's key: Ctrl+G asks for a line (the key monitor leaves Ctrl+G
+    // to a program on the terminal grid).
+    NSMenuItem *goLine = [[NSMenuItem alloc] initWithTitle:@"Go to Line…"
+                                                    action:@selector(goToLinePrompt:)
+                                             keyEquivalent:@"g"];
+    goLine.keyEquivalentModifierMask = NSEventModifierFlagControl;
+    [cursorMenu addItem:goLine];
+    // VS Code's Go to Bracket. Shift+Cmd+\ (Cmd+\ splits the terminal).
+    NSMenuItem *goBracket = [[NSMenuItem alloc] initWithTitle:@"Go to Bracket"
+                                                       action:@selector(goToBracket:)
+                                                keyEquivalent:@"\\"];
+    goBracket.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
+    [cursorMenu addItem:goBracket];
+    [cursorMenu addItem:[NSMenuItem separatorItem]];
     // Ctrl+- and Ctrl+Shift+-, VS Code's Mac keys. A program on the
     // terminal's grid gets Ctrl+- instead (TerminalGridView claims Ctrl).
     NSMenuItem *back = [[NSMenuItem alloc] initWithTitle:@"Go Back"
                                                   action:@selector(navigateBack:)
                                            keyEquivalent:@"-"];
     back.keyEquivalentModifierMask = NSEventModifierFlagControl;
-    [navMenu addItem:back];
+    [cursorMenu addItem:back];
     NSMenuItem *forward = [[NSMenuItem alloc] initWithTitle:@"Go Forward"
                                                      action:@selector(navigateForward:)
                                               keyEquivalent:@"-"];
     forward.keyEquivalentModifierMask = NSEventModifierFlagControl | NSEventModifierFlagShift;
-    [navMenu addItem:forward];
-    // VS Code's Go to Bracket. Shift+Cmd+\ (Cmd+\ splits the terminal).
-    NSMenuItem *goBracket = [[NSMenuItem alloc] initWithTitle:@"Go to Bracket"
-                                                       action:@selector(goToBracket:)
-                                                keyEquivalent:@"\\"];
-    goBracket.keyEquivalentModifierMask = NSEventModifierFlagCommand | NSEventModifierFlagShift;
-    [navMenu addItem:goBracket];
-    [navMenu addItem:[NSMenuItem separatorItem]];
-    [navMenu addItemWithTitle:@"Focus File Tree"
-                       action:@selector(focusTree:)
-                keyEquivalent:@"0"];
-    [navMenu addItemWithTitle:@"Focus First Editor Group"
-                       action:@selector(focusFirstEditorGroup:)
-                keyEquivalent:@"1"];
-    [navMenu addItemWithTitle:@"Focus Second Editor Group"
-                       action:@selector(focusSecondEditorGroup:)
-                keyEquivalent:@"2"];
-    [navMenu addItemWithTitle:@"Focus Terminal"
-                       action:@selector(focusTerminal:)
-                keyEquivalent:@""];
-    [navMenu addItemWithTitle:@"Focus Browser"
-                       action:@selector(focusBrowser:)
-                keyEquivalent:@"3"];
-    [navMenu addItem:[NSMenuItem separatorItem]];
+    [cursorMenu addItem:forward];
+
+    // The keyboard to a pane, by key.
+    NSMenu *focusMenu = MCAddSubmenu(navMenu, @"Focus");
+    [focusMenu addItemWithTitle:@"Focus File Tree"
+                         action:@selector(focusTree:)
+                  keyEquivalent:@"0"];
+    [focusMenu addItemWithTitle:@"Focus First Editor Group"
+                         action:@selector(focusFirstEditorGroup:)
+                  keyEquivalent:@"1"];
+    [focusMenu addItemWithTitle:@"Focus Second Editor Group"
+                         action:@selector(focusSecondEditorGroup:)
+                  keyEquivalent:@"2"];
+    [focusMenu addItemWithTitle:@"Focus Terminal"
+                         action:@selector(focusTerminal:)
+                  keyEquivalent:@""];
+    [focusMenu addItemWithTitle:@"Focus Browser"
+                         action:@selector(focusBrowser:)
+                  keyEquivalent:@"3"];
+
     // Tabs. Each action has a second key on a hidden item: Ctrl+Tab as in
     // VS Code and browsers, Shift+Cmd+] as in Safari and Terminal.
+    NSMenu *goMenu = MCAddSubmenu(navMenu, @"Go to Tab");
     NSMenuItem *(^addKey)(NSString *, SEL, NSString *, NSEventModifierFlags, BOOL) =
         ^NSMenuItem *(NSString *title, SEL action, NSString *key,
                       NSEventModifierFlags mask, BOOL hidden) {
@@ -2196,7 +2283,7 @@ static void BuildMenu(void) {
             it.hidden = YES;
             it.allowsKeyEquivalentWhenHidden = YES;
         }
-        [navMenu addItem:it];
+        [goMenu addItem:it];
         return it;
     };
     const NSEventModifierFlags ctrl = NSEventModifierFlagControl;
@@ -2206,12 +2293,10 @@ static void BuildMenu(void) {
            ctrl | NSEventModifierFlagShift, NO);
     addKey(@"Next Tab", @selector(selectNextTab:), @"]", shiftCmd, YES);
     addKey(@"Previous Tab", @selector(selectPreviousTab:), @"[", shiftCmd, YES);
+    [goMenu addItem:[NSMenuItem separatorItem]];
     // Shift+Cmd+1 to 9 as asked, with Ctrl+1 to 9 (VS Code's keys on the
     // Mac) beside them, because macOS keeps Shift+Cmd+3, 4 and 5 for
     // screenshots and the app never sees them. 9 is the last tab.
-    NSMenuItem *goItem = [[NSMenuItem alloc] initWithTitle:@"Go to Tab" action:nil
-                                             keyEquivalent:@""];
-    NSMenu *goMenu = [[NSMenu alloc] initWithTitle:@"Go to Tab"];
     for (int n = 1; n <= 9; n++) {
         NSString *digit = [NSString stringWithFormat:@"%d", n];
         NSString *title = n == 9 ? @"Last Tab" : [NSString stringWithFormat:@"Tab %d", n];
@@ -2230,24 +2315,8 @@ static void BuildMenu(void) {
         b.allowsKeyEquivalentWhenHidden = YES;
         [goMenu addItem:b];
     }
-    goItem.submenu = goMenu;
-    [navMenu addItem:goItem];
-    [navMenu addItem:[NSMenuItem separatorItem]];
-    // F12 as in most editors (fn+F12 on a laptop keyboard); Cmd+click works too.
-    NSMenuItem *definition =
-        [[NSMenuItem alloc] initWithTitle:@"Go to Definition"
-                                   action:@selector(goToDefinition:)
-                            keyEquivalent:[NSString stringWithFormat:@"%C",
-                                              (unichar)NSF12FunctionKey]];
-    definition.keyEquivalentModifierMask = 0;
-    [navMenu addItem:definition];
-    NSMenuItem *references =
-        [[NSMenuItem alloc] initWithTitle:@"Find All References"
-                                   action:@selector(findReferences:)
-                            keyEquivalent:[NSString stringWithFormat:@"%C",
-                                              (unichar)NSF12FunctionKey]];
-    references.keyEquivalentModifierMask = NSEventModifierFlagShift;
-    [navMenu addItem:references];
+
+    NSMenu *nextMenu = MCAddSubmenu(navMenu, @"Problems and Changes");
     // F8 and Shift+F8 as in VS Code: the next or previous problem in the
     // file, its message shown at the cursor. Caught by the key monitor too.
     NSString *f8 = [NSString stringWithFormat:@"%C", (unichar)NSF8FunctionKey];
@@ -2255,12 +2324,13 @@ static void BuildMenu(void) {
                                                          action:@selector(nextProblem:)
                                                   keyEquivalent:f8];
     nextProblem.keyEquivalentModifierMask = 0;
-    [navMenu addItem:nextProblem];
+    [nextMenu addItem:nextProblem];
     NSMenuItem *previousProblem = [[NSMenuItem alloc] initWithTitle:@"Previous Problem"
                                                              action:@selector(previousProblem:)
                                                       keyEquivalent:f8];
     previousProblem.keyEquivalentModifierMask = NSEventModifierFlagShift;
-    [navMenu addItem:previousProblem];
+    [nextMenu addItem:previousProblem];
+    [nextMenu addItem:[NSMenuItem separatorItem]];
     // F7 and Shift+F7 as in VS Code's diff editor: the compare view's next
     // or previous run of changes, wrapping. The compare view answers them.
     NSString *f7 = [NSString stringWithFormat:@"%C", (unichar)NSF7FunctionKey];
@@ -2268,12 +2338,13 @@ static void BuildMenu(void) {
                                                       action:@selector(goToNextDifference:)
                                                keyEquivalent:f7];
     nextDiff.keyEquivalentModifierMask = 0;
-    [navMenu addItem:nextDiff];
+    [nextMenu addItem:nextDiff];
     NSMenuItem *prevDiff = [[NSMenuItem alloc] initWithTitle:@"Previous Difference"
                                                       action:@selector(goToPreviousDifference:)
                                                keyEquivalent:f7];
     prevDiff.keyEquivalentModifierMask = NSEventModifierFlagShift;
-    [navMenu addItem:prevDiff];
+    [nextMenu addItem:prevDiff];
+    [nextMenu addItem:[NSMenuItem separatorItem]];
     // Option+F5 and Shift+Option+F5 as in VS Code: the editor's next or
     // previous change bar (GitGutter.h), wrapping. Caught by the key
     // monitor too, as the editor has no Command key in them.
@@ -2282,25 +2353,12 @@ static void BuildMenu(void) {
                                                         action:@selector(nextChange:)
                                                  keyEquivalent:f5];
     nextChange.keyEquivalentModifierMask = NSEventModifierFlagOption;
-    [navMenu addItem:nextChange];
+    [nextMenu addItem:nextChange];
     NSMenuItem *prevChange = [[NSMenuItem alloc] initWithTitle:@"Go to Previous Change"
                                                         action:@selector(previousChange:)
                                                  keyEquivalent:f5];
     prevChange.keyEquivalentModifierMask = NSEventModifierFlagOption | NSEventModifierFlagShift;
-    [navMenu addItem:prevChange];
-    // An agent's tour (`mutible tour`): enabled only while one is on, and
-    // the key monitor takes the keys only then, so Option+] still types ‘.
-    [navMenu addItem:[NSMenuItem separatorItem]];
-    NSMenuItem *nextStop = [[NSMenuItem alloc] initWithTitle:@"Next Tour Stop"
-                                                      action:@selector(nextTourStop:)
-                                               keyEquivalent:@"]"];
-    nextStop.keyEquivalentModifierMask = NSEventModifierFlagOption;
-    [navMenu addItem:nextStop];
-    NSMenuItem *prevStop = [[NSMenuItem alloc] initWithTitle:@"Previous Tour Stop"
-                                                      action:@selector(previousTourStop:)
-                                               keyEquivalent:@"["];
-    prevStop.keyEquivalentModifierMask = NSEventModifierFlagOption;
-    [navMenu addItem:prevStop];
+    [nextMenu addItem:prevChange];
     navItem.submenu = navMenu;
 
     // Bookmarks: the window in front's bookmarks (its folder's

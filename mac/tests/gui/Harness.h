@@ -220,6 +220,10 @@ void MCGuiSendKeyToApp(NSWindow *window, unsigned short keyCode, NSEventModifier
 BOOL MCGuiPressKey(NSWindow *window, unsigned short keyCode, NSEventModifierFlags flags);
 // Runs `block` as one undo group of its own, as a key press would be.
 void MCGuiUndoGroup(NSUndoManager *undo, void (^block)(void));
+// The first item of the menu bar, its submenus included at any depth, that
+// `match` takes; nil when none does. The menus keep their keyboard
+// commands in submenus (main.mm), so a check looks through them all.
+NSMenuItem *MCGuiMenuItemWhere(BOOL (^match)(NSMenuItem *item));
 
 // ---- text geometry
 // Where the text of the line holding character `index` is drawn, in the

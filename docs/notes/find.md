@@ -230,6 +230,18 @@ found through that list.
   another count of matches, and a search cut short cannot replace. Unlike
   the app's, it rewrites a Windows-1252 file (in Windows-1252, when the
   replacement fits) and files up to 64 MB.
+- **A Mac window over SSH** (2026-11-28, session-host.md "Preserve Case and
+  one match through the host"): Replace All and Replace in This File send
+  the search's rows to the host's "replace" (`replaceOnHostIn:ask:`), with
+  `preserveCase` only when `hostReplacesOne` (the panel's block, from
+  `MCRemoteWorkspace replacesOne`, `Link::replacesOne`, Welcome flag 2048)
+  says the host honours it. Replace This Match (`replaceMatchOnHost:`)
+  sends the row alone with its `byteColumn`, which the host's search rows
+  carry (`runHostSearch:` reads it into the hit); a row whose tab has
+  unsaved changes is refused with a note, as Replace All names it. Without
+  the flag both keep their notes, naming the host as too old, and the
+  menu's Replace This Match stays disabled. Checked in `remote_ssh` (Foo
+  foo FOO on the stand-in's disk, one match, then the rest).
 - **Where Option+Shift+Cmd+F puts the keyboard** (2026-11-20, found by
   `make taskbench-mac`: with nothing searched yet it went to the replace
   field, so the search typed first became the replacement): as VS Code's
@@ -323,4 +335,4 @@ text is in place in its section.
 - Find in Folder's keys: the Search window floats over the editor window and stays key, so a command run from it through AppDelegate's `[self current]` changed the editor window's panes (Toggle Terminal showed the terminal and called `focusInput`) while every key typed after still went to Search: a walker's `python3 -m pytest -q` and Return landed in the replace field, where Return was Replace All, and a file was rewritten. A command that shows a pane must make the editor window key (`currentForPane:`), Return in a field of that window must never write files, and Dismiss must reach Replace All, which re-plans the whole folder and had ignored the rows taken out of the results.
 - Where Option+Shift+Cmd+F puts the keyboard: the replace field took it with nothing searched yet, so the search typed first became the replacement; only a selection just made the query sends it there, as in VS Code.
 - A GTK search under the keyboard: a search clears the list at once (`clearResults`) and its rows come later from the worker, and the row that had the keyboard goes with its row; when a frame falls between the two, GTK's deferred focus move finds the list empty and leaves the window no focus at all, so the next key did nothing and a Down only put the keyboard back on the first row (GtkListView's arrows, from no focused row, start at its focus position, which the new rows reset to 0).
-- Replace in Folder over SSH (a host with Welcome flag 2048): `preserveCase` in the request and a row's `byteColumn` (one match) reach the same `TextFind` functions the local replace uses, in the host's `replaceRows`; never a second preserve-case implementation. A host without the flag ignores both, so a client refuses them (`docs/notes/session-host.md`, "Preserve Case and one match through the host").
+- Replace in Folder over SSH (a host with Welcome flag 2048): `preserveCase` in the request and a row's `byteColumn` (one match) reach the same `TextFind` functions the local replace uses, in the host's `replaceRows`; never a second preserve-case implementation. A host without the flag ignores both, so a client refuses them (`docs/notes/session-host.md`, "Preserve Case and one match through the host"); the Mac and GTK both ask the flag, never assume it (the Mac's `hostReplacesOneMatch` is NO with no block).

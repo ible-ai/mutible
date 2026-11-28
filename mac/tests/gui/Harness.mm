@@ -787,6 +787,19 @@ void MCGuiUndoGroup(NSUndoManager *undo, void (^block)(void)) {
     undo.groupsByEvent = byEvent;
 }
 
+static NSMenuItem *MenuItemWhere(NSMenu *menu, BOOL (^match)(NSMenuItem *)) {
+    for (NSMenuItem *it in menu.itemArray) {
+        if (match(it)) return it;
+        if (it.submenu)
+            if (NSMenuItem *found = MenuItemWhere(it.submenu, match)) return found;
+    }
+    return nil;
+}
+
+NSMenuItem *MCGuiMenuItemWhere(BOOL (^match)(NSMenuItem *item)) {
+    return MenuItemWhere(NSApp.mainMenu, match);
+}
+
 // ------------------------------------------------------------ processes
 void MCGuiRunProcess(NSArray<NSString *> *argv, NSDictionary<NSString *, NSString *> *env,
                      void (^done)(int status, NSString *out, NSString *err)) {

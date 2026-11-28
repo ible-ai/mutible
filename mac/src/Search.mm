@@ -743,7 +743,7 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     else if (a == @selector(toggleFindPreserveCase:)) on = self.preserveCase;
     else if (a == @selector(toggleFindInSelection:)) return NO;
     else if (a == @selector(replaceSelectedMatch:))
-        return !_replacing && !self.hostSearch && [self hitForAction] != nil;
+        return !_replacing && (!self.hostSearch || [self hostReplacesOneMatch]) && [self hitForAction] != nil;
     else if (a == @selector(replaceSelectedFile:))
         return !_replacing && (!self.hostSearch || self.hostReplace) &&
                [self.outline itemAtRow:[self rowForAction]] != nil;
@@ -1260,6 +1260,8 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
                 h.path = [root stringByAppendingPathComponent:rel];
                 h.line = (NSInteger)row["line"].asInt();
                 h.text = SNS(row["text"].asString());
+                // A host with flag 2048 sends it: the match Replace This Match replaces.
+                h.byteColumn = (NSUInteger)std::max<int64_t>(0, row["byteColumn"].asInt(0));
                 h.count = (NSUInteger)std::max<int64_t>(1, row["count"].asInt(1));
                 NSMutableArray<NSString *> *before = [NSMutableArray array], *after = [NSMutableArray array];
                 for (const Json &l : row["before"].elements()) [before addObject:SNS(l.asString())];
@@ -1549,11 +1551,15 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
         return NO;
     }
     // Over SSH the host replaces (replaceOnHostIn:ask:), when it can, and
-    // without Preserve Case, which it ignores.
-    if (self.hostSearch && (![self hostTakesReplace] || self.preserveCase)) {
+    // with Preserve Case only when it honours it (flag 2048): an older host
+    // ignores it and would replace in the wrong case.
+    if (self.hostSearch && (![self hostTakesReplace] || (self.preserveCase && ![self hostReplacesOneMatch]))) {
         NSBeep();
-        [self setStatus:![self hostTakesReplace] ? [self noReplaceOverSsh]
-                                                 : @"Preserve Case does not work in Replace in Folder over SSH yet"
+        [self setStatus:![self hostTakesReplace]
+                            ? [self noReplaceOverSsh]
+                            : [NSString stringWithFormat:@"Preserve Case does not work in Replace in Folder over SSH "
+                                                         @"here: mutible on %@ is too old for it",
+                                                         self.hostPlace ?: @"the other machine"]
                   error:YES];
         return NO;
     }
@@ -1719,11 +1725,18 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
 
 - (void)replaceMatchAtRow:(NSInteger)row {
     if (self.hostSearch && row >= 0 && row < (NSInteger)_hits.count) {
-        // The host replaces every match of a row's line, as a page's does.
-        NSBeep();
-        [self setStatus:@"Replacing one match does not work in a window over SSH yet: use Replace in This File "
-                        @"or Replace All"
-                  error:YES];
+        // An older host replaces every match of a row's line, as a page's does.
+        if ([self hostTakesReplace] && ![self hostReplacesOneMatch]) {
+            NSBeep();
+            [self setStatus:[NSString stringWithFormat:@"Replacing one match does not work in a window over SSH "
+                                                       @"here: mutible on %@ is too old for it. Use Replace in "
+                                                       @"This File or Replace All",
+                                                       self.hostPlace ?: @"the other machine"]
+                      error:YES];
+            return;
+        }
+        if (![self readyToReplace]) return;
+        [self replaceMatchOnHost:_hits[(NSUInteger)row]];
         return;
     }
     if (row < 0 || row >= (NSInteger)_hits.count || ![self readyToReplace]) return;
@@ -1736,6 +1749,12 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
 
 - (BOOL)hostTakesReplace {
     return self.hostReplace && (!self.hostReplaces || self.hostReplaces());
+}
+
+// Whether the host honours Preserve Case and one match of a row (Welcome
+// flag 2048, Client::hostReplacesOne): never assumed when not told.
+- (BOOL)hostReplacesOneMatch {
+    return [self hostTakesReplace] && self.hostReplacesOne && self.hostReplacesOne();
 }
 
 - (NSString *)noReplaceOverSsh {
@@ -1825,6 +1844,8 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     request.set("caseSensitive", Json(o.caseSensitive));
     request.set("wholeWord", Json(o.wholeWord));
     request.set("regex", Json(o.regex));
+    // Only to a host that honours it (readyToReplace refused it otherwise).
+    if (o.preserveCase && [self hostReplacesOneMatch]) request.set("preserveCase", Json(true));
     request.set("replacement", Json(SStd(with)));
     request.set("hidden", Json(true));   // as the search read them
     NSString *prefix = [_root hasSuffix:@"/"] ? _root : [_root stringByAppendingString:@"/"];
@@ -1853,6 +1874,58 @@ static NSArray<NSString *> *MCLines(const std::vector<std::string> &lines) {
     NSArray<NSString *> *heldNames = [held copy];
     const uint64_t req = self.hostReplace(std::move(request), ^(const std::vector<Json> &answers, BOOL done) {
         [weakSelf hostReplaced:answers done:done held:heldNames];
+    });
+    if (!req) {
+        _replacing = NO;
+        [self setStatus:[NSString stringWithFormat:@"Cannot replace: the connection to %@ is lost",
+                                                   self.hostPlace ?: @"the other machine"]
+                  error:YES];
+    }
+}
+
+// Replace This Match over SSH (a host with flag 2048): the row's first
+// match (the "byteColumn" the host's row carried) goes to the host's replace
+// as the one row of its file; the host checks the line still reads as the
+// row showed and a match still starts there, else says the file changed.
+// No question, as locally. A tab with unsaved changes is left alone, as
+// Replace All leaves it.
+- (void)replaceMatchOnHost:(SearchHit *)h {
+    NSString *prefix = [_root hasSuffix:@"/"] ? _root : [_root stringByAppendingString:@"/"];
+    if (![h.path hasPrefix:prefix]) return;
+    if (self.openState && self.openState(h.path) == MCOpenFileConflict) {
+        NSBeep();
+        [self setStatus:[NSString stringWithFormat:@"Nothing replaced: %@ is in a tab with unsaved changes",
+                                                   h.path.lastPathComponent]
+                  error:NO];
+        return;
+    }
+    const FolderSearchOptions o = [self options];
+    Json request = Json::object();
+    request.set("query", Json(SStd(self.field.stringValue)));
+    request.set("caseSensitive", Json(o.caseSensitive));
+    request.set("wholeWord", Json(o.wholeWord));
+    request.set("regex", Json(o.regex));
+    request.set("preserveCase", Json(o.preserveCase));
+    request.set("replacement", Json(SStd(self.replaceField.stringValue ?: @"")));
+    request.set("hidden", Json(true));   // as the search read them
+    Json row = Json::object();
+    row.set("line", Json((int64_t)h.line));
+    row.set("text", Json(SStd(h.text)));
+    row.set("count", Json((int64_t)MAX((NSUInteger)1, h.count)));
+    row.set("byteColumn", Json((int64_t)h.byteColumn));
+    Json rows = Json::array();
+    rows.push(std::move(row));
+    Json file = Json::object();
+    file.set("path", Json(SStd([h.path substringFromIndex:prefix.length])));
+    file.set("rows", std::move(rows));
+    Json list = Json::array();
+    list.push(std::move(file));
+    request.set("files", std::move(list));
+    _replacing = YES;
+    [self setStatus:@"Replacing…" error:NO];
+    __weak SearchPanel *weakSelf = self;
+    const uint64_t req = self.hostReplace(std::move(request), ^(const std::vector<Json> &answers, BOOL done) {
+        [weakSelf hostReplaced:answers done:done held:@[]];
     });
     if (!req) {
         _replacing = NO;

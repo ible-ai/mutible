@@ -93,7 +93,7 @@ found through that list.
 
 ## Keys: the registry, keys.conf and the key monitor
 
-- `src/Commands.cpp` has every command (about 160) in menu order: id, title,
+- `src/Commands.cpp` has every command (about 250), grouped by menu: id, title,
   menu, default keys (`shift+cmd+p` notation), where it applies (`Any`,
   `Editor`, `Terminal`, `Tree`), selector and tag, flags (`Global`: the key
   monitor runs it before any view, the grid included; `Fixed`: a view's own
@@ -114,6 +114,39 @@ found through that list.
   language (`MCKeymapLanguage`). Cmd+B stays the sidebar and Cmd+I the inline
   agent in Markdown (the owner's call, 2026-11-06): Toggle Bold and Italic
   have no key.
+- **The Mac's menus** (2026-11-28, the owner's: "the dropdown menus are
+  really excessive"): `BuildMenu` in main.mm lays them out by hand, not
+  from the registry's order. Each menu opens with what people click
+  (Show Session in Browser, the pane and panel toggles, Find in Folder,
+  Go to File, Run File, saving and closing), grouped by separators; the
+  commands people reach by key (the cursor's moves, line commands, tabs by
+  number, focus, next problem or change, terminal resizing) go in
+  submenus at the menu's foot, made with `MCAddSubmenu` (File > Tabs, File
+  Tree, Browser Bookmarks; Edit > Find, Find Options, Cursors and
+  Selection, Lines, Code, Markdown; View > Source Control, File Tree,
+  Panes, Folding, Page Zoom, More; Terminal > Tabs and Panes; Navigate >
+  Cursor, Go to Tab, Focus, Problems and Changes). A menu key works from
+  a submenu as from the top, and the palette walks every submenu ("View >
+  More > Play/Pause"). The registry's `menu` stays the top-level menu, so
+  keys.conf's comments and the GTK port, which build from the registry's
+  order, are unchanged. A new command goes at its menu's top only if
+  people would click it; keyboard-only ones go in the submenu that fits.
+  The keymap suite holds Show Session in Browser and Toggle Terminal among
+  View's first six items, every menu's top level at 32 of its own items
+  at most, and every command with a menu item on a visible one in the
+  registry's top-level menu. A check that looks for an item walks the
+  submenus too (`MCGuiMenuItemWhere`, Harness.h), never only the top
+  level of each menu.
+- **Trap (plain keys first, 2026-11-28)**: a key press made with
+  `keyEventWithType:` (the GUI checks' `MCGuiSendKeyToApp` and suites'
+  own, Browser's `typeCommandKey`) is matched by the main menu without its
+  Shift, so the first item on the letter takes it; a hardware press, or
+  one from `eventWithCGEvent:`, matches either way. The first reorder put
+  Toggle Browser (Shift+Cmd+B) above Toggle Sidebar, and zoomfit's Cmd+B
+  opened the browser. Every item whose key is another's with Shift added
+  comes after that other in the bar (Find… before Find in Folder…, Focus
+  before Go to Tab), which the keymap suite checks, but for five older
+  pairs no such press uses (Cmd+K, Cmd+P, Cmd+T, Option+Cmd+T, Ctrl+G).
 - `Keymap.mm` reads and watches the file and puts the keys on the menu items
   found by action and tag (the first on the item, others on hidden items beside
   it, `allowsKeyEquivalentWhenHidden`). Errors join the settings errors in the
@@ -285,6 +318,7 @@ Each trap's first sentence, in the order it appears above; the whole
 text is in place in its section.
 
 - Settings, themes and Adjust Settings: Trap: an NSTextView with `usesFontPanel` sets the shared NSColorPanel to the color under the caret when the selection moves, and the panel forwarded that to `colorPicked:`, so every pick became the text color; the editor sets `usesFontPanel = NO`.
+- Keys: the registry, keys.conf and the key monitor: **Trap (plain keys first)**: a key press made with `keyEventWithType:` is matched by the main menu without its Shift, so a plain key's item must come before its Shift variant's.
 - Keys: the registry, keys.conf and the key monitor: **Trap (1.5.0 and 1.5.1)**: Shift+Option+F typed Ï, because the "verified" check had sent the event to the menu directly.
 - Keys: the registry, keys.conf and the key monitor: **Trap** (the hints' search box on Linux): an input method types nothing for Alt+letter (`GDK_MODIFIER_INTENT_NO_TEXT_INPUT`), so a forwarded Alt+Z was lost.
 - Keys: the registry, keys.conf and the key monitor: **Trap** (the hints' keys on Linux): a monospace font gives a thin space a whole cell, so a key's spaces are drawn at half the keys' size.

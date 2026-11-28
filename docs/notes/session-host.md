@@ -4507,7 +4507,8 @@ page's "replace", #307) in a Mac window over SSH, as GTK's Replace All
   search runs again with it as its note (`runHostSearch:` now takes the
   note, which it dropped before). Preserve Case (the host ignores it) and
   Replace This Match (the host replaces a row's whole line) are refused
-  with a note; a host without flags 8 and 16, or a lost link, disables
+  with a note, unless the host has Welcome flag 2048 ("Preserve Case and
+  one match through the host", below); a host without flags 8 and 16, or a lost link, disables
   Replace All with a tooltip saying so.
 - **Checks** (`remote_ssh`, on the stand-in's disk): Shift+Cmd+N in the
   tree with its prompt typed into (`MCGuiTypeInPrompts`, new in the
@@ -5049,10 +5050,15 @@ replaced a row's whole line) are gone for a host that says it can.
   sends the row (no question, as the local one) and the answer goes through
   `hostReplaced`. A panel whose host lacks the flag keeps the two notes. A
   tab with unsaved changes is refused with a note, as Replace All names it.
-- **The Mac** still refuses both (its client was not changed): it can drop
-  its two refusals once it checks `hostReplacesOne()`, sending `preserveCase`
-  in Replace All and Replace in This File, and a row's `byteColumn` for
-  Replace This Match.
+- **The Mac** (2026-11-28): `Link::replacesOne` (mac/src/SessionLink.h),
+  `MCRemoteWorkspace replacesOne`, and the panel's `hostReplacesOne` block
+  (set in `replaceOnHost:`). With it, Replace All and Replace in This File
+  send `preserveCase`, and Replace This Match (`replaceMatchOnHost:`) sends
+  the row alone with its `byteColumn`, read from the host's search row; a
+  tab with unsaved changes is refused with a note. Without it the two
+  refusals stay, naming the host as too old. Checked in `remote_ssh` (the
+  block after Replace All: the flag taken away refuses both and changes
+  nothing; then Foo foo FOO becomes Bar foo FOO, then Bar bar BAR).
 - **Checked.** Core `host:replace-one` (preserve case on "Foo"/"FOO", one
   match, a stale column, the old shape); `remote_ssh`'s Preserve Case block.
 
