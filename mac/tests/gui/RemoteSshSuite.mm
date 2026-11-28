@@ -1199,9 +1199,15 @@ MC_GUI_SUITE(remote_ssh) {
         MCGuiNote(@"status: %@; case.txt: %@", p.status.stringValue, Read(Op(@"case.txt")));
         GCHECK([p.status.stringValue hasPrefix:@"Replaced 3 matches in 1 file"]);
         GCHECK_EQ_STR(Read(Op(@"case.txt")), @"Bar bar BAR\nbar\n");
+        // Only Replace All's own question, answered: the steps after count
+        // alerts from here (NewAlerts), as after the Replace All above.
+        MCGuiNote(@"alerts since the Replace All above: %@", NewAlerts());
+        GCHECK([NewAlerts() isEqualToArray:@[ @"Replace 3 matches in 1 file?" ]]);
+        GCHECK(p.hostReplacesOne != nil);   // the flag's block put back
         p.preserveCase = NO;
         [[NSFileManager defaultManager] removeItemAtPath:Op(@"case.txt") error:nil];
         [p.window orderOut:nil];
+        gAlertsBefore = MCGuiAlertsShown().count;
     });
     // ---- addresses an open window's folder holds. As a local file goes
     // to the window whose folder holds it, a file's address on the same
