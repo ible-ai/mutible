@@ -860,6 +860,13 @@ extern NSUInteger MCDirtyFromHostMarks;
 // git for the window run by its host (stage 9: Source Control, the change
 // bars, the tree's colors, the branch), nil on this Mac.
 - (MCGitRunner)hostGitRunner;
+// The work tree's files read through the host for the review pages and
+// comparisons (MCGitWorkReader), nil on this Mac.
+- (MCGitWorkReader)hostWorkReader;
+// Git there wrote a file of the work tree (the review page's Discard or a
+// conflict choice): a clean tab of it takes the host's text, as one Reload
+// from Disk step (a tab over SSH does not follow the host's disk itself).
+- (void)followHostFile:(NSString *)path;
 // A file's text from its disk for the language servers' edits across files
 // (LspSession diskText): the host's in a window over SSH.
 - (NSString *)languageServerDiskText:(NSString *)path;
@@ -1002,6 +1009,8 @@ extern NSUInteger MCDirtyFromHostMarks;
 @interface EditorController (LineHistoryPrivate)
 - (BOOL)validateLineHistoryItem:(NSMenuItem *)item enabled:(BOOL *)enabled;
 - (void)stopLineHistory;
+// A window over SSH: its blame runs on the host (useHostGit calls it).
+- (void)lineHistoryUseHost;
 @end
 
 // EditorController+Persistence.mm: the tabs between runs, backups and hot exit, auto-save, files changed, moved or deleted outside.
@@ -1012,15 +1021,19 @@ extern NSUInteger MCDirtyFromHostMarks;
 // Such a tab made again, in no window yet; nil when it cannot be (a page
 // of its kind is open already). A comparison's sides are read after.
 - (MCTab *)tabForRestoredPage:(const TabSessions::PageTab &)p;
+// A comparison's two sides read again from git and the disk (the host's,
+// over SSH), off the main thread, then shown in its tab.
+- (void)remakeComparisonOfTab:(MCTab *)tab;
 @end
 
 @interface EditorController (Git)
 // The window's review page and commit page, new, with their hooks.
 - (MCChangeReviewPage *)newChangeReviewPage;
 - (MCChangeReviewPage *)newCommitReviewPage;
-// A window over SSH (stage 9): Source Control and the change bars run git
-// on the host (hostGitRunner), once both exist; and the host said git may
-// have changed, so the panel, the bars and the tree's colors look again.
+// A window over SSH (stage 9): Source Control, the change bars, the review
+// and commit pages and line history run git on the host (hostGitRunner),
+// once they exist; and the host said git may have changed, so the panel,
+// the bars and the tree's colors look again.
 - (void)useHostGit;
 - (void)gitChangedOnHost;
 @end

@@ -206,6 +206,8 @@ static void testChangeReviewRead() {
         };
         Read r = readUncommitted(host, run, images);
         CHECK(r.diffs.size() == 2 && asked == 2);
+        // HEAD as status read it (the page's note follows it).
+        CHECK(r.head.size() == 40 && r.head == run(host, {"rev-parse", "HEAD"}, "").out.substr(0, 40));
         for (const FileDiff& d : r.diffs) {
             if (d.file.path == "f.txt") CHECK(QuickDiff::toUtf8(d.file.newText) == "one\nHOST\n");
             if (d.file.path == "u.txt") CHECK(QuickDiff::toUtf8(d.file.newText) == "elsewhere\n");

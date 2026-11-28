@@ -535,11 +535,7 @@ coincide, the wrong repository).
   watch sees the folder and .git's index, HEAD and refs) calls
   `gitChangedOnHost`: the colors look again (`lookSoon`), the panel
   refreshes while shown, and the bars look again. Reconnect does the same.
-- **What differs over SSH.** The panel (`overSshHost`) hides Review
-  Changes and sets no `onReview`/`onReviewCommit`: the review page reads
-  the work tree and pictures from this Mac's disk, so a row opens its raw
-  `git diff` and a commit its `git show` in the diff tab (hunk actions
-  work there); `showChangeReviewAt:` refuses over SSH. Discard uses
+- **What differs over SSH.** Discard uses
   `GitUi::discardPlanOverSsh` (and the batch and hunk forms): no Trash
   there, so the changed copy is kept as a git object first
   (`keepCopyArgs`: `hash-object -w --no-filters`) and named in what is
@@ -550,20 +546,53 @@ coincide, the wrong repository).
   entry every look (one `ls-files`, the blob again only when its object
   changed) instead of the index file's stat, and watches no folder here.
   The tree colors take the folder as the host spells it (no realpath).
-- **Not done.** The review page and the commit page over SSH (their reads
-  would need the work tree through the host), line history
-  (EditorLineHistory), and the agents' worktree pages; GTK's window over
-  SSH is done (below), fetch, pull, push, Sync and autofetch included
-  (2026-11-22).
+- **The review and commit pages, comparisons and line history**
+  (2026-11-28, the Mac catching up with GTK's #359, #366 and #368). The
+  panel shows Review Changes and keeps `onReview`/`onReviewCommit` over
+  SSH. `useHostGit` (and `giveHostToReviewPage:`, as each page is made)
+  gives every `MCChangeReviewPage` the runner on its own queue and the
+  workspace's `workReader` (`useGitRunner:workReader:`; RemoteWorkspace.mm:
+  `Link::fetchBytes` from the main queue, waited for on the page's queue,
+  counted by `workReads`). Uncommitted changes are read by the core's
+  `ChangeReview::readUncommitted` with `ImageReading::readWork` (the
+  Mac's own `ReadReview` stays for this Mac's disk; the page's `Extra` is
+  now the core's, and the core's `Read` carries `head` for the page's
+  note); a commit's page is `ReadCommit` as before, its git on the
+  queue. Stage, Unstage, Mark Resolved and Discard File are git or the
+  panel's and work unchanged. Discard of a block or lines asks with
+  `ChangeReview::planOverSsh`'s words (shared with GTK, which used its
+  own copy) and runs `discardTextOnHost`; the conflict choices run
+  `writeWorkOnHost` (`git apply` of a whole-file patch from the bytes the
+  page read: git refuses it when the file moved since); after either the
+  page's `onWorkWritten` has the window's clean tab of the file take the
+  host's text (`followHostFile:`, `Link::readText`, `takeDiskRead:`, one
+  Reload from Disk step), since a remote tab follows no disk. Side by Side
+  takes the page's texts; a comparison made again from its record
+  (`remakeComparisonOfTab:`) runs `SideText` on a queue of its own with
+  the runner, the file side through the reader and no realpath. Line
+  history (EditorLineHistory) now assembles its answer with the core's
+  `LineHistory::blameArgs`, `GitOutcome` and `assemble` (its own copy of
+  that logic is gone) and, over SSH, `useGitRunner:` sends the blame to
+  the host and matches no Claude Code session (`lineHistoryUseHost`).
+- **Refused over SSH, with a note**: `mutible diff` (ControlCommands.mm:
+  it reads this Mac's files) and Compare with Main for an agent's
+  worktree (`MCAgentWindow compareWorktreeAt:`, the host's new
+  `sessionIsRemote`); no worktree page is given the host.
 - **Checks.** Core: `hostgit:args`, `:dir`, `:words`, `:run`, `:wire`
   (tests/session_git_tests.inc). GUI: remote_ssh's git block (a window on
   a repository of its own through the stand-in; the panel lists the
-  change through the host, `gitRuns` counted, no Review Changes, the
+  change through the host, `gitRuns` counted, Review Changes offered, the
   branch in the panel and the status bar, the tree's change count, a bar
-  on the changed line, a row's diff, stage and commit checked with git on
-  the stand-in's disk, a change there listed by the host's notice, an
-  untracked discard refused, a discard keeping its copy as an object that
-  `git cat-file -p` shows; then a bare repository on the stand-in's disk as
+  on the changed line, a row opening the review page with its diff
+  (`workReads` counted), Open as git Diff, a comparison with HEAD made
+  again through the host, Stage on the page's block and commit checked
+  with git on the stand-in's disk, the page empty after, line history
+  naming each line's commit, a graph row's commit page, a change there
+  listed by the host's notice, an untracked discard refused, a discard
+  keeping its copy as an object that `git cat-file -p` shows, the page's
+  Discard of one of two blocks changing only it there (the kept object
+  holds both, the clean tab follows), and a merge conflict's Keep
+  Incoming, Mark Resolved and the merge's commit; then a bare repository on the stand-in's disk as
   origin: Push publishes main there, another clone's commit comes by Fetch
   and Pull, all run by the host, and an origin whose core.sshCommand
   refuses the key fails at once with the credentials sentence).
@@ -598,7 +627,7 @@ Trash (Discard uses `discardPlanOverSsh` and keeps a
 git object). Over SSH the review and commit pages and the comparisons of a
 revision run through the same runner and a host file reader (session-host.md,
 "the review pages and comparisons"); `mutible diff`, the agents' worktrees,
-Apply to Main are refused with a note; line history is not routed. A page's Discard of a block or
+Apply to Main are refused with a note; line history blames through the host (#366). A page's Discard of a block or
 lines and its conflict choices are written by `git apply` on the host (`ChangeReview::writeWorkOnHost`, `discardTextOnHost`;
 Discard keeps the changed copy as a git object first, as the panel's does).
 - Over SSH on GTK, fetch, pull, push, Sync and autofetch (the Mac's #361): `hostGitRunner` no longer

@@ -24,6 +24,9 @@
 - (void)showStatusNote:(NSString *)note;
 - (void)focusEditor:(id)sender;
 - (void)agentWorktreesChanged;                        // the tree's labels again
+// A window over SSH: its worktrees would be this Mac's at the host's
+// paths, so Compare with Main is refused there with a note.
+@property(nonatomic, readonly) BOOL sessionIsRemote;
 // Source Control in the sidebar and the Uncommitted Changes page (after
 // Apply to Main brought a worktree's changes into this window's checkout).
 - (void)showSourceControlChanges;

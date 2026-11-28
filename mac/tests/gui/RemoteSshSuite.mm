@@ -96,13 +96,22 @@
 //     a repository of its own there, a.txt changed after its first commit.
 //     Its host runs git for it (Welcome flag 256; the window's workspace
 //     counts the runs, since git run here on the same path would find the
-//     same repository): Source Control lists the change, has no Review
+//     same repository): Source Control lists the change, offers Review
 //     Changes, and shows the branch, as do the status bar and the tree's
-//     change count; a.txt's change bar; a row opens its git diff; Stage and
-//     Commit, checked with git on the stand-in's disk; a change made there
-//     listed by the host's notice; a new file's discard refused; b.txt's
-//     Discard keeping its changed copy as a git object that git cat-file
-//     shows there. Fetch, pull and push there (stage 9's third slice), a
+//     change count; a.txt's change bar; a row opens the review page with
+//     a.txt's diff, its file read through the host (the workspace counts
+//     those reads too), and Open as git Diff runs git there; a comparison
+//     with HEAD made again from its record shows HEAD's text and the work
+//     tree's; Stage on the page's block and Commit, checked with git on the
+//     stand-in's disk; the page empty after; line history names the commit
+//     that changed each line; a graph row opens that commit's page; a
+//     change made there listed by the host's notice; a new file's discard
+//     refused; b.txt's Discard keeping its changed copy as a git object
+//     that git cat-file shows there; the review page's Discard of one of
+//     d.txt's two blocks changing only that block there, keeping the file
+//     as an object, and a clean tab of d.txt taking the host's text; a
+//     merge that conflicts in r.txt, Keep Incoming written there, Mark
+//     Resolved staging it, and the merge committed. Fetch, pull and push there (stage 9's third slice), a
 //     bare repository on the stand-in's disk as its origin: Push publishes
 //     main (origin has the commit, main tracks it), another clone's commit
 //     comes by Fetch (origin/main) and Pull (the work tree), each run by
@@ -145,6 +154,9 @@
 #import "Harness.h"
 #import "EditorController.h"
 #import "EditorController+Private.h"
+#import "ChangeReviewPage.h"
+#import "CompareView.h"
+#import "EditorLineHistory.h"
 #import "EditorTab.h"
 #import "FileTree.h"
 #import "GitGutter.h"
@@ -218,6 +230,9 @@ NSString *gGitFolder;            // a repository there, with a window of its own
 EditorController *gGitC;
 NSUInteger gGitRunsBefore, gGitNoticesBefore;
 NSString *gKeptObject;           // the object Discard kept b.txt's changed copy as
+NSString *gBlockKept;            // the object the review page's Discard kept d.txt as
+NSUInteger gWorkReadsBefore, gLoadsBefore, gActions;
+MCTab *gCompareTab;              // a comparison with HEAD made again through the host
 NSString *gGitOrigin, *gGitOther;    // a bare repository there as its origin, and another clone of it
 NSString *gLockedSsh, *gLockedSeen;  // an ssh that refuses the key, and its record that it ran
 double gSyncAt;                      // when a fetch was asked for
@@ -453,6 +468,30 @@ BOOL GitRows(EditorController *c, NSArray<NSString *> *rows) {
     return GitOf(c).inRepository && [[GitOf(c) rowDescriptions] isEqualToArray:rows];
 }
 NSUInteger GitRuns(EditorController *c) { return [c remoteWorkspace].gitRuns; }
+NSUInteger WorkReads(EditorController *c) { return [c remoteWorkspace].workReads; }
+
+// The review page (Uncommitted Changes or a commit's) on show, or nil.
+MCChangeReviewPage *ReviewOn(EditorController *c) {
+    id page = [[c valueForKey:@"activeTab"] valueForKey:@"page"];
+    return [page isKindOfClass:MCChangeReviewPage.class] ? page : nil;
+}
+// The first block's row after a file's header row.
+NSInteger BlockAfter(MCChangeReviewPage *p, NSInteger header) {
+    for (NSUInteger b = 0; b < p.blockCount; b++)
+        if ([p rowOfBlock:b] > header) return [p rowOfBlock:b];
+    return -1;
+}
+BOOL PressOn(MCChangeReviewPage *p, NSString *title, NSInteger row) {
+    const NSRect r = [p buttonRect:title row:row];
+    if (NSIsEmptyRect(r)) return NO;
+    return [p pressAtPoint:NSMakePoint(NSMidX(r), NSMidY(r))];
+}
+// The message's git object name after "git object ", its first twelve.
+NSString *KeptObjectIn(NSString *said) {
+    NSRange r = [said rangeOfString:@"git object "];
+    if (r.location == NSNotFound || NSMaxRange(r) + 12 > said.length) return nil;
+    return [said substringWithRange:NSMakeRange(NSMaxRange(r), 12)];
+}
 
 // git run on this Mac in the stand-in's folder (which is this Mac's): what
 // the other machine's disk and repository say, apart from the window.
@@ -1704,6 +1743,11 @@ MC_GUI_SUITE(remote_ssh) {
         gGitFolder = RealPath(made);
         MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"a.txt"], @"one\ntwo\nthree\n");
         MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"b.txt"], @"bee\n");
+        // Twenty lines, for two blocks of change far apart (the review
+        // page's Discard of one of them).
+        NSMutableString *d = [NSMutableString string];
+        for (int i = 1; i <= 20; i++) [d appendFormat:@"l%d\n", i];
+        MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"d.txt"], d);
     });
     MCGuiAsync(@"git init, add, commit there", 30, ^(MCGuiDone done) {
         if (!gGit) { done(); return; }
@@ -1739,9 +1783,9 @@ MC_GUI_SUITE(remote_ssh) {
     MCGuiWait(@"the panel lists the change, from git run by the host", 20, ^BOOL {
         return !gGit || (GitRows(gGitC, @[ @"# Changes  1", @"W M a.txt" ]) && GitRuns(gGitC) > 0);
     });
-    MCGuiStep(@"no Review Changes over SSH (it reads this Mac's disk)", ^{
+    MCGuiStep(@"Review Changes is offered over SSH (its page reads through the host)", ^{
         if (!gGit) return;
-        GCHECK(![[GitOf(gGitC) valueForKey:@"reviewButtonShown"] boolValue]);
+        GCHECK([[GitOf(gGitC) valueForKey:@"reviewButtonShown"] boolValue]);
     });
     MCGuiWait(@"the branch in the panel and the status bar, and the tree's colors", 20, ^BOOL {
         if (!gGit) return YES;
@@ -1755,24 +1799,82 @@ MC_GUI_SUITE(remote_ssh) {
         return [gGitC.currentPath isEqualToString:[gGitFolder stringByAppendingPathComponent:@"a.txt"]] &&
                bars.barCount == 1 && [bars.barDescriptions.firstObject hasPrefix:@"modified 1+1"];
     });
-    MCGuiStep(@"a row opens its git diff (no review page over SSH)", ^{
+    // ---- the review page over SSH: its git through the host, the changed
+    // files read through it (the core's readUncommitted with readWork).
+    MCGuiStep(@"a row opens the review page", ^{
         if (!gGit) return;
+        gGitRunsBefore = GitRuns(gGitC);
+        gWorkReadsBefore = WorkReads(gGitC);
         [GitOf(gGitC) reviewRow:GitRow(gGitC, @"W M a.txt") preview:YES];
+    });
+    MCGuiWait(@"it lists a.txt with its diff, read through the host", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        return p.loaded && p.overSsh && [p rowOfFile:@"a.txt" staged:NO] >= 0 &&
+               [p.rowDescriptions containsObject:@"- two"] && [p.rowDescriptions containsObject:@"+ TWO"] &&
+               GitRuns(gGitC) > gGitRunsBefore && WorkReads(gGitC) > gWorkReadsBefore;
+    });
+    MCGuiStep(@"its rows; Open as git Diff still runs git there", ^{
+        if (!gGit) return;
+        MCGuiNote(@"review rows: %@", ReviewOn(gGitC).rowDescriptions);
+        [GitOf(gGitC) showDiffAtRow:GitRow(gGitC, @"W M a.txt")];
     });
     MCGuiWait(@"the diff, run there", 15, ^BOOL {
         if (!gGit) return YES;
         NSTextView *diff = [gGitC valueForKey:@"diffView"];
-        return [[gGitC valueForKey:@"isDiff"] boolValue] && [[gGitC valueForKey:@"diffName"] isEqualToString:@"a.txt"] &&
-               [diff.string containsString:@"+TWO"] &&
+        return [[gGitC valueForKey:@"isDiff"] boolValue] && !ReviewOn(gGitC) &&
+               [[gGitC valueForKey:@"diffName"] isEqualToString:@"a.txt"] && [diff.string containsString:@"+TWO"] &&
                [diff.string containsString:@"-two"];
     });
-    MCGuiStep(@"stage a.txt", ^{
+    // A comparison with HEAD made again from its record (as a restored tab
+    // is): HEAD's side by the host's git, the file's through the host.
+    MCGuiStep(@"a comparison of a.txt with HEAD, made through the host", ^{
         if (!gGit) return;
+        NSString *a = [gGitFolder stringByAppendingPathComponent:@"a.txt"];
+        MCComparison *cmp = [MCComparison new];
+        cmp.title = @"a.txt (HEAD ↔ working copy)";
+        cmp.leftLabel = @"HEAD: a.txt";
+        cmp.rightLabel = @"a.txt";
+        cmp.leftPath = a;
+        cmp.leftRev = @"HEAD";
+        cmp.rightPath = a;
+        cmp.rightRev = @"";
+        cmp.path = a;
+        cmp.leftText = @"";
+        cmp.rightText = @"";
+        [gGitC showComparison:cmp preview:NO];
+        gCompareTab = [gGitC valueForKey:@"activeTab"];
+        GCHECK(gCompareTab.comparison == cmp);
         gGitRunsBefore = GitRuns(gGitC);
-        [GitOf(gGitC) toggleStageAtRow:GitRow(gGitC, @"W M a.txt")];
+        gWorkReadsBefore = WorkReads(gGitC);
+        [gGitC remakeComparisonOfTab:gCompareTab];
+    });
+    MCGuiWait(@"both sides: HEAD's text and the work tree's", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCComparison *cmp = gCompareTab.comparison;
+        return [cmp.leftText isEqualToString:@"one\ntwo\nthree\n"] && [cmp.rightText isEqualToString:@"one\nTWO\nthree\n"] &&
+               GitRuns(gGitC) > gGitRunsBefore && WorkReads(gGitC) > gWorkReadsBefore;
+    });
+    MCGuiStep(@"one row changed; Review Changes again, Stage on a.txt's block", ^{
+        if (!gGit) return;
+        GCHECK(gCompareTab.comparison.changedRows == 1);
+        gCompareTab = nil;
+        [gGitC gitReviewChanges:nil];
+    });
+    MCGuiWait(@"the review on show", 15, ^BOOL {
+        return !gGit || (ReviewOn(gGitC).loaded && [ReviewOn(gGitC) rowOfFile:@"a.txt" staged:NO] >= 0);
+    });
+    MCGuiStep(@"Stage on the block", ^{
+        if (!gGit) return;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        gActions = 0;
+        p.onActionDone = ^{ gActions++; };
+        gGitRunsBefore = GitRuns(gGitC);
+        GCHECK(PressOn(p, @"Stage", BlockAfter(p, [p rowOfFile:@"a.txt" staged:NO])));
     });
     MCGuiWait(@"staged, by the host", 15, ^BOOL {
-        return !gGit || (GitRows(gGitC, @[ @"# Staged changes  1", @"S M a.txt" ]) && GitRuns(gGitC) > gGitRunsBefore);
+        return !gGit || (gActions == 1 && GitRows(gGitC, @[ @"# Staged changes  1", @"S M a.txt" ]) &&
+                         GitRuns(gGitC) > gGitRunsBefore);
     });
     GitThere(@"git there says a.txt is staged", ^NSString * { return @"git diff --cached --name-only"; },
              ^(int st, NSString *out) {
@@ -1797,6 +1899,60 @@ MC_GUI_SUITE(remote_ssh) {
         if (!gGit) return YES;
         MCGitGutter *bars = [gGitC valueForKey:@"gitGutter"];
         return bars.barCount == 0 && [gGitC treeGitChangeCount] == 0;
+    });
+    MCGuiStep(@"the review page has nothing left to show", ^{
+        if (!gGit) return;
+        [gGitC gitReviewChanges:nil];
+    });
+    MCGuiWait(@"empty, read again through the host", 15, ^BOOL {
+        return !gGit || (ReviewOn(gGitC).loaded && [ReviewOn(gGitC) rowOfFile:@"a.txt" staged:NO] < 0 &&
+                         [ReviewOn(gGitC) rowOfFile:@"a.txt" staged:YES] < 0);
+    });
+    // ---- line history over SSH: blame by the host's git, of the buffer.
+    MCGuiStep(@"line history of a.txt, by the host's git", ^{
+        if (!gGit) return;
+        GCHECK([gGitC showFile:[gGitFolder stringByAppendingPathComponent:@"a.txt"]]);
+        MCLineHistory *h = [gGitC ensureLineHistory];
+        GCHECK(h.overSsh);
+        gGitRunsBefore = GitRuns(gGitC);
+        [h showPopupForLine:1];
+    });
+    MCGuiWait(@"each line names the commit that changed it", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCLineHistory *h = [gGitC ensureLineHistory];
+        return [[h labelForLine:1] hasSuffix:@" · second, over ssh"] && [[h labelForLine:0] hasSuffix:@" · first"] &&
+               GitRuns(gGitC) > gGitRunsBefore;
+    });
+    MCGuiStep(@"its box says so; the graph's rows", ^{
+        if (!gGit) return;
+        MCLineHistory *h = [gGitC ensureLineHistory];
+        MCGuiNote(@"line 1: %@", [h labelForLine:1]);
+        GCHECK([[h detailForLine:1] containsString:@"second, over ssh"]);
+        [h closePopup];
+    });
+    // ---- a graph row's commit page, read by the host's git.
+    MCGuiWait(@"the graph lists the commit", 20, ^BOOL {
+        if (!gGit) return YES;
+        for (NSString *row in [GitOf(gGitC) graphDescriptions])
+            if ([row containsString:@"second, over ssh"]) return YES;
+        return NO;
+    });
+    MCGuiStep(@"a graph row opens its commit", ^{
+        if (!gGit) return;
+        NSArray<NSString *> *rows = [GitOf(gGitC) graphDescriptions];
+        NSInteger at = -1;
+        for (NSUInteger i = 0; i < rows.count; i++)
+            if ([rows[i] containsString:@"second, over ssh"]) at = (NSInteger)i;
+        GCHECK(at >= 0);
+        gGitRunsBefore = GitRuns(gGitC);
+        [GitOf(gGitC) showCommitAtRow:at preview:YES];
+    });
+    MCGuiWait(@"its page: the subject, and a.txt's change", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        return p.loaded && p.overSsh && p.commit.length && [p.headerTitle isEqualToString:@"second, over ssh"] &&
+               [p.rowDescriptions containsObject:@"- two"] && [p.rowDescriptions containsObject:@"+ TWO"] &&
+               GitRuns(gGitC) > gGitRunsBefore;
     });
     MCGuiStep(@"b.txt changed there, and a new file", ^{
         if (!gGit) return;
@@ -1838,6 +1994,141 @@ MC_GUI_SUITE(remote_ssh) {
     }, ^(int st, NSString *out) {
         GCHECK(st == 0);
         GCHECK_EQ_STR(out, @"bee two\n");
+    });
+    // ---- the review page's Discard of one block over SSH: git there keeps
+    // the file as an object and writes the new text (`git apply`); a clean
+    // tab of the file takes the host's text.
+    MCGuiStep(@"d.txt changed there in two places far apart; its tab open, clean", ^{
+        if (!gGit) return;
+        NSMutableString *d = [NSMutableString string];
+        for (int i = 1; i <= 20; i++) [d appendFormat:@"%@%d\n", (i == 2 || i == 18) ? @"L" : @"l", i];
+        MCGuiWriteFile([gGitFolder stringByAppendingPathComponent:@"d.txt"], d);
+    });
+    MCGuiWait(@"listed by the host", 20, ^BOOL {
+        return !gGit || [[GitOf(gGitC) rowDescriptions] containsObject:@"W M d.txt"];
+    });
+    MCGuiStep(@"its tab; then Review Changes", ^{
+        if (!gGit) return;
+        GCHECK([gGitC showFile:[gGitFolder stringByAppendingPathComponent:@"d.txt"]]);
+        [gGitC gitReviewChanges:nil];
+    });
+    MCGuiWait(@"d.txt's two blocks on the page", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        return p.loaded && [p rowOfFile:@"d.txt" staged:NO] >= 0 && [p.rowDescriptions containsObject:@"+ L2"] &&
+               [p.rowDescriptions containsObject:@"+ L18"];
+    });
+    MCGuiStep(@"Discard on the first block asks, with the no-Trash words; yes", ^{
+        if (!gGit) return;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        gActions = 0;
+        p.onActionDone = ^{ gActions++; };
+        gLoadsBefore = p.loads;
+        MCGuiAnswerAlerts(@[ @(NSAlertFirstButtonReturn) ]);
+        GCHECK(PressOn(p, @"Discard", BlockAfter(p, [p rowOfFile:@"d.txt" staged:NO])));
+    });
+    MCGuiWait(@"discarded there", 20, ^BOOL {
+        if (!gGit) return YES;
+        NSString *disk = Read([gGitFolder stringByAppendingPathComponent:@"d.txt"]);
+        return gActions == 1 && [disk hasPrefix:@"l1\nl2\nl3\n"] && [disk containsString:@"\nL18\n"];
+    });
+    MCGuiStep(@"only that block; the object named on the page", ^{
+        if (!gGit) return;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        MCGuiNote(@"said: %@", p.message);
+        GCHECK([p.message hasPrefix:@"Discarded a change to d.txt. The changed copy is kept there as git object "]);
+        gBlockKept = KeptObjectIn(p.message);
+        GCHECK(gBlockKept != nil);
+        GCHECK(GitOf(gGitC).undoDiscardTitle == nil);
+    });
+    MCGuiWait(@"the clean tab takes the host's text", 15, ^BOOL {
+        if (!gGit) return YES;
+        for (MCTab *t in [gGitC tabs])
+            if ([t.currentPath isEqualToString:[gGitFolder stringByAppendingPathComponent:@"d.txt"]])
+                return [t.currentText hasPrefix:@"l1\nl2\n"] && [t.currentText containsString:@"\nL18\n"] && !t.dirty;
+        return NO;
+    });
+    GitThere(@"git there: the kept copy is the file as it was; d.txt back as it is now", ^NSString * {
+        return [NSString stringWithFormat:@"git cat-file -p %@ | sed -n '2p;18p' && git checkout -q -- d.txt",
+                                          gBlockKept ?: @"none"];
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"L2\nL18\n");
+    });
+    // ---- a merge conflict's choice on the review page, written by git
+    // there; Mark Resolved stages it and Commit ends the merge.
+    GitThere(@"a merge there that conflicts in r.txt", ^NSString * {
+        return @"printf 'r1\\nr2\\nr3\\n' > r.txt && git add r.txt && git commit -qm r && "
+               @"git switch -qc topic && printf 'r1\\nr2 topic\\nr3\\n' > r.txt && git commit -qam topic && "
+               @"git switch -q main && printf 'r1\\nr2 main\\nr3\\n' > r.txt && git commit -qam main && "
+               @"{ git merge -q topic >/dev/null 2>&1; git diff --name-only --diff-filter=U; }";
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"r.txt\n");
+    });
+    MCGuiStep(@"Review Changes", ^{
+        if (!gGit) return;
+        [gGitC gitReviewChanges:nil];
+    });
+    MCGuiWait(@"r.txt's conflict on the page, read through the host", 20, ^BOOL {
+        if (!gGit) return YES;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        return p.loaded && [p.rowDescriptions containsObject:@"F r.txt  1 conflict left"];
+    });
+    MCGuiStep(@"Keep Incoming (theirs)", ^{
+        if (!gGit) return;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        gActions = 0;
+        p.onActionDone = ^{ gActions++; };
+        const NSInteger block = BlockAfter(p, [p rowOfFile:@"r.txt" staged:NO]);
+        GCHECK(!NSIsEmptyRect([p buttonRect:@"Keep Incoming" row:block]));
+        GCHECK(PressOn(p, @"Keep Incoming", block));
+    });
+    MCGuiWait(@"written there; none left", 20, ^BOOL {
+        if (!gGit) return YES;
+        return gActions == 1 && [Read([gGitFolder stringByAppendingPathComponent:@"r.txt"]) isEqualToString:@"r1\nr2 topic\nr3\n"] &&
+               [ReviewOn(gGitC).rowDescriptions containsObject:@"F r.txt  no conflicts left"];
+    });
+    MCGuiStep(@"Mark Resolved", ^{
+        if (!gGit) return;
+        MCChangeReviewPage *p = ReviewOn(gGitC);
+        MCGuiNote(@"after Keep Incoming: %@", p.message);
+        gActions = 0;
+        GCHECK(PressOn(p, @"Mark Resolved", [p rowOfFile:@"r.txt" staged:NO]));
+    });
+    MCGuiWait(@"staged, by the host", 20, ^BOOL {
+        return !gGit || (gActions == 1 && [[GitOf(gGitC) rowDescriptions] containsObject:@"S M r.txt"]);
+    });
+    GitThere(@"git there: nothing unmerged, r.txt staged as theirs", ^NSString * {
+        return @"git diff --name-only --diff-filter=U && git show :r.txt";
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"r1\nr2 topic\nr3\n");
+    });
+    MCGuiStep(@"commit the merge", ^{
+        if (!gGit) return;
+        GitOf(gGitC).messageView.string = @"merge topic";
+        [GitOf(gGitC) commit];
+    });
+    MCGuiWait(@"committed", 20, ^BOOL { return !gGit || ![[GitOf(gGitC) rowDescriptions] containsObject:@"S M r.txt"]; });
+    GitThere(@"git there: the merge committed with both parents", ^NSString * {
+        return @"git log -1 --format='%s %p' | awk '{print $1, $2, NF}'";
+    }, ^(int st, NSString *out) {
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"merge topic 4\n");
+    });
+    // The repository as the conflict found it (main at "second, over ssh",
+    // no topic branch, no r.txt), so the sync steps below run unchanged.
+    GitThere(@"git there: the merge and its branch taken back", ^NSString * {
+        return @"git reset -q --hard HEAD~3 && git branch -qD topic && git log -1 --format=%s && "
+               @"git status --porcelain";
+    }, ^(int st, NSString *out) {
+        MCGuiNote(@"after taking the merge back: %@", out);
+        GCHECK(st == 0);
+        GCHECK_EQ_STR(out, @"second, over ssh\n?? new.txt\n");
+    });
+    MCGuiWait(@"the panel follows: r.txt gone, new.txt still listed", 20, ^BOOL {
+        return !gGit || GitRows(gGitC, @[ @"# Changes  1", @"W U new.txt" ]);
     });
     // ---- fetch, pull and push over SSH (stage 9's third slice): the host
     // runs them there, with that machine's credentials and never a prompt.
@@ -1931,17 +2222,17 @@ MC_GUI_SUITE(remote_ssh) {
     });
     MCGuiStep(@"its window closes", ^{
         if (!gGit) return;
-        // The one alert is Discard's own question, which the check answered;
+        // The alerts are the two Discards' own questions, which the checks answered;
         // closing asks nothing.
-        GCHECK([NewAlerts() isEqualToArray:@[ @"Discard the changes to b.txt?" ]]);
-        if (NewAlerts().count != 1) MCGuiNote(@"alerts in this suite: %@", NewAlerts());
+        GCHECK(([NewAlerts() isEqualToArray:@[ @"Discard the changes to b.txt?", @"Discard this change to d.txt?" ]]));
+        if (NewAlerts().count != 2) MCGuiNote(@"alerts in this suite: %@", NewAlerts());
         [gGitC.window performClose:nil];
         gGitC = nil;
     });
     MCGuiWait(@"gone", 10, ^BOOL { return !gGit || RemoteWindowOn(gGitFolder) == nil; });
     MCGuiStep(@"closing asked nothing", ^{
         if (!gGit) return;
-        GCHECK(NewAlerts().count == 1);
+        GCHECK(NewAlerts().count == 2);
     });
     // ---- language servers over SSH (stage 9): a window on a folder of its
     // own there, whose server (lsp.fakelang, the scripted server

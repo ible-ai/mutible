@@ -1503,18 +1503,11 @@ void ChangeReviewPage::runOpOn(std::shared_ptr<Data> d, Op op, size_t fi, long b
         return;
     }
     const FileDiff& fd = d->read.diffs[fi];
-    GitUi::ActionPlan plan = ChangeReview::plan(fd, op, lines);
-    if (op == Op::Discard && plan.refusal.empty() && panel_->overSsh()) {
-        // The other machine has no Trash: the file as it is is kept there as
-        // a git object (named once discarded), and git writes the new text.
-        plan.detail = std::string(lines ? "They go" : "Its lines go") +
-                      " back to the version git has (staged, or else in the last commit). The other "
-                      "machine has no Trash: the file as it is now is kept there as a git object, "
-                      "named once it is discarded (git cat-file -p shows it).";
-        plan.doneText = "Discarded " +
-                        std::string(lines ? "the selected lines of " : "a change to ") +
-                        nameOf(fd.file.path) + ".";
-    }
+    // Over SSH the other machine has no Trash: the file as it is is kept
+    // there as a git object (named once discarded), and git writes the new
+    // text; the words say so (the core's, shared with the Mac).
+    const GitUi::ActionPlan plan = panel_->overSsh() ? ChangeReview::planOverSsh(fd, op, lines)
+                                                     : ChangeReview::plan(fd, op, lines);
     if (!plan.refusal.empty()) {
         actedPending_ = false;   // refused: nothing moves
         finish(plan.refusal, false);

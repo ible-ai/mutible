@@ -33,18 +33,27 @@ NSString *RealPath(NSString *path) {
 
 // One side's text: the file on disk (rev ""), or git's at a revision or in
 // the index (":"). A file not there (added since, deleted, not in that
-// commit) or not text reads as empty, as the page showed it.
-NSString *SideText(NSString *path, NSString *rev) {
+// commit) or not text reads as empty, as the page showed it. In a window
+// over SSH (`host`, the work tree's reader; called on a queue whose git
+// runs on the host) the paths are the other machine's: its file through
+// the host, its repository through the host's git, nothing of this Mac's
+// disk read or resolved.
+NSString *SideText(NSString *path, NSString *rev, MCGitWorkReader host) {
+    if (!rev.length && host) {
+        BOOL tooLarge = NO;
+        NSData *d = host(path, (NSUInteger)kMaxSideBytes, &tooLarge);
+        return (d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil) ?: @"";
+    }
     if (!rev.length) {
         NSDictionary *a = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
         if (![a.fileType isEqualToString:NSFileTypeRegular] || a.fileSize > kMaxSideBytes) return @"";
         NSData *d = [NSData dataWithContentsOfFile:path];
         return (d ? [[NSString alloc] initWithData:d encoding:NSUTF8StringEncoding] : nil) ?: @"";
     }
-    NSString *real = RealPath(path);
+    NSString *real = host ? path : RealPath(path);
     NSString *dir = real.stringByDeletingLastPathComponent;
     BOOL isDir = NO;
-    if (![[NSFileManager defaultManager] fileExistsAtPath:dir isDirectory:&isDir] || !isDir) return @"";
+    if (!host && (![[NSFileManager defaultManager] fileExistsAtPath:dir isDirectory:&isDir] || !isDir)) return @"";
     MCGitResult *top = MCGitRunSync(dir, @[@"rev-parse", @"--show-toplevel"]);
     if (!top.ok) return @"";
     NSString *root = [[[NSString alloc] initWithData:top.output encoding:NSUTF8StringEncoding]
@@ -138,7 +147,17 @@ NSString *SideText(NSString *path, NSString *rev) {
     NSString *fileName = shell.fileName, *path = shell.path;
     __weak EditorController *weakSelf = self;
     __weak MCTab *weakTab = tab;
-    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    // Over SSH the sides are the host's: read on a queue of their own whose
+    // git runs there, the file side through the host.
+    MCGitRunner run = [self hostGitRunner];
+    MCGitWorkReader host = nil;
+    if (run) host = [self hostWorkReader];
+    dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
+    if (run) {
+        queue = dispatch_queue_create("mutible.compare-on-host", DISPATCH_QUEUE_SERIAL);
+        MCGitSetQueueRunner(queue, run);
+    }
+    dispatch_async(queue, ^{
         MCComparison *c = [MCComparison new];
         c.title = title;
         c.leftLabel = ll;
@@ -149,8 +168,8 @@ NSString *SideText(NSString *path, NSString *rev) {
         c.leftRev = lr;
         c.rightPath = rp;
         c.rightRev = rr;
-        c.leftText = SideText(lp, lr);
-        c.rightText = SideText(rp, rr);
+        c.leftText = SideText(lp, lr, host);
+        c.rightText = SideText(rp, rr, host);
         [c prepare];
         dispatch_async(dispatch_get_main_queue(), ^{
             EditorController *s = weakSelf;

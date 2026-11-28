@@ -437,6 +437,18 @@ GitUi::ActionPlan plan(const FileDiff& d, Op op, bool lines) {
     return p;
 }
 
+GitUi::ActionPlan planOverSsh(const FileDiff& d, Op op, bool lines) {
+    GitUi::ActionPlan p = plan(d, op, lines);
+    if (op != Op::Discard || !p.refusal.empty()) return p;
+    const std::string name = fileName(d.file.path);
+    p.detail = std::string(lines ? "They go" : "Its lines go") +
+               " back to the version git has (staged, or else in the last commit). The other "
+               "machine has no Trash: the file as it is now is kept there as a git object, "
+               "named once it is discarded (git cat-file -p shows it).";
+    p.doneText = "Discarded " + (lines ? "the selected lines of " + name : "a change to " + name) + ".";
+    return p;
+}
+
 std::string staleText(const std::string& path, bool index) {
     const std::string name = fileName(path);
     return (index ? "The staged version of " + name : name) +

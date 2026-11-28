@@ -67,6 +67,12 @@ MCGitResult *MCGitRunSyncWithInput(NSString *dir, NSArray<NSString *> *args, NSD
 typedef MCGitResult *(^MCGitRunner)(NSString *dir, NSArray<NSString *> *args, NSData *input,
                                     NSTimeInterval timeout);
 void MCGitSetQueueRunner(dispatch_queue_t queue, MCGitRunner runner);
+// The same window's reader of a file of the other machine's work tree (the
+// review page's changed files, a comparison's file side): `path` absolute
+// as the host spells it, its bytes, or nil when it cannot be read (with
+// *tooLarge set when it is over `limit`). Called off the main thread, it
+// waits for the host (RemoteWorkspace.h's workReader).
+typedef NSData *(^MCGitWorkReader)(NSString *path, NSUInteger limit, BOOL *tooLarge);
 // Whether the calling queue has a runner: git there is the other
 // machine's, so this Mac having none says nothing, and no path git names
 // is on this Mac's disk.
@@ -163,9 +169,9 @@ extern NSNotificationName const MCGitPanelDidRefreshNotification;
 // push, Sync and autofetch run there too, with that machine's credentials
 // (a missing one said as such, Shared::gitCredentialsText); Discard keeps the
 // changed copy as a git object there (GitUi::discardPlanOverSsh), since
-// that machine has no Trash, and offers no Undo Discard; the Review
-// Changes row is hidden (the review reads the work tree from this Mac's
-// disk), so a row opens its git diff.
+// that machine has no Trash, and offers no Undo Discard. Review Changes
+// and the commit pages read through the same host (ChangeReviewPage.h's
+// useGitRunner:workReader:).
 - (void)useGitRunner:(MCGitRunner)runner overSsh:(NSString *)host;
 @property(nonatomic, readonly, copy) NSString *overSshHost;   // nil on this Mac
 

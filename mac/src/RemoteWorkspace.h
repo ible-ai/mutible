@@ -93,6 +93,11 @@
 // (stage 9's third slice) go the same way: the host runs them with that
 // machine's own credentials and never a prompt (SessionGit.h).
 @property(nonatomic, readonly) MCGitRunner gitRunner;
+// The work tree's files for the review pages and comparisons (GitPanel.h's
+// MCGitWorkReader): on such a queue, a file under the folder read through
+// the host (Link::fetchBytes) and waited for there; nil when it cannot be
+// read, the connection is lost, or it is called on the main thread.
+@property(nonatomic, readonly) MCGitWorkReader workReader;
 // The host said Source Control may have changed (FsChanged's "git": a
 // write in the folder, or in .git's index, HEAD or refs).
 @property(nonatomic, copy) void (^onGitChanged)(void);
@@ -127,6 +132,8 @@
 // git commands the host ran for the window, and its notices that git may
 // have changed.
 @property(nonatomic, readonly) NSUInteger gitRuns, gitNotices;
+// Work tree files read through the host for git's pages (workReader).
+@property(nonatomic, readonly) NSUInteger workReads;
 // Formats the host was asked for.
 @property(nonatomic, readonly) NSUInteger formats;
 @end

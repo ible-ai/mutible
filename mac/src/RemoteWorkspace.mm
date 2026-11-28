@@ -414,6 +414,48 @@ MCGitResult *GitFailed(const std::string &why) {
     };
 }
 
+- (MCGitWorkReader)workReader {
+    __weak MCRemoteWorkspace *weakSelf = self;
+    return ^NSData *(NSString *path, NSUInteger limit, BOOL *tooLarge) {
+        if (tooLarge) *tooLarge = NO;
+        // The answer comes on the main queue: never wait for it there.
+        if ([NSThread isMainThread] || !path.length) return nil;
+        const std::string where = path.fileSystemRepresentation ?: "";
+        // Filled on the main queue, read here once the semaphore says so
+        // (and never after a wait that gave up: `late`).
+        NSMutableDictionary *answer = [NSMutableDictionary dictionary];
+        dispatch_semaphore_t answered = dispatch_semaphore_create(0);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            MCRemoteWorkspace *ws = weakSelf;
+            MCSession::Link *l = ws ? [ws live] : nullptr;
+            if (!l) {
+                dispatch_semaphore_signal(answered);
+                return;
+            }
+            ws->_workReads++;
+            const std::uint64_t id =
+                l->fetchBytes(where, limit, [answer, answered](bool ok, bool big, std::string &&bytes) {
+                    @synchronized(answer) {
+                        if (!answer[@"late"]) {
+                            if (ok) answer[@"bytes"] = [NSData dataWithBytes:bytes.data() length:bytes.size()];
+                            if (big) answer[@"tooLarge"] = @YES;
+                        }
+                    }
+                    dispatch_semaphore_signal(answered);
+                });
+            if (!id) dispatch_semaphore_signal(answered);
+        });
+        if (dispatch_semaphore_wait(answered, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(60 * NSEC_PER_SEC))) != 0) {
+            @synchronized(answer) { answer[@"late"] = @YES; }
+            return nil;
+        }
+        @synchronized(answer) {
+            if (tooLarge) *tooLarge = [answer[@"tooLarge"] boolValue];
+            return answer[@"bytes"];
+        }
+    };
+}
+
 // ------------------------------------------------------------ formatting
 
 - (void)formatText:(NSString *)text
