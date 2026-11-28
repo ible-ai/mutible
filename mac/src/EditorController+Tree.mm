@@ -787,7 +787,7 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
 - (NSAttributedString *)worktreeTitleFor:(FileItem *)node color:(NSColor *)text
                                     icon:(NSString **)icon tint:(NSColor **)tint
                                      tip:(NSString **)tip {
-    NSFont *font = [NSFont systemFontOfSize:12.5];
+    NSFont *font = MCTreeNameFont(NO);
     if (node == _worktreesItem) {
         *icon = @"arrow.triangle.branch";
         *tint = Hex(0x9D9D9D);
@@ -795,7 +795,7 @@ static void FSCallback(ConstFSEventStreamRef stream, void *info, size_t n,
                 @"Right click one: Compare with Main, Open in New Window",
                 [node.path stringByAbbreviatingWithTildeInPath]];
         return [[NSAttributedString alloc] initWithString:@"Worktrees"
-            attributes:@{NSFontAttributeName: [NSFont systemFontOfSize:12.5 weight:NSFontWeightMedium],
+            attributes:@{NSFontAttributeName: MCTreeNameFont(YES),
                          NSForegroundColorAttributeName: text}];
     }
     if (![self isWorktreeRow:node]) return nil;
