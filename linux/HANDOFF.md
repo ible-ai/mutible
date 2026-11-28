@@ -28,7 +28,9 @@ The last release is v1.6.27 (94b61ab, 2026-11-28), which carried #378 to
 #380. Each Linux PR merged since adds its line here; the next Mac session
 releases what is listed and clears it.
 
-(none yet)
+- Core only: the session host typesets LaTeX for a window over SSH (flag
+  8192, `SessionTypeset.{h,cpp}`, item 178). GTK's preview uses it in the
+  next slice, the Mac after; nothing user-visible yet.
 
 ## Where it stands
 
@@ -9642,3 +9644,22 @@ side's; two are fixed, one left alone on purpose.
 - **GTK.** `Document::takeHostDisk` 1 sets `hostChanged_` and calls `checkExternalChange`, whose remote branch reads through `Link::readText` (blocking, as #378 and #368) and runs the local code: a clean tab follows as one undoable step with caret and scroll kept (`applyDiskText`, "Reload from Disk"); one with edits asks `documentChangedOnDisk` (Keep Mine or Reload, only for the tab on show, asked again when it is shown); `reloadFromDisk` reads through the host for a remote tab.
 - **The Mac needs (not wired; the Mac session does gone, back and changed in one PR).** In `mac/src/SessionLink.mm`'s `hearDisk`, give the document callback (now `[](Shared::DocId, int){}`) a body that forwards to the remote workspace (`+Remote.mm`, `MCRemoteWorkspace`) and the tab of that document id, only when `client().hostTellsDocsGone()`: state 2 as `remoteDeletePath:` (`t.gone`, `tabWentMissing:`); state 0 as `tabCameBack:`; state 1 the host's file changed: read the file through the host (as the tab's remote read does) and run what `checkExternalChange` does for a local file with that text: equal to the tab's saved text nothing, a clean tab follows it as one "Reload from Disk" step, a tab with edits asks Keep Mine or Reload when on show (and the answer Keep Mine tells the host the file's text with `savedAs`, as GTK's `tellHostSaved(&content)`). A Mac tab that saves itself (not through the host) may hear a 1 for its own write, between the write and its DocSaved; comparing with the saved text, as above, makes that nothing.
 - **Checks.** Core `diskwatch:host` (rewritten once, same version not again, rewritten again, a change back and a touch nothing, the window's own save nothing, a client without the document nothing); `remote_ssh` (a clean tab follows and one undo step takes it back, a typed tab asks and Keep Mine and Reload behave as locally, a save from the window brings no question or reload).
+
+### 178. The host typesets LaTeX for a window over SSH, core only (November 2026)
+
+Slice 1 of the LaTeX preview over SSH: `src/SessionTypeset.{h,cpp}`, FsRead's
+"typeset" and "typesetStop", Welcome flag 8192 (`kHostTypesets`,
+`Client::hostTypesets()`). The host writes the held text to the hidden
+sibling beside the file, runs its own tectonic with the apps' arguments into
+a work folder under its `$TMPDIR`, answers with the log, the PDF, the
+SyncTeX file and TeX's transcript, and removes the sibling and folder when
+the run ends, on a newer run, a stop, the document's close, the renderer
+going, the host's end, and (swept at the next host start) after a crash.
+`docs/notes/session-host.md`, "LaTeX typeset by the host", says exactly what
+an app calls (`requestTypeset`, `typesetAnswer`, `writeTypesetFiles`,
+`stopTypeset`). Core files touched: new `SessionTypeset.{h,cpp}`;
+`SessionHost.{h,cpp}`, `SessionClient.{h,cpp}`, `SessionProtocol.h`,
+`SessionFormat.{h,cpp}` (`runProgram` gained an optional `stopWhen`); the
+Makefile, linux/Makefile and meson.build lists. Checks: core
+`hosttypeset:*` with a stand-in tectonic. GTK's preview using it is slice 2,
+the Mac's after; the managed download there is slice 3.

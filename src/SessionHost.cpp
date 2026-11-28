@@ -3,6 +3,7 @@
 
 #include "SessionFiles.h"
 #include "SessionFormat.h"
+#include "SessionTypeset.h"
 #include "SessionGit.h"
 
 #include <algorithm>
@@ -34,6 +35,8 @@ std::vector<std::string> processEnvironment();   // below, with the language ser
 
 ClientId Host::connect() { return ++nextClient_; }
 
+Host::Host(Sink sink) : sink_(std::move(sink)) { sweepTypesetFolders(); }
+
 Host::~Host() = default;
 
 void Host::disconnect(ClientId c) {
@@ -42,6 +45,7 @@ void Host::disconnect(ClientId c) {
     if (dropped_.erase(c)) return;
     renderers_.erase(c);
     if (workers_) workers_->cancelAll(c);   // its searches answer no one now
+    typesets_.stopAll(c);                   // its typesets end, taking their siblings
     if (watches_.erase(c)) watchGen_++;   // its trees' folders are no one's now
     // Its terminals stay for the next renderer; one nobody shows keeps
     // running, its output going only into the host's screen, unthrottled.
@@ -311,6 +315,7 @@ void Host::onRead(ClientId c, Message& m) {
     if (op == "replace") return onReplace(c, m);
     if (op == "git") return onGit(c, m);
     if (op == "format") return onFormat(c, m);
+    if (op == "typeset" || op == "typesetStop") return onTypeset(c, m);
     if (isFileOp(op)) return onFileOp(c, m);
     if (isWorkerRead(op)) {
         // Quick Open's list and Find in Folder, on a worker: answered as it
@@ -429,6 +434,9 @@ void Host::onHello(ClientId c, Message& m) {
     // And tells an app's window that a file it holds went or came back
     // (DocDisk 2 and 0 for a document the host leaves to the app).
     w.flag |= kHostTellsDocsGone;
+    // And typesets a document's LaTeX with its own tectonic (FsRead's
+    // "typeset", SessionTypeset.h).
+    w.flag |= kHostTypesets;
     if (!askedFile_.empty()) {
         Json j = Json::object();
         j.set("file", Json(askedFile_));
@@ -551,6 +559,7 @@ void Host::onReset(ClientId c, Message& m) {
 }
 
 void Host::onClose(ClientId c, Message& m) {
+    typesets_.stopDoc(c, m.doc);   // a preview of the document it closed
     auto it = docs_.find(m.doc);
     if (it == docs_.end()) return;
     Doc& d = it->second;
@@ -1818,6 +1827,54 @@ void Host::onFormat(ClientId c, Message& m) {
             FormatAnswer a = runFormatRequest(root, request, input, env, &cancel);
             *json = std::move(a.json);
             *bytes = std::move(a.out);
+        },
+        &why, kMaxGitJobs);
+    if (!started) refuse(why, "busy");
+}
+
+void Host::onTypeset(ClientId c, Message& m) {
+    const std::string view = m.json["view"].asString();
+    if (m.json["op"].asString() == "typesetStop") {
+        typesets_.stop(c, view);   // answered by nothing
+        return;
+    }
+    auto refuse = [&](const std::string& why, const char* reason) {
+        Message r;
+        r.kind = Kind::FsData;
+        r.req = m.req;
+        r.window = m.window;
+        r.json = typesetRefused(why, reason).json;
+        r.json.set("view", Json(view));
+        r.json.set("gen", m.json["gen"]);
+        send(c, std::move(r));
+    };
+    // It writes a file and runs a program of this machine's: an app's window only.
+    auto who = renderers_.find(c);
+    if (who == renderers_.end() || who->second.readOnly || who->second.guest)
+        return refuse("Only an app's window typesets on the host.", "readonly");
+    if (view.empty() || view.size() > 128) return refuse("The preview has no name.", "args");
+    auto it = docs_.find((DocId)std::max<int64_t>(0, m.json["doc"].asInt()));
+    if (it == docs_.end()) return refuse("The host does not hold that document.", "nodoc");
+    if (it->second.path.empty() || it->second.path[0] != '/')
+        return refuse("The document has no file on the host to typeset beside: save it first.", "unsaved");
+    TypesetJob job;
+    job.path = it->second.path;
+    job.text = it->second.doc.text().utf8();
+    job.view = view;
+    job.gen = (std::uint64_t)std::max<int64_t>(0, m.json["gen"].asInt());
+    if (m.json["timeout"].isNumber()) job.timeout = m.json["timeout"].asNumber();
+    if (!workers_) workers_ = std::make_unique<ReadWorkers>();
+    std::uint64_t seq = 0;
+    std::shared_ptr<TypesetSlot> slot = typesets_.begin(c, view, it->first, &seq);
+    std::vector<std::string> env = ownEnv_.empty() ? processEnvironment() : ownEnv_;
+    std::string why;
+    const bool started = workers_->startTask(
+        c, m.req, m.window,
+        [job = std::move(job), slot, seq, env = std::move(env)](std::atomic<bool>& cancel, Json* json,
+                                                                  std::string* bytes) {
+            TypesetAnswer a = runTypeset(job, *slot, seq, env, cancel);
+            *json = std::move(a.json);
+            *bytes = std::move(a.bytes);
         },
         &why, kMaxGitJobs);
     if (!started) refuse(why, "busy");
