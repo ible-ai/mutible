@@ -1080,6 +1080,47 @@ std::uint64_t Client::requestFormat(std::uint64_t window, Json request, std::str
     return req;
 }
 
+std::uint64_t Client::requestTypeset(DocId doc, std::uint64_t window, const std::string& view, std::uint64_t gen,
+                                     double timeoutSeconds) {
+    if (!hostTypesets() || !doc) return 0;
+    Message m;
+    m.kind = Kind::FsRead;
+    m.window = window;
+    m.json = Json::object();
+    m.json.set("op", Json("typeset"));
+    m.json.set("doc", Json((int64_t)doc));
+    m.json.set("view", Json(view));
+    m.json.set("gen", Json((int64_t)gen));
+    if (timeoutSeconds > 0) m.json.set("timeout", Json(timeoutSeconds));
+    m.req = ++nextReq_;
+    const std::uint64_t req = m.req;
+    queue(std::move(m));   // behind this renderer's edits and saves
+    pump();
+    return req;
+}
+
+bool Client::typesetAnswer(std::uint64_t req, TypesetReply* out) {
+    Json a;
+    std::string bytes;
+    if (!readAnswer(req, &a, &bytes)) return false;
+    TypesetReply r = typesetReplyFrom(a, std::move(bytes));
+    if (!r.ok && r.error.empty()) r.error = "The host could not typeset the document.";
+    if (out) *out = std::move(r);
+    return true;
+}
+
+void Client::stopTypeset(const std::string& view, std::uint64_t window) {
+    if (!hostTypesets()) return;
+    Message m;
+    m.kind = Kind::FsRead;
+    m.window = window;
+    m.json = Json::object();
+    m.json.set("op", Json("typesetStop"));
+    m.json.set("view", Json(view));
+    m.req = ++nextReq_;   // answered by nothing
+    sendNow(std::move(m));
+}
+
 bool Client::readAnswer(std::uint64_t req, Json* out, std::string* bytes) {
     auto it = replies_.find(req);
     if (it == replies_.end() || it->second.kind != Kind::FsData) return false;

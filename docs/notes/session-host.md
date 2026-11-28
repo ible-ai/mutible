@@ -4867,6 +4867,103 @@ docs/notes/lsp.md, "Over SSH".
   Welcome). GUI: remote_ssh's language server block. Not run here: CI runs
   it.
 
+### LaTeX typeset by the host (the preview over SSH, slice 1: core only)
+
+A window over SSH previews a .tex file that is on the host's disk, so the
+host typesets it there with its own tectonic and the window gets the PDF and
+the SyncTeX file back. `SessionTypeset.{h,cpp}`; core only (2026-11-28):
+GTK's preview using it is slice 2, the Mac's after (HANDOFF 178).
+
+- **The request** (the style of FsRead's "format"): `FsRead {window, json:
+  {"op": "typeset", "doc", "view", "gen", "timeout"}}` -> `FsData {json:
+  {"op": "typeset", "view", "gen", "ok", "missing", "superseded",
+  "stopped", "error", "log", "status", "scratch", "stem", "pdf", "synctex",
+  "transcript"}, bytes: PDF + SyncTeX + TeX's transcript}` (the sizes in the
+  json; one answer, as a formatter's), or `{"error", "reason"}` not run
+  (`readonly`: only an app's window, `nodoc`, `unsaved`: the document has no
+  file on the host, `args`, `busy`). `doc` is the held document: the text
+  typeset is the host's copy, unsaved edits included (the client queues the
+  request behind its edits). `view` is the window's key for one preview
+  (the local preview's `<view>`), `gen` is echoed. `{"op": "typesetStop",
+  "view"}` is answered by nothing. Welcome flag **8192**, `kHostTypesets`
+  (`Client::hostTypesets()`); an old host has no flag and a client sends
+  nothing (`requestTypeset` returns 0).
+- **On the host**: the hidden sibling `.<name>.<pid>-<view>.mutible.tex`
+  (`LatexScratch::siblingName`, the pid the host's, the view a number the
+  host gives each (renderer, key)) is written beside the file, so `\input`,
+  `\includegraphics` and `.bib` resolve; its `sibling.record` goes first into
+  the preview's work folder, `$TMPDIR/mutible-host-latex-<uid>/<16 hex of the
+  path's SHA-256>-<pid>-<start>-<view>` (mode 0700, owner checked). tectonic
+  is run with the apps' arguments, `--untrusted --synctex --keep-logs
+  --chatter minimal --color never --outdir <work folder> <sibling>`, in the
+  file's folder, the host's environment, in a group of its own (SIGTERM, then
+  SIGKILL a second later: `runProgram`, which gained a `stopWhen` predicate).
+  Its limit is the apps' five minutes (`kTypesetSeconds`); the request's
+  `timeout` can only lower it (the checks use one second). The PDF is capped
+  at 64 MB with a clear error. stdout and stderr come back as `log`, stdout
+  first (the apps merge them; the host's pipes are separate).
+- **One run at a time per preview, the newest wins.** `TypesetPreviews`
+  (host thread) keeps a `TypesetSlot` per (renderer, view): `latest` is the
+  newest run's number, `run` a mutex. A new request bumps `latest`, so the
+  run in flight stops (it polls the predicate every 50 ms) and answers
+  `superseded`; the new worker takes the mutex only when the old one has
+  cleaned up, which matters because both write the same sibling name.
+- **The sibling never lingers.** It and the work folder are removed (a
+  destructor, through a descriptor of the folder so a rename does not
+  strand it): when the run ends, ok or not; when a newer run replaces it;
+  by `typesetStop`; when this window closes the document (`onClose`); when
+  its renderer goes (`disconnect`: `stopAll` and the workers' `cancelAll`);
+  when the host ends (`~ReadWorkers` cancels and joins the workers). After a
+  crash, `Host`'s constructor calls `sweepTypesetFolders`: folders whose
+  owner pid is gone (`ownerGone`) are removed, and the sibling their record
+  names only while it is still exactly the bytes recorded and has a preview
+  copy's name (`LatexScratch::decide`); a folder of a live process is left.
+  The outputs are read into the answer before the folder goes, so nothing
+  stays at idle: a stop answers `stopped` ("The preview was closed.") to
+  its own request, after the files are gone.
+- **tectonic there**: `MUTIBLE_TECTONIC` (the host's environment, else the
+  process's), the managed folder (`$XDG_DATA_HOME/mutible/bin/tectonic`,
+  `~/.local/share/...`; on a Mac host `~/Library/Application
+  Support/Mutible/bin/tectonic`), then PATH and the usual folders
+  (`serverSearchDirs`, as formatters). Missing: `{"missing": true, "error":
+  "tectonic is not installed on <host>. Looked for it in MUTIBLE_TECTONIC
+  (...), <managed path>, PATH and the usual folders."}`; no download offer
+  (slice 3).
+- **What an app calls, in order**: `client.hostTypesets()` (else
+  `typesetTooOldText(host)`); `req = client.requestTypeset(doc, window,
+  view, gen)` when its debounce fires (0 means not sent); on its wake and
+  `dispatch()`, `client.typesetAnswer(req, &reply)` (false until the
+  answer is there; a lost connection never answers: `typesetLostText`);
+  drop a reply whose `gen` is not its newest or that is `superseded`;
+  `reply.missing` shows `reply.error` (the install offer is slice 3);
+  `!reply.ok` shows `reply.error` and `reply.log`; on `ok`,
+  `writeTypesetFiles(reply, workFolder, withTranscript, &files, &err)`
+  writes `<stem>.pdf`, `<stem>.synctex.gz` (and `.log`) the names a local
+  typeset leaves, `reply.scratch` being the host's sibling path that
+  SyncTeX's input lines name (the app maps it to its own tab's file: it is
+  beside the document, `.name.pid-view.mutible.tex`), `reply.transcript`
+  TeX's own log for the problems list. `client.stopTypeset(view)` when the
+  preview or its tab closes (the host does it too on DocClose and
+  disconnect; send it anyway for a preview closed with its document still
+  open).
+- **Checks**: core `hosttypeset:run` (the held text beside the file, the
+  disk's untouched, the apps' arguments and the file's folder as cwd, the
+  sibling there during the run and gone after, the work folder empty, the
+  files written for a viewer, a failing run's log, a PDF past 64 MB, a
+  guest and an unknown document refused, a newer run superseding a looping
+  one whose group dies, the time limit, and stop, document close and
+  disconnect each removing sibling and folder), `:missing` (what was looked
+  for, the managed folder and PATH finding it), `:sweep` (a dead owner's
+  sibling removed, one whose bytes changed left, a user's file left, a live
+  owner's left), `:old` (no flag, nothing sent). The tectonic is a script;
+  the real one is never run.
+- **Traps.** The sibling's name is the same for every run of a preview, so
+  a newer run must wait for the older one's cleanup (the slot's mutex) or
+  the old run's removal deletes the new input. The host's workers answer a
+  cancelled run after removing its files, never before. A repository shows
+  the sibling for the length of the run; a SIGKILLed host leaves it until
+  the next host starts.
+
 ### Still to do
 
 - **Stage 8, after the fourth slice** (in order of value): open clean tabs following the remote
@@ -4876,7 +4973,7 @@ docs/notes/lsp.md, "Over SSH".
   connecting off the main thread with a progress line; the GTK port asking
   for the remote's integration (the host side is in, "The remote's own
   integration"); an HTML page and the LaTeX
-  preview over SSH (viewers for pictures, PDFs, media, SQLite and Quick
+  preview over SSH (the host's half of the preview is in, "LaTeX typeset by the host"; viewers for pictures, PDFs, media, SQLite and Quick
   Look are in, "Viewers over SSH"); a new window over SSH taking up what a crashed
   app, or a window closed while disconnected, left on the lasting host
   (closing a connected window closes what it had there, but those leave it

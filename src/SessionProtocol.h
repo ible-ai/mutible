@@ -329,6 +329,10 @@ using TermId = std::uint64_t;
 // went (DocDisk 2), came back (0) or was changed in place (1).
 constexpr int kHostTellsDocsGone = 4096;
 
+// The Welcome's flag 8192: the host typesets a document's LaTeX for an app's
+// window (FsRead's "typeset" and "typesetStop", SessionTypeset.h).
+constexpr int kHostTypesets = 8192;
+
 // The ids a renderer makes for what it opens on the host (documents,
 // terminals, windows): its Welcome's `v` is a base, a multiple of
 // kIdRange, and it takes base + 1, base + 2, ... (Client::newId), so two

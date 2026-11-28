@@ -168,6 +168,7 @@
 #include "SavePlan.h"
 #include "SessionProtocol.h"
 #include "SessionLsp.h"
+#include "SessionTypeset.h"
 #include "SessionSearch.h"
 #include "TerminalScreen.h"
 #include "TerminalStream.h"
@@ -188,7 +189,7 @@ class Host {
 public:
     // Where the host's messages go: to renderer `to`.
     using Sink = std::function<void(ClientId to, Message&& m)>;
-    explicit Host(Sink sink) : sink_(std::move(sink)) {}
+    explicit Host(Sink sink);   // sweeps the work folders a crashed host left (SessionTypeset.h)
     ~Host();   // cancels the workers' reads and waits for them
     Host(const Host&) = delete;
     Host& operator=(const Host&) = delete;
@@ -482,6 +483,14 @@ private:
     // and run on a worker in the session's folder, its one answer with the
     // formatted text as the bytes; refused from a reader and a guest.
     void onFormat(ClientId c, Message& m);
+    // A window's LaTeX typeset (FsRead's "typeset" and "typesetStop",
+    // SessionTypeset.h): the document's held text written to a hidden
+    // sibling beside its file, that machine's tectonic run on it on a worker,
+    // its one answer the log with the PDF and SyncTeX bytes; refused from a
+    // reader and a guest. A newer one for the preview, a stop, the
+    // document's close and the renderer going end the run, which removes
+    // its sibling and folder itself.
+    void onTypeset(ClientId c, Message& m);
     // A page's Save As (DocSave with "saveAs"): the document's file named
     // anew, inside the session's folder, written, and its path changed.
     void onSaveAs(ClientId c, Message& m);
@@ -676,6 +685,7 @@ private:
     // The workers of the heavier reads, made at the first; their time limit
     // for checks.
     std::unique_ptr<ReadWorkers> workers_;
+    TypesetPreviews typesets_;
     double readSeconds_ = -1;
 };
 

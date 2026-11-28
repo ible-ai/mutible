@@ -42,6 +42,13 @@ found through that list.
   Each typeset's document goes through `MCPDFAnalyseOnlyScans` first, so
   PDFKit's Vision pass over the pages (a core busy for seconds after every
   typeset) stays off for tectonic's output (viewers.md, PDFs).
+- **Over SSH the host typesets** (2026-11-28, HANDOFF 178;
+  `docs/notes/session-host.md`, "LaTeX typeset by the host"): the same
+  hidden sibling beside the file, the same arguments, the same record, on
+  the host's disk with its tectonic, the PDF and SyncTeX bytes coming back
+  through `Client::requestTypeset`. **Trap**: a preview's sibling has one
+  name for every run, so a newer run must wait for the older one's
+  cleanup, or the old run deletes the new input.
 - **Unknown commands are looked through, not skipped**: `LatexDoc` skips only
   known machinery (`\label`, `\includegraphics`, `\setlength`, ...) and enters
   the first braced argument `looksLikeProse` accepts (not `{0.5em}`, `{l}`,

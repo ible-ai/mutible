@@ -177,7 +177,7 @@ FormatRun::Env hostFormatEnv(const std::vector<std::string>& env) {
 
 ProgramRun runProgram(const std::vector<std::string>& argv, const std::vector<std::string>& env,
                       const std::string& cwd, const std::string& input, int timeoutMs,
-                      const std::atomic<bool>* cancel) {
+                      const std::atomic<bool>* cancel, const std::function<bool()>* stopWhen) {
     ProgramRun r;
 #ifndef __APPLE__
     // A formatter that stops reading is EPIPE on this thread, never a
@@ -212,7 +212,7 @@ ProgramRun runProgram(const std::vector<std::string>& argv, const std::vector<st
     char buf[65536];
     for (;;) {
         if (!termed) {
-            const bool stop = cancel && cancel->load();
+            const bool stop = (cancel && cancel->load()) || (stopWhen && *stopWhen && (*stopWhen)());
             if (stop || msSince(started) >= timeoutMs || r.out.size() > kMaxFormatOutput) {
                 proc.signal(SIGTERM);
                 termed = true;

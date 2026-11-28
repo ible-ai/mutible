@@ -44,6 +44,7 @@
 
 #include <atomic>
 #include <cstddef>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -94,7 +95,8 @@ struct ProgramRun {
 };
 ProgramRun runProgram(const std::vector<std::string>& argv, const std::vector<std::string>& env,
                       const std::string& cwd, const std::string& input, int timeoutMs,
-                      const std::atomic<bool>* cancel = nullptr);
+                      const std::atomic<bool>* cancel = nullptr,
+                      const std::function<bool()>* stopWhen = nullptr);   // also stopped (as cancelled) when it says so
 
 // What the host answers: the json, and the formatted text (FsData's
 // bytes). `env` is the host's environment (its login shell's, else the

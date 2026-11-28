@@ -40,6 +40,7 @@
 #include <vector>
 
 #include "SessionProtocol.h"
+#include "SessionTypeset.h"
 #include "Text.h"
 
 namespace Shared {
@@ -332,6 +333,25 @@ public:
     // host does not (hostFormats). Answered by readAnswer(req, &json,
     // &bytes): formatReplyFrom reads it.
     std::uint64_t requestFormat(std::uint64_t window, Json request, std::string text);
+    // Whether the host typesets LaTeX for an app's window (its Welcome's flag
+    // 8192, SessionTypeset.h): a window over SSH's LaTeX preview.
+    bool hostTypesets() const { return (hostFlags_ & kHostTypesets) != 0; }
+    // The document's text on the host typeset there: FsRead's "typeset" for
+    // `doc` (open here, with a file on the host), the preview named `view`
+    // (one key for each preview a window has), `gen` echoed in the answer,
+    // `timeoutSeconds` the run's limit (0 for the apps' five minutes).
+    // Queued behind this renderer's edits and saves, so the text typeset is
+    // the window's as it is now. 0, sending nothing, when the host does not
+    // (hostTypesets). Answered by typesetAnswer(req, &reply) once dispatched.
+    std::uint64_t requestTypeset(DocId doc, std::uint64_t window, const std::string& view, std::uint64_t gen,
+                                 double timeoutSeconds = 0);
+    // The answer to requestTypeset, read (SessionTypeset.h's TypesetReply).
+    bool typesetAnswer(std::uint64_t req, TypesetReply* out);
+    // The preview is closed (or its document is): the host stops its run, if
+    // one is, and takes its sibling and folder away. Nothing answers. A
+    // window sends it as its preview or its tab closes; the host also does it
+    // when this renderer closes the document or goes.
+    void stopTypeset(const std::string& view, std::uint64_t window = 0);
     // A guest's Save As: the document written to `rel` ('/'-separated from
     // `window`'s folder, which it must be held inside: SessionFiles.h's
     // newFilePath, with dotfiles only when `hidden`), after every edit this
