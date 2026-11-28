@@ -84,7 +84,10 @@
 // to a renderer whose Hello had flag 32 sends FsChanged with each of those
 // folders' listings again when it changed and whether Source Control may
 // have, and DocDisk when a document's file changed under unsaved changes,
-// went, or is in step again. A clean document no app's window has open
+// went, or is in step again. A document an app's window holds is left to
+// the app (it follows its own tab's text), but a host whose Welcome has
+// flag 4096 (kHostTellsDocsGone) still sends that window DocDisk 2 when the
+// file goes and DocDisk 0 when it is back (nothing else for it). A clean document no app's window has open
 // follows its file (an edit of the host's, one step). DocReload asks the
 // host to put the file's text in place of a document's.
 //
@@ -318,6 +321,10 @@ struct UndoInfo {
 enum class Outcome { Done = 0, Nothing = 1, Refused = 2 };
 
 using TermId = std::uint64_t;
+
+// The Welcome's flag 4096: the host tells an app's window that a file it holds
+// went or came back (DocDisk 2, then 0).
+constexpr int kHostTellsDocsGone = 4096;
 
 // The ids a renderer makes for what it opens on the host (documents,
 // terminals, windows): its Welcome's `v` is a base, a multiple of

@@ -24,20 +24,14 @@ Read these first:
 
 ## Unreleased on main (for the next release)
 
-The last release is v1.6.25 (22d444b, 2026-11-28), which carried #359 to #370.
-Each Linux PR merged since adds its line here; the next Mac session releases
-what is listed and clears it.
+The last release is v1.6.26 (8786246, 2026-11-28), which carried #371 to
+#377. Each Linux PR merged since adds its line here; the next Mac session
+releases what is listed and clears it.
 
-- GTK: a deleted file's tabs stay open, titled "(deleted)" and counted
-  unsaved, as the Mac's: the tree's Delete over SSH, and a file found
-  missing on disk; saving writes the file again, a file that comes back
-  clears the mark, and auto-save skips them (item 175). Local Move to Trash
-  still closes clean tabs, as on the Mac.
-- The Mac over SSH catches up: the review and commit pages, comparisons,
-  line history, and the page's Discard and conflict choices through the
-  host, on the same core pieces. GTK's page now takes its no-Trash Discard
-  words from the core's new `ChangeReview::planOverSsh` (its own copy is
-  gone; same words).
+- GTK: a file open in a window over SSH that is deleted on the host by
+  anything else (its terminal, git) marks its tabs too, and clears the mark
+  when it returns (item 176). New core notice flag 4096: the Mac still
+  needs wiring, see item 176.
 
 ## Where it stands
 
@@ -9635,3 +9629,11 @@ side's; two are fixed, one left alone on purpose.
 - **Unchanged.** A local Move to Trash closes clean tabs (`pathTrashed`), dirty ones stay. A file deleted on the host by something else (its terminal) is not marked: the Mac does nothing for it either (no handling in `+Remote.mm` or `MCRemoteWorkspace`), and a remote document never runs `checkExternalChange`.
 - **Not done.** The Mac follows a rename by inode (`renamedFileFor:`) and asks before Ctrl+S writes a gone file again; GTK does neither (a moved-away file is marked, Ctrl+S writes at once, as GTK's saves of a changed file do). Local pictures and PDFs deleted on disk are not marked (only text tabs run the disk check).
 - **Checks.** `remote_ssh`: Delete of a clean tab's file, of one with typed text, of a folder holding an open file and of a picture (tabs stay, titled, unsaved or not), Ctrl+S writes the file again and clears the mark. `auto_save`: a clean tab's file deleted outside, marked, among the unsaved tabs, not made again by auto-save, mark gone and text following the disk when the file returns, Ctrl+S makes it again.
+
+### 176. A file deleted on the host by anything marks its tabs (November 2026)
+
+- **What.** Item 175's marks covered the tree's Delete over SSH; a file removed on the host by something else (`rm` in its terminal, `git checkout`, `git rm`, a build) left the tab looking normal. The host already watched the disk and told renderers `DocDisk` for documents no app holds, but left an app's documents alone. `Host::lookAtAppDoc` (src/SessionHost.cpp, called from `lookAtDisk` when `shownByApp`) now sends `DocDisk` flag 2 once when such a file goes and flag 0 once when it returns, to the app windows that hear the disk and have a seat on it. Welcome flag 4096 (`kHostTellsDocsGone`, `Client::hostTellsDocsGone()`); the callback is `Client::hearDisk`'s second argument. Details: `docs/notes/session-host.md`, "A file gone on the host's disk".
+- **GTK.** `Link` routes it to `DocNotices::hostDisk`; `Document::takeHostDisk`: 2 `markGone()`; 0 clears it, a buffer unchanged since read follows the host's text (through `readText`, `followHostText`), one with edits is counted against the new text and stays unsaved (no question, unlike the local path's).
+- **Not done.** A changed text of an open file on the host (no delete) is not told to an app's window: the host never sends `DocDisk` 1 for an app's document; a separate gap on both ports. A picture or PDF tab of a remote file is not marked.
+- **The Mac needs.** In `mac/src/SessionLink.mm` give `hearDisk` a document callback in place of `[](Shared::DocId, int){}`, forwarded to the remote workspace (`+Remote.mm`, `MCRemoteWorkspace`) to the tab of that document id, only when `hostTellsDocsGone()`: state 2 as `remoteDeletePath:` marks one tab (`t.gone`, `tabWentMissing:`); state 0 as `tabCameBack:` (clear `gone`, a clean tab reads the file through the host, one with edits counts against it).
+- **Checks.** Core `diskwatch:host`; `remote_ssh` (a clean and a typed tab, both files unlinked on the stand-in's disk, then written again).

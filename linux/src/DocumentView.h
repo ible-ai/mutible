@@ -258,6 +258,10 @@ public:
     // the file (rememberDisk), or by the file coming back (checkExternalChange).
     bool gone() const { return gone_; }
     void markGone();
+    // The host's disk lost this file (2) or has it again (0): marked gone, or the mark
+    // cleared with a clean buffer following the file's text and a dirty one
+    // counted against it. Deferred a turn (hostDisk).
+    void takeHostDisk();
     bool changedOnDisk() const;
     // Counts every change to its text, for knowing what a backup holds.
     uint64_t edits() const { return edits_; }
@@ -562,6 +566,7 @@ public:
     // dispatch, which a wait can run anywhere.
     void hostDirty(bool dirty) override;
     void hostWrote(std::uint64_t version, const Json& json) override;
+    void hostDisk(int disk) override;
     // Whether the session's host writes its file (Document::save): open on
     // a host that saves for apps (its Welcome's flag 2), not lost, not
     // detached.
@@ -692,6 +697,8 @@ private:
     bool      hostDirty_ = false;
     uint64_t  dirtyEdits_ = 0;    // edits_ when it was heard
     guint     dirtyIdle_ = 0;
+    guint     diskIdle_ = 0;      // hostDisk: its state taken at the top of the next turn
+    int       hostDiskState_ = 0;
     Kind          kind_ = Kind::Text;
     std::string   path_, ext_;
     std::string   viewerPath_;   // the copy a viewer opens over SSH (setViewerPath)

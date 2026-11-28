@@ -1797,6 +1797,57 @@ MC_GUI_SUITE(remote_ssh) {
         GCHECK(m && !m->gone());
     });
 
+    // ---- a file deleted on the host by something else (a remote terminal, git)
+    MCGuiStep("two files made on the host's disk and opened", [] {
+        g_file_set_contents((gFolder + "/src/outer_a.txt").c_str(), "outer a\n", -1, nullptr);
+        g_file_set_contents((gFolder + "/src/outer_b.txt").c_str(), "outer b\n", -1, nullptr);
+        remoteWindow().editor->openFile(gFolder + "/src/outer_a.txt");
+        remoteWindow().editor->openFile(gFolder + "/src/outer_b.txt");
+    });
+    MCGuiWait("both read", 20, [] {
+        return textOf(tabOf(gFolder + "/src/outer_a.txt")) == "outer a\n" &&
+               textOf(tabOf(gFolder + "/src/outer_b.txt")) == "outer b\n";
+    });
+    MCGuiStep("typed in b", [] {
+        remoteWindow().editor->openFile(gFolder + "/src/outer_b.txt");
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+end");
+        MCGuiType("typed\n");
+    });
+    MCGuiWait("b unsaved, a clean", 10, [] {
+        Document* a = tabOf(gFolder + "/src/outer_a.txt");
+        Document* b = tabOf(gFolder + "/src/outer_b.txt");
+        return a && b && !a->dirty() && b->dirty();
+    });
+    MCGuiStep("both unlinked on the disk, not through the tree", [] {
+        GCHECK(unlink((gFolder + "/src/outer_a.txt").c_str()) == 0);
+        GCHECK(unlink((gFolder + "/src/outer_b.txt").c_str()) == 0);
+    });
+    MCGuiWait("both tabs marked deleted and unsaved", 20, [] {
+        return markedDeleted(tabOf(gFolder + "/src/outer_a.txt"), true) &&
+               markedDeleted(tabOf(gFolder + "/src/outer_b.txt"), true);
+    });
+    MCGuiStep("their text is kept; both written again on the disk with new text", [] {
+        GCHECK_EQ_STR(textOf(tabOf(gFolder + "/src/outer_a.txt")), "outer a\n");
+        GCHECK_EQ_STR(textOf(tabOf(gFolder + "/src/outer_b.txt")), "outer b\ntyped\n");
+        g_file_set_contents((gFolder + "/src/outer_a.txt").c_str(), "a again\n", -1, nullptr);
+        g_file_set_contents((gFolder + "/src/outer_b.txt").c_str(), "b again\n", -1, nullptr);
+    });
+    MCGuiWait("the clean tab follows the new text, its mark gone", 20, [] {
+        Document* a = tabOf(gFolder + "/src/outer_a.txt");
+        return a && !a->gone() && !a->dirty() && textOf(a) == "a again\n" &&
+               stripTitle(a).find("(deleted)") == std::string::npos;
+    });
+    MCGuiStep("the typed tab: mark gone, text kept, still unsaved", [] {
+        Document* b = tabOf(gFolder + "/src/outer_b.txt");
+        GCHECK(b && !b->gone() && b->dirty());
+        if (b) {
+            GCHECK_EQ_STR(textOf(b), "outer b\ntyped\n");
+            GCHECK(stripTitle(b).find("(deleted)") == std::string::npos);
+        }
+    });
+
     // ---- New File
     selectRow("/src/madeby");
     MCGuiStep("New File in madeby", [] {

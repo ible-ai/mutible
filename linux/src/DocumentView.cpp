@@ -343,8 +343,9 @@ Document::~Document() {
     unenrol();
     if (writeIdle_) g_source_remove(writeIdle_);
     if (dirtyIdle_) g_source_remove(dirtyIdle_);
+    if (diskIdle_) g_source_remove(diskIdle_);
     if (movedIdle_) g_source_remove(movedIdle_);
-    writeIdle_ = dirtyIdle_ = movedIdle_ = 0;
+    writeIdle_ = dirtyIdle_ = diskIdle_ = movedIdle_ = 0;
     if (!detached_ && client().isOpen(id_)) client().close(id_);
     folds_.reset();
     wrap_.reset();   // while the buffer is there to leave
@@ -570,7 +571,7 @@ void Document::markGone() {
     if (gone_ || kind_ == Kind::Diff || path_.empty()) return;
     gone_ = true;
     if (kind_ == Kind::Text && !loading() && !unread_) markDirty(true);
-    else host_->documentStateChanged(this);
+    host_->documentStateChanged(this);   // the title's " (deleted)", dirty already or not
 }
 
 bool Document::changedOnDisk() const {
@@ -1160,6 +1161,52 @@ void Document::hostDirty(bool dirty) {
         d->takeHostDirty();
         return G_SOURCE_REMOVE;
     }, this, nullptr);
+}
+
+// The host's disk lost the file or has it again (a remote terminal, git, a
+// build): the tab follows as a local file deleted and made again does
+// (checkExternalChange), at the top of the next turn.
+void Document::hostDisk(int disk) {
+    if (kind_ != Kind::Text) return;
+    hostDiskState_ = disk;
+    if (diskIdle_) return;
+    diskIdle_ = g_idle_add_full(G_PRIORITY_DEFAULT, [](gpointer p) -> gboolean {
+        Document* d = static_cast<Document*>(p);
+        d->diskIdle_ = 0;
+        d->takeHostDisk();
+        return G_SOURCE_REMOVE;
+    }, this, nullptr);
+}
+
+void Document::takeHostDisk() {
+    if (kind_ != Kind::Text || !remote() || path_.empty()) return;
+    if (hostDiskState_ == 2) {
+        markGone();
+        return;
+    }
+    if (hostDiskState_ != 0 || !gone_) return;
+    // Back. A buffer as it was read follows the file's text through the host
+    // (one undoable step); one with edits counts against it, unsaved still.
+    const bool clean = !loading() && !unread_ && matchesSaved();
+    const SessionLink::Link::RemoteText r = link_->readText(path_);
+    if (!r.ok || loading() || unread_) {
+        gone_ = false;
+        checkDirty();
+        host_->documentStateChanged(this);
+        return;
+    }
+    FileEncoding enc;
+    enc.encoding = r.encoding;
+    enc.bom = r.bom;
+    if (clean) {
+        followHostText(r.text, enc);
+    } else {
+        encoding_ = enc;
+        rememberDisk(r.text);
+        checkDirty();
+        tellHostSaved(&r.text);   // the host counts it against the file as it is now too
+    }
+    host_->documentStateChanged(this);   // the title loses its " (deleted)"
 }
 
 void Document::takeHostDirty() {

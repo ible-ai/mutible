@@ -363,7 +363,12 @@ bool Link::startRemote(std::string* why) {
                 return G_SOURCE_REMOVE;
             }, new std::weak_ptr<Link>(weak), [](gpointer p) { delete static_cast<std::weak_ptr<Link>*>(p); });
         },
-        nullptr);
+        [this](Shared::DocId doc, int disk) {
+            // A file the host's disk lost or got back (flag 4096; 1, changed
+            // under unsaved changes, is not sent to a window).
+            auto it = notices_.find(doc);
+            if (it != notices_.end()) it->second->hostDisk(disk);
+        });
     // And its language servers' files changed there (LspFiles).
     client_->hearFiles([this](std::uint64_t window, const Json& files) {
         const auto listeners = filesListeners_;

@@ -5044,7 +5044,8 @@ replaced a row's whole line) are gone for a host that says it can.
   wrongly). Welcome flags: 1 saves, 2 saves in an encoding, 4 watches the
   disk, 8 searches and lists on workers, 16 writes for pages, 32 hostShell
   terminal, 64 file operations, 128 shell integration, 256 git, 512 language
-  servers, 1024 formatters, 2048 this.
+  servers, 1024 formatters, 2048 this, 4096 a deleted or returned file
+  (see "A file gone on the host's disk", below).
 - **GTK.** `Link::replacesOne`, `RemoteWorkspace::hostReplacesOne`,
   `SearchPanel::setHostReplace(replace, replacesOne)`; `replaceMatchOnHost`
   sends the row (no question, as the local one) and the answer goes through
@@ -5542,3 +5543,57 @@ Mac's, `src/RemoteCache.{h,cpp}` (no src/ change); GTK:
 - **Not done.** Real ssh never run; the look of the note and of a PDF
   refreshed under the reader needs the owner's eyes. Quick Look-only
   documents have no viewer on GTK (as locally): they say "Cannot display".
+
+#### A file gone on the host's disk, told to an app's window (2026-11-28, Welcome flag 4096)
+
+A file open in a window over SSH that the host's machine deletes (`rm` in
+its terminal, `git checkout`, `git rm`, `git stash`, a build) marks that
+window's tabs as a local file deleted on disk does (HANDOFF 176).
+
+- **Protocol.** No new message: `DocDisk` (flag 2 gone, 0 in step) already
+  existed, for a document no app's window holds (the host follows those
+  itself, `lookAtDisk`). For a document an app's window holds the host
+  leaves the text alone (the app follows its own tab), but `lookAtAppDoc`
+  now says when the file goes and when it is back: flag 2 once when the
+  path stops existing (only if it existed when the document was opened or
+  seen when the document was opened or named (DocPath; GTK names a tab's file after opening it), so a file not made yet is no deletion), flag 0 once when it
+  exists again, each to the renderers that have a (non-viewer) seat, keep
+  their own backups (an app) and heard the disk (Hello flag 32): a page or a
+  renderer without the document gets nothing. The host's own copy, its
+  `disk` state and `diskState()` are not touched. `DocDisk` 1 (changed under
+  unsaved changes) is still never sent for an app's document: **a changed
+  text of an open file is a separate gap** (the app reads the file itself,
+  locally; a remote window does not hear of it).
+- **How the host notices.** The existing disk watch: `diskChanged` already
+  calls `lookAtDisk` for every document whose folder had an event (the
+  document's folder is watched at open, whatever the ignore files say);
+  `lookAtDisk` hands an app's document to `lookAtAppDoc`, one `stat`. No
+  polling.
+- **Flag.** Welcome flag 4096, `kHostTellsDocsGone` (SessionProtocol.h);
+  `Client::hostTellsDocsGone()`. The notice reaches an app through
+  `Client::hearDisk`'s second callback (`document(doc, disk)`, in dispatch).
+  Old clients: a client that hears the disk and gives that callback
+  nothing (the Mac's `[](DocId,int){}`, GTK before) drops it; an old host
+  never sends it (no flag), and a new one sends it only as `DocDisk`,
+  which no old client mishandles.
+- **GTK.** `Link` routes the callback to the document's `DocNotices::
+  hostDisk(disk)` (by id, as `hostDirty`); `Document::hostDisk` defers a
+  turn, `takeHostDisk`: 2 is `markGone()` (both groups share the Document);
+  0 with the mark set clears it: a buffer equal to what it last read follows
+  the file's text read through the host (`followHostText`, as
+  `Editor::followHostFile`), one with edits is counted against the new
+  text (`rememberDisk` and `checkDirty`, the host told, `tellHostSaved`) and
+  stays unsaved, without asking. A picture, PDF or player tab of a remote
+  file holds no host document, so it is not marked.
+- **The Mac needs** (not wired): in `mac/src/SessionLink.mm`'s `hearDisk`,
+  replace the empty document callback with one that tells the
+  `MCRemoteWorkspace` (`+Remote.mm`) which host document id and state came,
+  mapped to the tab; state 2 does what `remoteDeletePath:` does for one tab
+  (`t.gone`, `tabWentMissing:`), state 0 clears `gone` as `tabCameBack:`
+  does and has a clean tab read the file through the host (as the local
+  path reads it) or a tab with edits count against it. Only when
+  `client().hostTellsDocsGone()`.
+- **Checked.** Core `diskwatch:host` (an app's window that hears the disk:
+  gone once, back once, a window without the document nothing, a file not
+  made yet no notice, the host's copy untouched); `remote_ssh` (a clean and a
+  typed tab, files unlinked on the stand-in's disk and written again).
