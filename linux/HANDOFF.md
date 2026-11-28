@@ -24,31 +24,15 @@ Read these first:
 
 ## Unreleased on main (for the next release)
 
-The last release is v1.6.24 (14d5273, 2026-11-22). The Mac, where
-`scripts/release.sh` runs, is away from 2026-11-22 for about a week, so
-nothing is released meanwhile; the next Mac session releases what is
-listed here (and clears this list). Each PR merged on green CI with no
-FLAKY line.
+The last release is v1.6.25 (22d444b, 2026-11-28), which carried #359 to #370.
+Each Linux PR merged since adds its line here; the next Mac session releases
+what is listed and clears it.
 
-- #359 GTK over SSH: the review pages and revision comparisons run on the
-  host; core hook `ChangeReview::ImageReading::readWork` (item 166).
-- #360 GTK over SSH: language servers run by the host (item 167).
-- #361 (the Mac session's) formatters over SSH (FsRead "format", Welcome
-  flag 1024) and fetch, pull and push through the host's git.
-- #362 this list.
-- #363 GTK over SSH: language servers' edits reach files no tab holds, and
-  URIs are the host's paths, never this machine's realpath (item 168).
-- #364 GTK over SSH: fetch, pull, push, Sync and autofetch run on the host,
-  and Format Document and format on save run its formatter (item 169);
-  the core's unused `Shared::gitRemoteOpText` is deleted.
-- #365 GTK over SSH: Preserve Case and Replace This Match through the host (Welcome
-  flag 2048, item 170). The Mac client still refuses both until it checks
-  `hostReplacesOne()`.
-- #366 GTK Line History: the gutter's hover box and View > Show Line History,
-  commits through the host's git over SSH (item 171).
-- #367 ROADMAP's terminal line (docs only).
-- GTK over SSH: Discard of a block or lines and the conflict choices on the
-  review page, written by git on the host (item 172; `src/ChangeReviewRead`).
+- GTK: a deleted file's tabs stay open, titled "(deleted)" and counted
+  unsaved, as the Mac's: the tree's Delete over SSH, and a file found
+  missing on disk; saving writes the file again, a file that comes back
+  clears the mark, and auto-save skips them (item 175). Local Move to Trash
+  still closes clean tabs, as on the Mac.
 - The Mac over SSH catches up: the review and commit pages, comparisons,
   line history, and the page's Discard and conflict choices through the
   host, on the same core pieces. GTK's page now takes its no-Trash Discard
@@ -9644,3 +9628,10 @@ side's; two are fixed, one left alone on purpose.
 - **git_conflicts**: its click on Keep Current opened the commit page. The pointer is real and stays where an earlier step left it; over a gutter it brings Line History's box (item 171) after half a second, and the box lay over the buttons, so the click landed in the box. Reproduced by parking the pointer on a gutter line before the click. The suite now moves the pointer off the gutter and waits for no box. #368's code (followHostFile, the review page's hook) was not involved: the picture shows the commit page, not a changed file.
 - **notes**: the suite starts by showing the terminal dock and waiting for the text view to be under 500 px high and not zero; idelink (the order was split_editor, idelink, notes; reproduced with exactly those) leaves its Claude Code review page as the active tab and the text view behind a page has no height. `closeAllTabs()` first.
 - **preview_tabs**: the Ctrl+W after "Keep Open" from a tab's menu came while the popover was still unmapping and took the keyboard (a Ctrl+W sent in the same step as the click was lost every time). The suite waits for the menu to be unmapped.
+
+### 175. A deleted file's tabs stay, marked, as the Mac's (November 2026)
+
+- **What.** The owner decided the Mac's behaviour wins. `Document` has a `gone` state (`gone()`, `markGone()`): the tab keeps its text, its strip title ends " (deleted)", a loaded text tab counts as unsaved (the dot, closing asks), a picture, PDF, player or database tab is only marked, a diff never. Set by the tree's Delete over SSH (`Editor::pathDeleted`, from `forgetGone(app, path, true)`: every tab of the path or under it, both groups, clean ones too; the host's save makes the missing file) and by a local file found missing on disk (`Document::checkExternalChange`, whose file monitor now also hears DELETED and MOVED_OUT). Cleared by a save, by `rememberDisk` (any read of the file), and by the file coming back (a clean tab then follows the disk, a tab with edits asks as any change on disk). Auto-save skips a gone tab (`Persistence::autoSaveNow`); backups still keep it (the Mac does too).
+- **Unchanged.** A local Move to Trash closes clean tabs (`pathTrashed`), dirty ones stay. A file deleted on the host by something else (its terminal) is not marked: the Mac does nothing for it either (no handling in `+Remote.mm` or `MCRemoteWorkspace`), and a remote document never runs `checkExternalChange`.
+- **Not done.** The Mac follows a rename by inode (`renamedFileFor:`) and asks before Ctrl+S writes a gone file again; GTK does neither (a moved-away file is marked, Ctrl+S writes at once, as GTK's saves of a changed file do). Local pictures and PDFs deleted on disk are not marked (only text tabs run the disk check).
+- **Checks.** `remote_ssh`: Delete of a clean tab's file, of one with typed text, of a folder holding an open file and of a picture (tabs stay, titled, unsaved or not), Ctrl+S writes the file again and clears the mark. `auto_save`: a clean tab's file deleted outside, marked, among the unsaved tabs, not made again by auto-save, mark gone and text following the disk when the file returns, Ctrl+S makes it again.

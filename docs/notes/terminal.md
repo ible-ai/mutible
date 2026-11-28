@@ -296,7 +296,8 @@ for full-screen programs. Both can be open at once.
   alternate screen starts empty, the prompt's return clears both), flag 1
   only, encoded by `encodeKey`/`encodeChar(..., keyboardFlags)`.
 - **Marks on the screen** (2026-11-06): `TerminalScreen` keeps OSC 133 A, C
-  and D (nonce-checked, `setMarkNonce`, as the stream) where they came, as
+  and D (and B since 2026-11-28, read only by the Option+click below;
+  nonce-checked, `setMarkNonce`, as the stream) where they came, as
   a line number from `historyBase` and a column in `marks_`, moved by
   `scrollUp`/`scrollDown` (regions, IL/DL), dropped by ED 2, ED 3, RIS,
   `clearAll`, `clearToCursorLine` and the scrollback limit, carried through
@@ -324,6 +325,38 @@ for full-screen programs. Both can be open at once.
   view is at offset 0, no Shift (selection) or Cmd (links). The prompt's return
   or the shell's exit turns off modes a program left on, so a click never types
   into the prompt.
+- **Option+click on the command line** (2026-11-28, the owner asked for
+  Cmd+click): moves zsh's cursor to the clicked character, as iTerm2 and
+  Terminal.app do. Option, not Cmd, because a path or URL typed at the
+  prompt is a link (TermLinks finds it once the file exists) and Cmd+click
+  opens it: Cmd would move the cursor on some cells of the line and open a
+  file on others. mutible has no block (rectangular) selection, so Option
+  took nothing; with a program taking the mouse, Option+click still goes to
+  it as Alt. The count is the core's `TerminalScreen::inputClickArrows`
+  (`screen:input-click`): the input starts at the screen's B mark (kept
+  since this change, beside A, C and D, only when a prompt is active; the
+  replay writes it too, and it sets no prompt state there), runs over soft
+  wraps (`lineTextWidth`, so a wide character's pad blank is no
+  character), and ends at its last ink or the cursor, whichever is later;
+  one arrow per cell that is not a wide character's right half, from the
+  cursor, sent through `sendTyped:` with `encodeKey` (DECCKM honoured). No
+  B after the current A (no integration, Cmd+K's ED 2 dropped it, or the
+  B came with the A when add-zle-hook-widget is missing): the cursor's
+  row only. Nothing on the alternate screen, with mouse tracking, while a
+  marked command runs (C after the last A), or for a click before B or
+  past the end. Limits: B is where ZLE started, so a prompt redrawn at
+  another length (an async prompt's `reset-prompt`) or a buffer restored
+  from push-input before zle-line-init leaves it off by that much; RPROMPT
+  and an autosuggestion count as text, so a click on them sends Right
+  arrows (zsh-autosuggestions then accepts the suggestion); a buffer with
+  a line break in it is rows no wrap joins, so only the cursor's row. The
+  GUI check is in terminal_marks (a command typed, Option+click on its d,
+  X typed lands in that column). The GTK port has none yet: VTE keeps its
+  own screen, so it would note where 133;B came
+  (`vte_terminal_get_cursor_position` when its integration's B arrives),
+  count the cells between that, the click and the cursor with VTE's text
+  the same way, and feed the arrows to the pty (Alt+click, VTE's own
+  gesture being none).
 - **Find, clear, synchronized output**: `TerminalScreen::find` (scrollback then
   screen, ASCII/Latin-1/Greek/Cyrillic folding, packed lines in place, 10,000
   cap); `MCTerminalFindBar` (Cmd+F with a grid focused; matches by line number;

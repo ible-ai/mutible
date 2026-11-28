@@ -251,6 +251,13 @@ public:
     // was last read or saved (by its date, inode and size first, then by its
     // text, so a file rewritten unchanged is no change).
     bool goneFromDisk() const;
+    // The tab's file was deleted (by the tree's Delete over SSH, or found
+    // missing on disk) and the tab stays, as the Mac's `gone`: " (deleted)"
+    // in the tab's title, and a loaded text tab counts as unsaved, so closing
+    // asks and Save writes the file again. Cleared by a save, by a read of
+    // the file (rememberDisk), or by the file coming back (checkExternalChange).
+    bool gone() const { return gone_; }
+    void markGone();
     bool changedOnDisk() const;
     // Counts every change to its text, for knowing what a backup holds.
     uint64_t edits() const { return edits_; }
@@ -717,6 +724,7 @@ private:
     std::string  saveNote_;
     // The file as last read or saved, and whether the buffer differs.
     bool        diskKnown_ = false;
+    bool        gone_ = false;   // markGone
     std::string saved_;
     long        savedChars_ = 0;
     bool        dirty_ = false;

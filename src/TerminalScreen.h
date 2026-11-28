@@ -274,7 +274,7 @@ public:
     // The shell integration's marks count only with this nonce, as
     // TerminalStream::setMarkNonce says (empty: every mark counts).
     void setMarkNonce(const std::string& nonce) { nonce_ = nonce; }
-    // Where the marks came: OSC 133 A, C and D on the main screen are kept
+    // Where the marks came: OSC 133 A, B, C and D on the main screen are kept
     // at the cursor's place, and stay on their text as it scrolls into the
     // scrollback, reflows, or is cleared (a mark on a line that goes, goes
     // with it). A prompt mark followed by zsh's PROMPT_SP wrap moves down
@@ -289,6 +289,20 @@ public:
     // it; INT_MIN when there is none.
     int previousCommandLine(int line) const;
     int nextCommandLine(int line) const;
+    // Option+click on the command line being typed (iTerm2's and
+    // Terminal.app's gesture): the arrow presses that take the shell's
+    // cursor to the character at `line`, `col` (lines as lineCell numbers
+    // them), negative for Left, positive for Right, one per character, a
+    // wide one included, counted from the cursor across the soft wraps
+    // between. The input starts at the current prompt's 133;B mark (zsh's
+    // line editor started there) and ends at its last character drawn or
+    // at the cursor, whichever is later, so the cell just past the end
+    // counts. With no B after the current prompt (no integration, or the
+    // marks cleared), only a click on the cursor's own row counts, as a
+    // move along that row. false, and nothing to send, on the alternate
+    // screen, while a program takes the mouse, while a marked command
+    // runs, and for a click before the input, past its end, or off it.
+    bool inputClickArrows(int line, int col, int& arrows) const;
     // Marks kept (for tests).
     size_t markCount() const { return marks_.size(); }
 
@@ -549,7 +563,8 @@ private:
     int commandsEnded_ = 0;
     // Shell integration marks, in reading order: `id` is the line's number
     // counted from the first line ever (historyBase_ + line), which stays
-    // the same as the line scrolls up; `kind` is 'A', 'C' or 'D'.
+    // the same as the line scrolls up; `kind` is 'A', 'B', 'C' or 'D'
+    // (B, where the line editor began reading, only for inputClickArrows).
     struct Mark {
         long long id;
         int col;

@@ -85,10 +85,20 @@ NSString *MCSavedPhrase(NSDate *date, NSDate *now);
 // The row width at which every column in `columns` shows beside a name of
 // a comfortable length.
 CGFloat MCTreeCellWidthFor(MCTreeColumns columns);
+// The font of a row's name: 13 points, a root row of several focused
+// folders a little heavier. Made once each.
+NSFont *MCTreeNameFont(BOOL root);
 @interface MCTreeCell : NSTableCellView
 @property(nonatomic, strong, readonly) NSTextField *sizeField, *savedField, *createdField;
 - (void)setSize:(NSString *)size saved:(NSString *)saved created:(NSString *)created
           color:(NSColor *)color;
+// The name, kept as set here: NSTableCellView's layout and viewWillDraw
+// put the row size style's font on the textField of every cell a row
+// takes, so a name set in place (a git color, a setting) drew in another
+// size than a row the table had just made. A title (a worktree's row)
+// keeps its own fonts; a plain name takes `font`.
+- (void)setName:(NSString *)name font:(NSFont *)font;
+- (void)setTitle:(NSAttributedString *)title;
 @end
 
 // Shift+F10, Ctrl+Return, or the PC keyboard's Menu key: the context menu of

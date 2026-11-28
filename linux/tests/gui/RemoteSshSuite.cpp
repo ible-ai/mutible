@@ -106,6 +106,7 @@
 #include "ControlPaths.h"
 #include "DocumentView.h"
 #include "Editor.h"
+#include "TabStrip.h"
 #include "EnvLock.h"
 #include "FileTree.h"
 #include "PalettePanel.h"
@@ -289,6 +290,23 @@ void typeName(const std::string& name) {
 }
 
 // The row at `rel` (from the folder) revealed and selected, the tree with the keyboard.
+// The title the strip draws for a document's tab.
+std::string stripTitle(Document* d) {
+    Editor* ed = remoteWindow().editor;
+    const int i = d ? ed->indexOf(d) : -1;
+    return i >= 0 && i < ed->strip()->count() ? ed->strip()->item(i).title : std::string("(no tab)");
+}
+
+// What a tab of a deleted file shows, as the Mac's (deleted): the tab stays,
+// titled "... (deleted)"; a loaded text tab is unsaved too, a picture is not.
+bool markedDeleted(Document* d, bool unsaved) {
+    if (!d) return false;
+    Editor* ed = remoteWindow().editor;
+    const std::string t = stripTitle(d);
+    return d->gone() && d->dirty() == unsaved && t.size() > 10 &&
+           t.compare(t.size() - 10, 10, " (deleted)") == 0 && ed->strip()->item(ed->indexOf(d)).dirty == unsaved;
+}
+
 void selectRow(const std::string& rel) {
     MCGuiStep("the row " + rel + " selected", [rel] {
         remoteWindow().tree->revealPath(gFolder + rel);
@@ -296,6 +314,20 @@ void selectRow(const std::string& rel) {
         MCGuiSetKeyWindow(nullptr);
     });
     MCGuiWait("selected", 10, [rel] { return remoteWindow().tree->selectedPath() == gFolder + rel; });
+}
+
+// The tree's Delete on a row, the question answered Delete Permanently.
+void deletePermanently(const std::string& rel) {
+    selectRow(rel);
+    MCGuiStep("Delete " + rel, [] {
+        g_action_group_activate_action(G_ACTION_GROUP(remoteWindow().window), "trash", nullptr);
+    });
+    MCGuiWait("the question", 10, [] { return alertText().find("permanently") != std::string::npos; });
+    MCGuiStep("Delete Permanently", [] {
+        MCGuiSetKeyWindow(MCGuiTopWindow());
+        MCGuiClick(MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Delete Permanently"));
+    });
+    MCGuiWait("the question closed", 10, [] { return alertText().empty(); });
 }
 
 
@@ -1716,9 +1748,53 @@ MC_GUI_SUITE(remote_ssh) {
         MCGuiSetKeyWindow(MCGuiTopWindow());
         MCGuiClick(MCGuiFindButton(GTK_WIDGET(MCGuiTopWindow()), "Delete Permanently"));
     });
-    MCGuiWait("gone from the disk and the tree; its clean tab closed", 20, [] {
+    // The Mac's remoteDeletePath: the tab of what the host deleted stays,
+    // clean ones too, marked deleted and unsaved.
+    MCGuiWait("gone from the disk and the tree; its clean tab stays, deleted and unsaved", 20, [] {
         return !g_file_test((gFolder + "/src/madeby/ren2.txt").c_str(), G_FILE_TEST_EXISTS) && !hasRow("ren2.txt", 2) &&
-               tabOf(gFolder + "/src/madeby/ren2.txt") == nullptr;
+               markedDeleted(tabOf(gFolder + "/src/madeby/ren2.txt"), true);
+    });
+    MCGuiStep("its text kept; Ctrl+S writes the file again, through the host", [] {
+        Document* d = tabOf(gFolder + "/src/madeby/ren2.txt");
+        GCHECK(d != nullptr);
+        if (d) GCHECK_EQ_STR(textOf(d), "ren\nmore\n");
+        remoteWindow().editor->openFile(gFolder + "/src/madeby/ren2.txt");
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("written again on the host's disk, the mark gone", 20, [] {
+        Document* d = tabOf(gFolder + "/src/madeby/ren2.txt");
+        return readFile(gFolder + "/src/madeby/ren2.txt") == "ren\nmore\n" && d && !d->gone() && !d->dirty() &&
+               stripTitle(d).find("(deleted)") == std::string::npos;
+    });
+
+    // ---- a file with unsaved changes, and a folder holding an open file
+    MCGuiStep("dup.txt opened", [] {
+        remoteWindow().editor->openFile(gFolder + "/src/dup.txt");
+    });
+    MCGuiWait("dup.txt read", 20, [] { return textOf(tabOf(gFolder + "/src/dup.txt")) == "dup\n"; });
+    MCGuiStep("typed", [] {
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(remoteWindow().editor->textView());
+        MCGuiKey("ctrl+end");
+        MCGuiType("edited\n");
+    });
+    MCGuiWait("dup.txt unsaved", 10, [] { Document* d = tabOf(gFolder + "/src/dup.txt"); return d && d->dirty(); });
+    deletePermanently("/src/dup.txt");
+    MCGuiWait("dup.txt gone from the disk; its tab stays, deleted, unsaved", 20, [] {
+        return !g_file_test((gFolder + "/src/dup.txt").c_str(), G_FILE_TEST_EXISTS) &&
+               markedDeleted(tabOf(gFolder + "/src/dup.txt"), true);
+    });
+    MCGuiStep("the typed text is still there", [] { GCHECK_EQ_STR(textOf(tabOf(gFolder + "/src/dup.txt")), "dup\nedited\n"); });
+    deletePermanently("/src/pack2");
+    MCGuiWait("the folder gone; the tab of its file stays, deleted, unsaved", 20, [] {
+        return !g_file_test((gFolder + "/src/pack2").c_str(), G_FILE_TEST_EXISTS) &&
+               markedDeleted(tabOf(gFolder + "/src/pack2/inner.txt"), true);
+    });
+    MCGuiStep("a tab of another file is untouched", [] {
+        Document* m = tabOf(gFolder + "/src/madeby/ren2.txt");
+        GCHECK(m && !m->gone());
     });
 
     // ---- New File
@@ -2308,6 +2384,21 @@ MC_GUI_SUITE(remote_ssh) {
         return w.editor->remoteCopies() && w.editor->remoteCopies()->refreshes >= 1 && w.editor->media() &&
                w.editor->media()->imageWidth() == 50 && w.editor->media()->imageHeight() == 40;
     });
+    // A picture of a deleted file stays, marked, and is not unsaved.
+    MCGuiStep("a second picture opened", [] {
+        writePng(gFolder + "/pics/del.png", 12, 9);
+        remoteWindow().editor->openFile(gFolder + "/pics/del.png");
+    });
+    MCGuiWait("it is shown", 30, [] {
+        Document* d = tabOf(gFolder + "/pics/del.png");
+        return d && !d->loading() && d->kind() == Document::Kind::Media && remoteWindow().editor->media() &&
+               remoteWindow().editor->media()->imageWidth() == 12;
+    });
+    deletePermanently("/pics/del.png");
+    MCGuiWait("deleted on the host; its tab stays, marked, not unsaved", 20, [] {
+        return !g_file_test((gFolder + "/pics/del.png").c_str(), G_FILE_TEST_EXISTS) &&
+               markedDeleted(tabOf(gFolder + "/pics/del.png"), false);
+    });
     MCGuiStep("the PDF opened", [] { remoteWindow().editor->openFile(gFolder + "/doc.pdf"); });
     MCGuiWait("three pages from a copy", 30, [] {
         const MCGuiAppWindow w = remoteWindow();
@@ -2673,6 +2764,9 @@ MC_GUI_SUITE(remote_ssh) {
     // ---- the window closes: its shell and file close on the lasting host, which then ends
     MCGuiStep("the window closes", [] {
         GCHECK(alertText().empty());
+        // The deleted files' tabs are unsaved (the Mac's marks): closing the
+        // window would ask about them; let them go, unasked.
+        remoteWindow().editor->closeAllTabs();
         MCGuiSetKeyWindow(nullptr);
         gtk_window_close(remoteWindow().window);
     });

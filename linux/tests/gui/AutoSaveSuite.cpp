@@ -11,6 +11,7 @@
 
 #include "DocumentView.h"
 #include "Editor.h"
+#include "TabStrip.h"
 
 #include <glib/gstdio.h>
 
@@ -20,6 +21,10 @@ namespace {
 
 std::string F(const std::string& name) { return MCGuiProjectFile("autosave/" + name); }
 Editor* ed() { return MCGuiApp().editor; }
+std::string StripTitle(Document* d) {
+    const int i = ed()->indexOf(d);
+    return i >= 0 && i < ed()->strip()->count() ? ed()->strip()->item(i).title : std::string("(no tab)");
+}
 std::string Status() { return gtk_label_get_text(GTK_LABEL(MCGuiApp().statusLabel)); }
 
 bool QuestionUp() {
@@ -49,7 +54,7 @@ MC_GUI_SUITE(auto_save) {
     MCGuiStep("files, and auto-save after 200 ms", [] {
         MCGuiSetKeyWindow(nullptr);
         for (const char* n : {"delay.txt", "focus.txt", "tab.txt", "close.txt", "outside.txt",
-                              "other.txt", "ime.txt", "off.txt", "witness.txt", "deleted.txt"})
+                              "other.txt", "ime.txt", "off.txt", "witness.txt", "deleted.txt", "gone.txt"})
             MCGuiWriteFile(F(n), std::string(n) + "\n");
         ed()->closeAllTabs();
         MCGuiSetSettings("lsp.enabled = false\neditor.auto-save = after-delay\n"
@@ -196,7 +201,53 @@ MC_GUI_SUITE(auto_save) {
         GCHECK(!MCGuiFileExists(F("deleted.txt")));
         Document* d = ed()->documentFor(F("deleted.txt"));
         GCHECK(d && d->dirty());
+        GCHECK(d && d->gone());
         if (d) ed()->closeTab(d);   // let go, unasked
+    });
+
+    // ---- a file deleted outside with a clean tab: the tab stays, marked
+    // deleted and unsaved (the Mac's tabWentMissing:), never written by
+    // auto-save, and the mark goes when the file comes back
+    OpenForTyping("gone.txt");
+    MCGuiStep("its file deleted outside, auto-save on", [] { g_remove(F("gone.txt").c_str()); });
+    MCGuiWait("the tab stays, marked deleted, unsaved", 10, [] {
+        Document* d = ed()->documentFor(F("gone.txt"));
+        return d && d->gone() && d->dirty() && StripTitle(d).find(" (deleted)") != std::string::npos;
+    });
+    MCGuiStep("closing it would ask: it is among the unsaved tabs", [] {
+        Document* d = ed()->documentFor(F("gone.txt"));
+        bool listed = false;
+        for (Document* u : ed()->dirtyDocuments()) listed = listed || u == d;
+        GCHECK(listed);
+    });
+    MCGuiPause(0.6);   // a negative check: auto-save's 200 ms delay passes
+    MCGuiStep("auto-save did not make the file again", [] {
+        GCHECK(!MCGuiFileExists(F("gone.txt")));
+        GCHECK(ed()->documentFor(F("gone.txt")) != nullptr);
+    });
+    MCGuiStep("the file made again by something else, with other text", [] {
+        MCGuiWriteFile(F("gone.txt"), "back\n");
+    });
+    MCGuiWait("the mark is gone, the clean tab follows the disk", 10, [] {
+        Document* d = ed()->documentFor(F("gone.txt"));
+        return d && !d->gone() && !d->dirty() && StripTitle(d).find("(deleted)") == std::string::npos &&
+               MCGuiEditorText() == "back\n";
+    });
+    MCGuiStep("deleted again, the tab typed into, Ctrl+S makes the file", [] {
+        g_remove(F("gone.txt").c_str());
+    });
+    MCGuiWait("marked again", 10, [] { Document* d = ed()->documentFor(F("gone.txt")); return d && d->gone(); });
+    MCGuiStep("Ctrl+S", [] {
+        MCGuiSetKeyWindow(nullptr);
+        gtk_widget_grab_focus(ed()->textView());
+        MCGuiKey("ctrl+s");
+    });
+    MCGuiWait("written again, the mark gone", 10, [] {
+        Document* d = ed()->documentFor(F("gone.txt"));
+        return MCGuiReadFile(F("gone.txt")) == "back\n" && d && !d->gone() && !d->dirty();
+    });
+    MCGuiStep("let go", [] {
+        if (Document* d = ed()->documentFor(F("gone.txt"))) ed()->closeTab(d);
     });
 
     // ---- an input method composing

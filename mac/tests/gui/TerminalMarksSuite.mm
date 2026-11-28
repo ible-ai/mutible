@@ -8,6 +8,8 @@
 //   - `false` gets the red bar beside its prompt (pixels), `true` none.
 //   - Terminal > Copy Last Command Output copies what the last one printed.
 //   - Cmd+Up reaches the grid: no menu item and no key equivalent takes it.
+//   - Option+click in the middle of a command typed and not run moves zsh's
+//     cursor there: a character typed next lands in the clicked column.
 #import "Harness.h"
 #import "EditorController.h"
 #import "Terminal.h"
@@ -52,6 +54,28 @@ NSColor *PixelAt(TerminalGridView *g, CGFloat x, CGFloat y) {
     CGFloat scale = rep.pixelsWide / NSWidth(g.bounds);
     return [[rep colorAtX:(NSInteger)(x * scale) y:(NSInteger)(y * scale)]
         colorUsingColorSpace:NSColorSpace.sRGBColorSpace];
+}
+
+// An Option+click on a cell of the grid, made as the hardware makes it.
+void OptionClick(TerminalGridView *g, int row, int col) {
+    NSSize cs = [TerminalGridView cellSize];
+    CGFloat pad = [TerminalGridView padding];
+    NSPoint p = [g convertPoint:NSMakePoint(pad + (col + 0.5) * cs.width,
+                                            pad + (row + 0.5) * cs.height)
+                         toView:nil];
+    for (NSEventType type : {NSEventTypeLeftMouseDown, NSEventTypeLeftMouseUp}) {
+        NSEvent *e = [NSEvent mouseEventWithType:type location:p
+                                   modifierFlags:NSEventModifierFlagOption
+                                       timestamp:NSProcessInfo.processInfo.systemUptime
+                                    windowNumber:g.window.windowNumber context:nil
+                                     eventNumber:0 clickCount:1 pressure:1];
+        if (type == NSEventTypeLeftMouseDown) [g mouseDown:e];
+        else [g mouseUp:e];
+    }
+}
+
+std::string CellText(TerminalGridView *g, int row, int col) {
+    return g.screen->lineCell(row, col).ch;
 }
 
 BOOL Red(NSColor *c) {
@@ -211,6 +235,50 @@ MC_GUI_SUITE(terminal_marks) {
         NSMenuItem *terminalMenu = [NSApp.mainMenu itemWithTitle:@"Terminal"];
         GCHECK([terminalMenu.submenu indexOfItemWithTarget:nil
                                                  andAction:@selector(clearToPreviousMark:)] >= 0);
+    });
+    // Option+click on the command line being typed: zsh's cursor goes to
+    // the clicked character (the arrows the core counted from 133;B).
+    __block int clickRow = -1, clickCol = -1;
+    MCGuiStep(@"a command typed at the prompt, not run", ^{
+        TerminalGridView *g = Grid(s.term);
+        [s.c.window makeFirstResponder:g];
+        [g insertText:@"echo abcdefgh" replacementRange:NSMakeRange(NSNotFound, 0)];
+    });
+    MCGuiWait(@"zsh drew it", 10, ^BOOL {
+        TerminalScreen *sc = Grid(s.term).screen;
+        const std::string row = sc->rowText(sc->cursorRow());
+        return row.size() >= 13 && row.compare(row.size() - 13, 13, "echo abcdefgh") == 0 &&
+               sc->cursorCol() == (int)row.size();
+    });
+    MCGuiStep(@"Option+click on its d", ^{
+        TerminalGridView *g = Grid(s.term);
+        TerminalScreen *sc = g.screen;
+        GCHECK(g.scrollOffset == 0 && !sc->altScreen() && !sc->mouseTracking());
+        clickRow = sc->cursorRow();
+        clickCol = sc->cursorCol() - 5;   // d e f g h before the cursor
+        GCHECK(clickCol > 0 && CellText(g, clickRow, clickCol) == "d");
+        int arrows = 0;
+        GCHECK(sc->inputClickArrows(clickRow, clickCol, arrows) && arrows == -5);
+        if (arrows != -5) MCGuiNote(@"the core counted %d arrows", arrows);
+        OptionClick(g, clickRow, clickCol);
+        GCHECK(g.selectedText == nil);
+    });
+    MCGuiWait(@"the cursor at the clicked column", 10, ^BOOL {
+        TerminalScreen *sc = Grid(s.term).screen;
+        return sc->cursorRow() == clickRow && sc->cursorCol() == clickCol;
+    });
+    MCGuiStep(@"a character typed lands there", ^{
+        [Grid(s.term) insertText:@"X" replacementRange:NSMakeRange(NSNotFound, 0)];
+    });
+    MCGuiWait(@"zsh drew it in the middle", 10, ^BOOL {
+        TerminalScreen *sc = Grid(s.term).screen;
+        return sc->rowText(clickRow).find("echo abcXdefgh") != std::string::npos;
+    });
+    MCGuiStep(@"in the clicked column", ^{
+        TerminalGridView *g = Grid(s.term);
+        MCGuiNote(@"row: %s", g.screen->rowText(clickRow).c_str());
+        GCHECK(CellText(g, clickRow, clickCol) == "X");
+        GCHECK(g.screen->cursorCol() == clickCol + 1);
     });
     MCGuiStep(@"typing goes back to the bottom; the terminal closes", ^{
         TerminalGridView *g = Grid(s.term);

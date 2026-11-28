@@ -153,7 +153,17 @@ found through that list.
   on a narrow row; switching one on widens a narrow sidebar
   (`MCTreeCellWidthFor`, up to 40%). Trap: NSTableCellView moves its textField
   to the cell's width without a layout pass, so `MCTreeCell` places its fields
-  again in `viewWillDraw`. **The name column is the sidebar's width**
+  again in `viewWillDraw`. Trap: NSTableCellView's `layout` and
+  `viewWillDraw` also set the row size style's font (13 points for Medium)
+  on the textField of each cell a row takes, made or reused, over the one
+  `configureTreeCell` set, so a row the table had just made drew 13 points
+  and a row refreshed in place (`refreshTreeCells`: a save's git color, a
+  setting) 12.5, and every name shrank at a save (2026-11-28, the README's
+  tour GIF). The name's font is `MCTreeNameFont` (13 points, a focus root
+  medium weight), set with `setName:font:` or `setTitle:` and put back by
+  `keepName` after both; `tree` checks a save moves no font, name frame,
+  row height, scroll, sidebar width or other row's pixels.
+  **The name column is the sidebar's width**
   (2026-11-18, C3): `fitTreeColumn` (`sizeLastColumnToFit`) after every
   reload (`applyTreeListings:`, `reloadTreeKeepingState:`, a focus change)
   and on the sidebar scroll view's frame changes, and
@@ -497,7 +507,8 @@ found through that list.
   whose informative text is the host's sentence. A delete asks "Delete
   “x” permanently?" (the host has no Trash) and leaves the open tabs of
   what went, marked deleted and unsaved, where a local Move to Trash
-  closes the clean ones. A dragged row is an `NSPasteboardItem` of
+  closes the clean ones (GTK the same: `Editor::pathDeleted` over SSH,
+  `pathTrashed` for the local Trash). A dragged row is an `NSPasteboardItem` of
   `MCTreeRowPasteboardType` (never a file URL of this Mac's); only the
   tree's own rows drop (a Finder drag says it does not work over SSH).
   Without the host's flag 64 the items are disabled
@@ -531,6 +542,7 @@ Each trap's first sentence, in the order it appears above; the whole
 text is in place in its section.
 
 - The file tree (Mac): Trap: NSTableCellView moves its textField to the cell's width without a layout pass, so `MCTreeCell` places its fields again in `viewWillDraw`.
+- The file tree (Mac): Trap: NSTableCellView's `layout` and `viewWillDraw` also set the row size style's font (13 points for Medium) on the textField of each cell a row takes, made or reused, over the one `configureTreeCell` set, so a row the table had just made drew 13 points and a row refreshed in place 12.5, and every name shrank at a save.
 - The file tree (Mac): Trap: `NSTableViewLastColumnOnlyAutoresizingStyle` moves the column only by the change in the outline's frame, so a width lost once stayed lost and a reload cut every name off; `fitTreeColumn` fits it after each reload and frame change.
 - The file tree (Mac): Trap: a within-app mask of Move alone had the terminal refuse every row (it takes only Copy, Generic or Link), and #187's check never saw it because its fake drag offered every operation; a drop check names the real source's mask.
 - The file tree (Mac): Trap: the tree following the active tab must not scroll for the row a click in the tree opens (`treeOpensPath:`), nor during a window's restore (`holdTreeFollowing:`).

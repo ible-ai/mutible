@@ -12,6 +12,8 @@
 // picture, a README), the one image made for that type, in its family's
 // color, a folder's stays a folder; the names use the sidebar's width
 // after a new file's refresh, with the name column left out of step first;
+// a save and its git color move no name's font or frame, no row height,
+// scroll or sidebar width, and redraw no other row differently;
 // 5,000 rows of many types are made and drawn page by page, each with its
 // type's one image, in about the time 5,000 plain text rows take.
 #import "Harness.h"
@@ -100,6 +102,50 @@ BOOL NameReach(EditorController *c, NSString *path, CGFloat *cellRight, CGFloat 
 void Touch(NSString *path, time_t when) {
     struct timeval tv[2] = {{when, 0}, {when, 0}};
     utimes(path.fileSystemRepresentation, tv);
+}
+
+NSString *FontKey(NSFont *f) {
+    return [NSString stringWithFormat:@"%@ %.2f", f.fontName, f.pointSize];
+}
+
+// What a save must leave as it was in the tree: the row height, the scroll
+// and the first row on show, the sidebar's width, and each row's name font,
+// name frame and pixels. The rows are drawn first, as the window draws
+// them: NSTableCellView puts its row size style's font on a row's name in
+// layout and viewWillDraw.
+struct TreeLook {
+    CGFloat rowHeight = 0, scrollY = 0, sidebar = 0;
+    NSUInteger firstRow = 0;
+    NSMutableDictionary<NSString *, NSString *> *fonts = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSValue *> *frames = [NSMutableDictionary dictionary];
+    NSMutableDictionary<NSString *, NSData *> *pixels = [NSMutableDictionary dictionary];
+};
+
+TreeLook LookOf(EditorController *c) {
+    TreeLook l;
+    NSClipView *clip = c.sidebarScroll.contentView;
+    [c.window.contentView layoutSubtreeIfNeeded];
+    const NSRect visible = clip.documentVisibleRect;
+    NSBitmapImageRep *all = [c.outline bitmapImageRepForCachingDisplayInRect:visible];
+    [c.outline cacheDisplayInRect:visible toBitmapImageRep:all];
+    l.rowHeight = c.outline.rowHeight;
+    l.scrollY = clip.bounds.origin.y;
+    l.sidebar = NSWidth(c.splitView.subviews.firstObject.frame);
+    const NSRange rows = [c.outline rowsInRect:visible];
+    l.firstRow = rows.location;
+    for (NSUInteger r = rows.location; r < NSMaxRange(rows); r++) {
+        FileItem *item = [c.outline itemAtRow:(NSInteger)r];
+        MCTreeCell *cell = [c.outline viewAtColumn:0 row:(NSInteger)r makeIfNecessary:NO];
+        if (!item.path || ![cell isKindOfClass:MCTreeCell.class]) continue;
+        l.fonts[item.path] = FontKey(cell.textField.font);
+        l.frames[item.path] = [NSValue valueWithRect:cell.textField.frame];
+        const NSRect rr = NSIntersectionRect([c.outline rectOfRow:(NSInteger)r], visible);
+        NSBitmapImageRep *rep = [c.outline bitmapImageRepForCachingDisplayInRect:rr];
+        [c.outline cacheDisplayInRect:rr toBitmapImageRep:rep];
+        l.pixels[item.path] = [NSData dataWithBytes:rep.bitmapData
+                                             length:(NSUInteger)(rep.bytesPerRow * rep.pixelsHigh)];
+    }
+    return l;
 }
 
 }  // namespace
@@ -531,6 +577,82 @@ MC_GUI_SUITE(tree) {
         MCGuiNote(@"sidebar %.0f, cell to %.0f", now, cellRight);
         GCHECK(cellRight <= now + 1 && cellRight >= now - 40);
         [c.splitView setPosition:side ofDividerAtIndex:0];
+    });
+
+    // --- a save leaves the tree as it was (2026-11-28, the README's tour
+    // GIF: at Cmd+S every name shrank from 13 to 12.5 points and rose a
+    // point). The table put its row size style's font on each row it made,
+    // over the one configureTreeCell set, and the save's git status
+    // refreshed the rows on show in place with configureTreeCell's own.
+    // Only the saved file's row and its folder may change, to git's color.
+    __block TreeLook before;
+    MCGuiStep(@"src/b.txt open and changed; the rows of docs and src made again", ^{
+        [c focusEditor:nil];
+        GCHECK([c showFile:file(@"src/b.txt")]);
+        NSTextView *tv = [c valueForKey:@"textView"];
+        NSUndoManager *u = tv.undoManager;
+        if (u.groupsByEvent && u.groupingLevel > 0) [u endUndoGrouping];
+        MCGuiUndoGroup(u, ^{ [tv insertText:@"saved " replacementRange:NSMakeRange(0, 0)]; });
+        GCHECK(c.dirty);
+        // Rows the table has just made, as a window's first listing has them.
+        for (NSString *folder in @[docs, src]) {
+            [c.outline collapseItem:ItemAt(c, folder)];
+            [c.outline expandItem:ItemAt(c, folder)];
+        }
+    });
+    MCGuiWaitQuiet(@"the tree done following the tab", 0.5, 10, ^NSInteger {
+        return (NSInteger)c.sidebarScroll.contentView.bounds.origin.y;
+    });
+    MCGuiStep(@"every name on show in the tree's font; save", ^{
+        before = LookOf(c);
+        MCGuiNote(@"%lu rows on show from row %lu, row height %.1f, sidebar %.0f",
+                  (unsigned long)before.fonts.count, (unsigned long)before.firstRow,
+                  before.rowHeight, before.sidebar);
+        GCHECK(before.fonts.count >= 5);
+        GCHECK(before.fonts[file(@"docs/README.md")] != nil);
+        NSString *want = FontKey(MCTreeNameFont(NO));
+        for (NSString *path in before.fonts)
+            if (![before.fonts[path] isEqualToString:want])
+                MCGuiNote(@"%@ drawn in %@, not %@", path.lastPathComponent, before.fonts[path], want);
+        GCHECK([[NSSet setWithArray:before.fonts.allValues] isEqualToSet:[NSSet setWithObject:want]]);
+        [c saveCurrentFile:nil];
+        GCHECK(!c.dirty);
+    });
+    MCGuiWait(@"the save's git status colors b.txt", 15, ^BOOL {
+        return !git || RowColored(c, file(@"src/b.txt"), GitColor(TreeGitColor::Modified));
+    });
+    MCGuiStep(@"no font, name, row height, scroll, sidebar width or other row's pixel moved", ^{
+        [c refreshTreeCells];   // without git too: the rows on show refreshed in place
+        TreeLook after = LookOf(c);
+        if (after.rowHeight != before.rowHeight || after.scrollY != before.scrollY ||
+            after.firstRow != before.firstRow || after.sidebar != before.sidebar)
+            MCGuiNote(@"row height %.1f -> %.1f, scroll %.1f -> %.1f, first row %lu -> %lu, "
+                      @"sidebar %.1f -> %.1f", before.rowHeight, after.rowHeight, before.scrollY,
+                      after.scrollY, (unsigned long)before.firstRow, (unsigned long)after.firstRow,
+                      before.sidebar, after.sidebar);
+        GCHECK(after.rowHeight == before.rowHeight);
+        GCHECK(after.scrollY == before.scrollY);
+        GCHECK(after.firstRow == before.firstRow);
+        GCHECK(after.sidebar == before.sidebar);
+        GCHECK([[NSSet setWithArray:after.fonts.allKeys] isEqualToSet:[NSSet setWithArray:before.fonts.allKeys]]);
+        NSUInteger moved = 0;
+        for (NSString *path in before.fonts) {
+            const BOOL fontSame = [after.fonts[path] isEqualToString:before.fonts[path]];
+            const BOOL frameSame = [after.frames[path] isEqualToValue:before.frames[path]];
+            // The saved file and its folder take git's color; every other
+            // row is drawn as it was, pixel for pixel.
+            const BOOL recolored = [path isEqualToString:src] || [path isEqualToString:file(@"src/b.txt")];
+            const BOOL pixelsSame = recolored || [after.pixels[path] isEqualToData:before.pixels[path]];
+            if (!fontSame || !frameSame || !pixelsSame) {
+                moved++;
+                MCGuiNote(@"%@: font %@ -> %@, name %@ -> %@%@", path.lastPathComponent,
+                          before.fonts[path], after.fonts[path],
+                          NSStringFromRect(before.frames[path].rectValue),
+                          NSStringFromRect(after.frames[path].rectValue),
+                          pixelsSame ? @"" : @", drawn differently");
+            }
+        }
+        GCHECK(moved == 0);
     });
 
     // --- 5,000 rows of many types, made and drawn page by page: each row

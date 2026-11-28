@@ -2121,6 +2121,7 @@ static BOOL IsWordCell(const TermCell &cell) {
         return;
     }
     [self forgetCommand];
+    if ([self moveInputCursorToClick:e]) return;
     if (e.modifierFlags & NSEventModifierFlagCommand) {
         int line, endLine, c0, c1;
         NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
@@ -2165,6 +2166,37 @@ static BOOL IsWordCell(const TermCell &cell) {
     }
     _selecting = YES;
     [self setNeedsDisplay:YES];
+}
+
+// Option+click on the command line being typed moves the shell's cursor
+// there, as in iTerm2 and Terminal.app: the arrows the core counts
+// (TerminalScreen::inputClickArrows), sent as typed keys. Option, not Cmd,
+// because a path or URL typed at the prompt is a link, which Cmd+click
+// opens. Only a single click with Option alone, on the main screen with no
+// program taking the mouse (the core says), in grid mode; NO for anything
+// else, which then selects or reports as before.
+- (BOOL)moveInputCursorToClick:(NSEvent *)e {
+    TerminalScreen *s = self.screen;
+    const NSEventModifierFlags mods = e.modifierFlags & (NSEventModifierFlagCommand |
+        NSEventModifierFlagControl | NSEventModifierFlagOption | NSEventModifierFlagShift);
+    if (!s || !self.textInput || mods != NSEventModifierFlagOption || e.clickCount != 1) return NO;
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    int row, col;
+    [self cellAtPoint:p row:&row col:&col];
+    int arrows = 0;
+    if (!s->inputClickArrows([self topLine] + row, col, arrows)) return NO;
+    [self.window makeFirstResponder:self];
+    if (_hasSelection) { _hasSelection = NO; [self setNeedsDisplay:YES]; }
+    if (arrows) {
+        const std::string key = TerminalScreen::encodeKey(
+            arrows < 0 ? TermKey::Left : TermKey::Right, 0, s->appCursorKeys(), s->appKeypad(),
+            s->keyboardFlags());
+        std::string bytes;
+        for (int i = 0; i < std::abs(arrows); i++) bytes += key;
+        [self sendTyped:bytes];
+    }
+    [self restartBlink];
+    return YES;
 }
 
 // ---------------------------------------------------------- mouse reporting
