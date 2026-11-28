@@ -92,7 +92,7 @@ static NSString *MCGroupedCount(long long n) {
     // A root row of several focused folders says its path from the
     // window's folder ("mac/src"), a little heavier (+TreeFocus).
     NSString *rootLabel = [self treeRootLabelFor:node];
-    cell.textField.stringValue = rootLabel ?: node.name ?: @"";
+    [cell setName:rootLabel ?: node.name ?: @"" font:MCTreeNameFont(rootLabel != nil)];
     // In a git folder the name takes its status's color (tree.git-*).
     NSString *gitTip = nil;
     NSColor *gitColor = [self gitColorOf:node tip:&gitTip];
@@ -104,8 +104,6 @@ static NSString *MCGroupedCount(long long n) {
         gitTip = node.outside ? @"A link out of the folder" : @"Ignored";
     }
     cell.textField.textColor = gitColor ?: text;
-    cell.textField.font = rootLabel ? [NSFont systemFontOfSize:12.5 weight:NSFontWeightMedium]
-                                    : [NSFont systemFontOfSize:12.5];
     // A file's icon says what it is (FileIcon::Type: Python, JSON, a
     // Dockerfile, a picture), in its family's color (FileTypeIcons.mm);
     // the images and colors are made once per type.
@@ -122,13 +120,13 @@ static NSString *MCGroupedCount(long long n) {
     NSString *worktreeTip = nil;
     NSAttributedString *worktree = [self worktreeTitleFor:node color:text icon:&sym tint:&tint
                                                       tip:&worktreeTip];
-    if (worktree) cell.textField.attributedStringValue = worktree;
+    if (worktree) [cell setTitle:worktree];
     if (sym) icon = MCTreeSymbolImage(sym);
     if (cell.imageView.image != icon) cell.imageView.image = icon;
     cell.imageView.contentTintColor = tint;
     if (worktree) {
         [cell setSize:nil saved:nil created:nil color:nil];
-        cell.textField.attributedStringValue = worktree;   // after setSize, which sets clipping
+        [cell setTitle:worktree];   // after setSize, which sets clipping
         cell.toolTip = worktreeTip;
         return;
     }

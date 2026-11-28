@@ -326,9 +326,20 @@ CGFloat MCTreeCellWidthFor(MCTreeColumns columns) {
     return w;
 }
 
+NSFont *MCTreeNameFont(BOOL root) {
+    static NSFont *plain, *heavier;
+    if (!plain) {
+        plain = [NSFont systemFontOfSize:13];
+        heavier = [NSFont systemFontOfSize:13 weight:NSFontWeightMedium];
+    }
+    return root ? heavier : plain;
+}
+
 @implementation MCTreeCell {
     BOOL _details;
     BOOL _on[3];   // size, saved, created: switched on
+    NSFont *_nameFont;            // a plain name's
+    NSAttributedString *_title;   // or a title's, with its own fonts
 }
 
 static NSTextField *MCDetailField(void) {
@@ -378,19 +389,51 @@ static NSTextField *MCDetailField(void) {
     [self place];
 }
 
+- (void)setName:(NSString *)name font:(NSFont *)font {
+    _title = nil;
+    _nameFont = font;
+    self.textField.stringValue = name ?: @"";
+    self.textField.font = font;
+}
+
+- (void)setTitle:(NSAttributedString *)title {
+    _title = [title copy];
+    _nameFont = nil;
+    self.textField.attributedStringValue = _title ?: [NSAttributedString new];
+}
+
+// NSTableCellView's layout and viewWillDraw set the row size style's font
+// (13 points for Medium) on the textField of each cell a row takes, made or
+// reused, after configureTreeCell has set the name's. A row refreshed in
+// place kept the font set here and a row the table had just made drew the
+// style's, so a save's git color, which refreshes the rows on show, changed
+// the size of every name (the README's tour GIF, 2026-11-28). The name's
+// own font, or the title, is put back after them.
+- (void)keepName {
+    NSTextField *tf = self.textField;
+    if (_title) {
+        if (![tf.attributedStringValue isEqualToAttributedString:_title])
+            tf.attributedStringValue = _title;
+    } else if (_nameFont && ![tf.font isEqual:_nameFont]) {
+        tf.font = _nameFont;
+    }
+}
+
 - (void)setFrameSize:(NSSize)size {
     [super setFrameSize:size];
     [self place];
 }
 - (void)layout {
     [super layout];
+    [self keepName];
     [self place];
 }
 // NSTableCellView moves its textField for the row size style without a
-// layout pass (to the cell's width, over the columns); put it back before
-// every draw.
+// layout pass (to the cell's width, over the columns), and sets its font;
+// put both back before every draw.
 - (void)viewWillDraw {
     [super viewWillDraw];
+    [self keepName];
     [self place];
 }
 
