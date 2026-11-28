@@ -239,6 +239,10 @@ public:
     bool replacesInFolder() const {
         return client_ && !lost() && client_->hostWritesForPages() && client_->hostSearches();
     }
+    // Whether that replace honours Preserve Case and one match of a row
+    // (Welcome flag 2048, Client::hostReplacesOne): an older host ignores
+    // both, so neither is sent to it.
+    bool replacesOne() const { return replacesInFolder() && client_->hostReplacesOne(); }
     // The tree's file operations on the host (Welcome flag 64,
     // Client::requestFileOp: "rename", "move", "delete", "newFile",
     // "newFolder", paths from the folder). False when the host is gone,

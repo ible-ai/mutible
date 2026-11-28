@@ -98,10 +98,12 @@ typedef NS_ENUM(NSInteger, MCOpenFileState) {
 // `hostReplaces` says whether the host takes it now (a host too old, or a
 // lost connection, does not: Replace All says so); `hostReplace` sends one,
 // its answer as a stream's (0: not sent); `hostPlace` names the folder
-// there ("host:path"). Preserve Case and Replace This Match are refused
-// over SSH with a note (the host replaces a row's whole line, and ignores
-// case preserving).
+// there ("host:path"). `hostReplacesOne` says whether the host honours
+// Preserve Case (the request's "preserveCase") and one match of a row (its
+// "byteColumn": Replace This Match), Welcome flag 2048; an older host
+// ignores both, so without it they are refused with a note.
 @property(nonatomic, copy) BOOL (^hostReplaces)(void);
+@property(nonatomic, copy) BOOL (^hostReplacesOne)(void);
 @property(nonatomic, copy) uint64_t (^hostReplace)(Json request,
                                                    void (^answers)(const std::vector<Json> &answers, BOOL done));
 @property(nonatomic, copy) NSString *hostPlace;

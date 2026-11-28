@@ -66,6 +66,9 @@
 // search showed): its answer as a stream's. 0, calling nothing, when the
 // host cannot be asked or does not replace (replacesInFolder).
 - (BOOL)replacesInFolder;
+// And whether it honours Preserve Case and one match of a row (Welcome flag
+// 2048): NO for an older host, which ignores both.
+- (BOOL)replacesOne;
 - (uint64_t)replace:(Json)request answers:(void (^)(const std::vector<Json> &answers, BOOL done))answers;
 
 // The tree's file operations on the host (Welcome flag 64; paths absolute,
